@@ -4789,13 +4789,14 @@
           gameState.hp = 100;
           gameState.stamina = 100;
           gameState.cash = Math.max(0, gameState.cash - 50);
-          player.x = -11.5;
+          climb.on = false;
+          player.x = hospitalSpawn ? hospitalSpawn.x : -11.5;
           player.y = 0.18;
-          player.z = 18.5;
+          player.z = hospitalSpawn ? hospitalSpawn.z : 18.5;
           player.vy = 0;
           player.grounded = true;
           player.peakAirY = 0.18;
-          pushFeed('REVIVED AT CENTRAL PLAZA (-$50 MEDICAL FEE)', 'border-l-rose-500');
+          pushFeed(hospitalSpawn ? 'REVIVED AT AURA GENERAL HOSPITAL (-$50 MEDICAL FEE)' : 'REVIVED AT CENTRAL PLAZA (-$50 MEDICAL FEE)', 'border-l-rose-500');
         }
         updateHUD();
       }
@@ -5027,11 +5028,11 @@
         ctx.fillStyle = '#365e33';
         ctx.fillRect(0, 0, W, H);
 
-        const scale = centerOnPlayer ? 0.65 : 0.72;
+        const scale = centerOnPlayer ? 0.65 : 0.44;
         const cx = W / 2;
         const cy = H / 2;
-        const refX = centerOnPlayer ? player.x : 110;
-        const refZ = centerOnPlayer ? player.z : -15;
+        const refX = centerOnPlayer ? player.x : -68;
+        const refZ = centerOnPlayer ? player.z : -190;
 
         const toCanvasX = (wx) => cx + (wx - refX) * scale;
         const toCanvasY = (wz) => cy + (wz - refZ) * scale;
@@ -5745,7 +5746,7 @@
       function computeSupportFloor(x, z, footY, radius) {
         if (footY < -1.0) return sewerFloor(x, z);
         let highest = (x >= 164) ? 0.02 : 0.18;
-        if (z < -170) highest = Math.max(highest, terrainH(x, z));
+        if (z < -170 || x < -196) highest = Math.max(highest, terrainH(x, z));
 
         for (let r = 0; r < driveableRamps.length; r++) {
           const rm = driveableRamps[r];
@@ -5772,8 +5773,9 @@
       }
 
       function collidesHorizontally(nx, nz, footY, bodyH, radius) {
-        if (nx < -138 + radius || nx > 370 - radius || nz < -585 + radius || nz > 208 - radius) return true;
+        if (nx < -556 + radius || (nx < -196 && (nz < -170 + radius || nz > 170 - radius)) || nx > 370 - radius || nz < -585 + radius || nz > 208 - radius) return true;
         if (footY < -1.0 && !sewerOK(nx, nz, radius)) return true;
+        if (footY > -0.5) { const th = terrainH(nx, nz); if (th > -90 && th - footY > 1.0) return true; }
         for (let i = 0; i < worldBoxes.length; i++) {
           const b = worldBoxes[i];
           if (b.maxY <= footY + 0.42 || b.minY >= footY + bodyH - 0.08) continue;
@@ -6200,8 +6202,14 @@
           const nextX = v.x + v.velX * dt;
           const nextZ = v.z + v.velZ * dt;
 
-          const carFloor = computeSupportFloor(nextX, nextZ, v.y + 0.65, 1.05);
-          v.y += (carFloor - v.y) * Math.min(1, dt * 18);
+          const cfx = Math.sin(v.yaw), cfz = Math.cos(v.yaw);
+          const carFloor = computeSupportFloor(nextX, nextZ, v.y + 0.65, 0.8);
+          const fFloor = computeSupportFloor(nextX + cfx * 1.7, nextZ + cfz * 1.7, v.y + 0.65, 0.5);
+          const rFloor = computeSupportFloor(nextX - cfx * 1.7, nextZ - cfz * 1.7, v.y + 0.65, 0.5);
+          const gy = Math.max(carFloor, (fFloor + rFloor) * 0.5);
+          v.y = gy > v.y ? gy : v.y + (gy - v.y) * Math.min(1, dt * 14);
+          const tpT = Math.max(-0.5, Math.min(0.5, Math.atan2(fFloor - rFloor, 3.4)));
+          v.terrPitch = (v.terrPitch || 0) + (tpT - (v.terrPitch || 0)) * Math.min(1, dt * 10);
 
           for (const lp of lampPosts) {
             if (lp.state === 'standing' && Math.hypot(nextX - lp.x, nextZ - lp.z) < 1.85 && Math.abs(v.y - 0.18) < 2.0) {
@@ -6219,10 +6227,22 @@
             }
           }
 
-          const okX = !collidesHorizontally(nextX, v.z, v.y + 0.25, 1.35, 1.28);
-          if (okX) v.x = nextX; else v.velX *= -0.28;
-          const okZ = !collidesHorizontally(v.x, nextZ, v.y + 0.25, 1.35, 1.28);
-          if (okZ) v.z = nextZ; else v.velZ *= -0.28;
+          const crx = Math.cos(v.yaw), crz = -Math.sin(v.yaw);
+          const carHit = (px, pz) => {
+            for (let q = 0; q < CAR_PTS.length; q++) {
+              if (collidesHorizontally(px + cfx * CAR_PTS[q][0] + crx * CAR_PTS[q][1], pz + cfz * CAR_PTS[q][0] + crz * CAR_PTS[q][1], v.y + 0.25, 1.3, 0.28)) return true;
+            }
+            return false;
+          };
+          let okX = true, okZ = true;
+          const nSub = Math.max(1, Math.ceil(Math.hypot(nextX - v.x, nextZ - v.z) / 0.45));
+          const stX = (nextX - v.x) / nSub, stZ = (nextZ - v.z) / nSub;
+          for (let si = 0; si < nSub && (okX || okZ); si++) {
+            if (okX) { if (carHit(v.x + stX, v.z)) okX = false; else v.x += stX; }
+            if (okZ) { if (carHit(v.x, v.z + stZ)) okZ = false; else v.z += stZ; }
+          }
+          if (!okX) v.velX *= -0.28;
+          if (!okZ) v.velZ *= -0.28;
           if (!okX || !okZ) {
             const impact = Math.abs(v.speed);
             v.speed *= (okX || okZ) ? 0.82 : -0.3;
@@ -6241,7 +6261,7 @@
 
           v.root.position.set(v.x, v.y, v.z);
           v.root.rotation.y = v.yaw;
-          v.chassis.rotation.x = v.pitchAngle;
+          v.chassis.rotation.x = v.pitchAngle - (v.terrPitch || 0);
           v.chassis.rotation.z = v.rollAngle;
 
           v.wheelPivots[0].rotation.y = v.steerAngle;
@@ -6273,7 +6293,7 @@
             const aerialHeight = 8.4 + Math.min(2.6, Math.abs(v.speed) * 0.05);
             const camX = v.x + Math.sin(player.yaw) * aerialDist;
             const camZ = v.z + Math.cos(player.yaw) * aerialDist;
-            const camY = v.y + aerialHeight + Math.sin(-player.pitch) * 4.5;
+            const camY = Math.max(v.y + aerialHeight + Math.sin(-player.pitch) * 4.5, terrainH(camX, camZ) + 1.5);
             camera.position.set(camX, camY, camZ);
             camera.lookAt(
               v.x + Math.sin(v.yaw) * 4.5,
@@ -6556,7 +6576,7 @@
             const ratio = safeDist / camDist;
             camera.position.set(
               player.x + (idealX - player.x) * ratio,
-              Math.max(0.55, pivotY + (idealY - pivotY) * ratio),
+              Math.max(0.55, terrainH(player.x + (idealX - player.x) * ratio, player.z + (idealZ - player.z) * ratio) + 0.7, pivotY + (idealY - pivotY) * ratio),
               player.z + (idealZ - player.z) * ratio
             );
             camera.lookAt(player.x - Math.sin(player.yaw) * 4, pivotY + Math.sin(player.pitch) * 4, player.z - Math.cos(player.yaw) * 4);
@@ -7337,8 +7357,18 @@
       function ridge(x,z,o){let a=.5,f=1,s=0;for(let k=0;k<(o||5);k++){s+=a*(1-Math.abs(vnoise(x*f,z*f)*2-1));f*=2.1;a*=.5;}return s;}
       function roadC(z){const t=-170-z;return 116+64*Math.sin(t*0.019)+24*Math.sin(t*0.052+1);}
       function roadH(z){return 0.2+Math.min(82,(-170-z)*0.16);}
+      const AHC={px:-480,pz:-45};
+      const CAR_PTS=[[2.2,0],[2.1,.9],[2.1,-.9],[0,.95],[0,-.95],[-2.1,.9],[-2.1,-.9],[-2.2,0]];
+      const ahRz=x=>45*Math.sin(Math.min(-196-x,236)*.02), ahRzD=x=>(-196-x)<236?.9*Math.cos((-196-x)*.02):0, ahRy=x=>38*sstep(0,230,-196-x);
+      function hillsH(x,z){
+        const env=sstep(0,110,-196-x), hm=env*(6+fbm(x*.007+20,z*.007,4)*85+fbm(x*.03,z*.03,3)*7);
+        const pl=1-sstep(70,118,Math.hypot(x-AHC.px,z-AHC.pz));let h=hm*(1-pl)+38*pl;
+        const s=-196-x;if(s>=0&&s<300){const w=sstep(7,28,Math.abs(z-ahRz(x))/Math.hypot(1,ahRzD(x)));h=ahRy(x)*(1-w)+h*w;}
+        return h;
+      }
       function riverX(z){return roadC(z)-72+14*Math.sin(z*.04);}
       function terrainH(x,z){
+        if(x<-196&&x>-560&&z>-172&&z<172) return hillsH(x,z);
         if(z>-170) return -99;
         const t=-170-z, env=sstep(0,120,t);
         const wx=x+(fbm(x*.006+9,z*.006)-.5)*90, wz=z+(fbm(x*.006,z*.006+4)-.5)*90;
@@ -7408,7 +7438,8 @@
 
       // ---- Sewer network: real tunnels beneath the city streets (no teleport) ----
       const manholes=[[-4,24],[48,-16],[-40,-30],[20,-66]];
-      const sewerLights=[], manholeCovers=[], sRects=[];
+      const sewerLights=[], manholeCovers=[], manholeOpen=[], manholeHoles=[], sRects=[];
+      let ahCull=null, ahF=null, ahHint=null, hospitalSpawn=null;
       (function buildSewer(){
         const root=new THREE.Group();scene.add(root);
         const SW=5.4,H2=SW/2,WH=4.6,CY=SFY+WH,sg=new THREE.BoxGeometry(1,1,1);
@@ -7447,15 +7478,15 @@
           for(let t=-L/2+4;t<L/2-2;t+=9)lamps.push(ax?[cx+t,CY-.1,cz]:[cx,CY-.1,cz+t]);}
         const lm=new THREE.InstancedMesh(sg,lampMat,lamps.length),dm=new THREE.Object3D();
         lamps.forEach((l,i)=>{dm.position.set(l[0],l[1],l[2]);dm.scale.set(.6,.12,.6);dm.updateMatrix();lm.setMatrixAt(i,dm.matrix);});root.add(lm);
-        const cvG=new THREE.CylinderGeometry(.75,.75,.06,20),cvM=new THREE.MeshStandardMaterial({color:0x2b2e31,metalness:.8,roughness:.5});
-        manholes.forEach(m=>{const c=new THREE.Mesh(cvG,cvM);c.position.set(m[0],.22,m[1]);scene.add(c);manholeCovers.push(c);});
+        const holeDiscG=new THREE.CircleGeometry(.72,20).rotateX(-Math.PI/2),holeDiscM=new THREE.MeshBasicMaterial({color:0x050505}),cvG=new THREE.CylinderGeometry(.75,.75,.06,20),cvM=new THREE.MeshStandardMaterial({color:0x2b2e31,metalness:.8,roughness:.5});
+        manholes.forEach(m=>{const c=new THREE.Mesh(cvG,cvM);c.position.set(m[0],.22,m[1]);scene.add(c);manholeCovers.push(c);manholeOpen.push(false);const hd=new THREE.Mesh(holeDiscG,holeDiscM);hd.position.set(m[0],.2,m[1]);hd.visible=false;scene.add(hd);manholeHoles.push(hd);});
       })();
       function sewerOK(x,z,r){for(let i=0;i<sRects.length;i++){const q=sRects[i];if(x>=q[0]+r&&x<=q[1]-r&&z>=q[2]+r&&z<=q[3]-r)return true;}return false;}
       const under=()=>player.y<-1.2;
       const climb={on:false,dir:0,t:0,i:0};
       function nearestManhole(r){for(let i=0;i<manholes.length;i++)if(Math.hypot(player.x-manholes[i][0],player.z-manholes[i][1])<r)return i;return -1;}
-      function startClimb(dir,i){climb.on=true;climb.dir=dir;if(dir<0)reviveRats();climb.t=0;climb.i=i;manholeCovers[i].visible=false;sfx.mantle();
-        pushFeed(dir<0?'DESCENDING INTO THE SEWERS — TUNNELS RUN UNDER THE STREETS':'CLIMBING OUT',dir<0?'border-l-emerald-400':'border-l-sky-400');}
+      function startClimb(dir,i){climb.on=true;climb.dir=dir;if(dir<0)reviveRats();climb.t=0;climb.i=i;sfx.mantle();
+        pushFeed(dir<0?'CLIMBING DOWN INTO THE SEWERS':'CLIMBING OUT',dir<0?'border-l-emerald-400':'border-l-sky-400');}
       function climbFrame(dt){
         if(!climb.on)return;
         climb.t=Math.min(1,climb.t+dt/2.2);
@@ -7465,9 +7496,14 @@
         if(climb.t>=1){climb.on=false;manholeCovers[climb.i].visible=true;}
       }
       window.addEventListener('keydown',e=>{
-        if(e.code!=='KeyE'||gameState.screen!=='playing'||gameState.inCar||climb.on)return;
+        if(e.code!=='KeyF'||gameState.screen!=='playing'||gameState.inCar||climb.on)return;
         const u=under(),i=nearestManhole(u?3.2:2.4);
-        if(i>=0)startClimb(u?1:-1,i);
+        if(i>=0){
+          if(u){startClimb(1,i);return;}
+          if(!manholeOpen[i]){manholeOpen[i]=true;sfx.mantle();pushFeed('MANHOLE COVER OPENED — [F] TO CLIMB DOWN','border-l-amber-400');}
+          else startClimb(-1,i);
+          return;}
+        if(ahF)ahF();
       });
 
       // ---- Police & wanted level ----
@@ -7581,12 +7617,128 @@
         const tip=document.createElement('div');tip.id='ao-tip';tip.style.cssText='position:fixed;bottom:150px;left:50%;transform:translateX(-50%);padding:6px 14px;border-radius:8px;background:rgba(8,11,17,.85);border:1px solid #f59e0b;font:700 13px Rajdhani,sans-serif;letter-spacing:.1em;display:none;z-index:25';hud.appendChild(tip);
       })();
       const _rm=renderMapCanvas;renderMapCanvas=function(cv,center){_rm(cv,center);
-        const ctx=cv.getContext('2d'),sc=center?.65:.72,rx=center?player.x:110,rz=center?player.z:-15,X=w=>cv.width/2+(w-rx)*sc,Y=w=>cv.height/2+(w-rz)*sc;
-        ctx.fillStyle='rgba(120,130,120,.55)';ctx.fillRect(X(-138),Y(-170)-250*sc,508*sc,250*sc);
+        const ctx=cv.getContext('2d'),sc=center?.65:.44,rx=center?player.x:-68,rz=center?player.z:-190,X=w=>cv.width/2+(w-rx)*sc,Y=w=>cv.height/2+(w-rz)*sc;
+        ctx.fillStyle='rgba(120,130,120,.55)';ctx.fillRect(X(-138),Y(-170)-420*sc,508*sc,420*sc);
+        ctx.fillStyle='rgba(139,125,86,.6)';ctx.fillRect(X(-560),Y(-172),364*sc,344*sc);
+        ctx.fillStyle='rgba(79,138,63,.85)';ctx.beginPath();ctx.arc(X(-480),Y(-45),70*sc,0,6.3);ctx.fill();
+        ctx.strokeStyle='#e9c33a';ctx.lineWidth=2;ctx.beginPath();for(let q=0;q<=274;q+=6){const x=-196-q;q?ctx.lineTo(X(x),Y(ahRz(x))):ctx.moveTo(X(x),Y(ahRz(x)));}ctx.stroke();
+        ctx.strokeStyle='#38bdf8';ctx.lineWidth=2;ctx.beginPath();for(let z=-176;z>-584;z-=8){z===-176?ctx.moveTo(X(riverX(z)),Y(z)):ctx.lineTo(X(riverX(z)),Y(z));}ctx.stroke();
+        if(hospitalSpawn){const hx=hospitalSpawn.x+14,hz=hospitalSpawn.z+7.4;ctx.fillStyle='#fff';ctx.fillRect(X(hx)-5,Y(hz)-5,10,10);ctx.fillStyle='#dc2626';ctx.fillRect(X(hx)-4,Y(hz)-1,8,2);ctx.fillRect(X(hx)-1,Y(hz)-4,2,8);}
+        ctx.fillStyle='#fff';ctx.font='bold 10px sans-serif';ctx.fillText('AURA HILLS',X(-470),Y(-150));ctx.fillText('MOUNTAINS',X(60),Y(-400));
         ctx.strokeStyle='#e9c33a';ctx.lineWidth=2;ctx.beginPath();for(let z=-170;z>-584;z-=8){const px=X(roadC(z)),py=Y(z);z===-170?ctx.moveTo(px,py):ctx.lineTo(px,py);}ctx.stroke();
         const f=(x,z,col,r)=>{ctx.fillStyle=col;ctx.beginPath();ctx.arc(X(x),Y(z),r,0,6.3);ctx.fill();};
         if(!under()){AO.cops.forEach(c=>f(c.x,c.z,'#3b82f6',3));AO.cars.forEach(c=>f(c.x,c.z,Math.sin(performance.now()/120)>0?'#ef4444':'#3b82f6',4.5));manholes.forEach(m=>f(m[0],m[1],'#34d399',2));}
       };
+      {
+        const bxG=new THREE.BoxGeometry(1,1,1),M=(c,r,e)=>new THREE.MeshStandardMaterial({color:c,roughness:r==null?.9:r,emissive:e||0,emissiveIntensity:e?1.2:0});
+        const K={wall:M(0xe9e6df),roof:M(0x2b2f36),floor:M(0xd8dde0,.5),glass:M(0x8fb8d6,.15),red:M(0xdc2626),white:M(0xf5f5f5),wood:M(0x6b4a2f),sofa:M(0x394a5e),lamp:M(0xfff7d6,.5,0xfff7d6),gold:M(0xf5c542,.3,0xb8860b),stone:M(0xb9b2a6),drive:M(0x3a3d42),metal:M(0x20242a,.4),blue:M(0x7ec8e3),black:M(0x111111)};
+        const bx=(g,m,x,y,z,a,b,d)=>{const o=new THREE.Mesh(bxG,m);o.position.set(x,y,z);o.scale.set(a,b,d);g.add(o);return o;};
+        const wb=(x,y,z,a,b,d)=>addWorldBox(x-a/2,x+a/2,y-b/2,y+b/2,z-d/2,z+d/2,'solid',false);
+        const culls=[],houses=[],gate={open:false,boxes:[],l1:null,l2:null};
+        // ---- Aura Hills terrain + winding road ----
+        {const X0=-560,X1=-196,Z0=-172,Z1=172,N=114,g=new THREE.PlaneGeometry(X1-X0,Z1-Z0,N,N);g.rotateX(-Math.PI/2);
+          const p=g.attributes.position,col=new Float32Array(p.count*3),H=new Float32Array(p.count),c=new THREE.Color(),c2=new THREE.Color(),st=N+1,dx=(X1-X0)/N,dz=(Z1-Z0)/N;
+          for(let i=0;i<p.count;i++){const x=p.getX(i)+(X0+X1)/2,z=p.getZ(i)+(Z0+Z1)/2,h=hillsH(x,z);H[i]=h;p.setXYZ(i,x,h-.1,z);}
+          for(let i=0;i<p.count;i++){const x=p.getX(i),z=p.getZ(i),h=H[i],cx=i%st,cz=(i/st)|0,il=cx>0?i-1:i,ir=cx<N?i+1:i,iu=cz>0?i-st:i,id=cz<N?i+st:i;
+            const sl=Math.abs(H[ir]-H[il])/(2*dx)+Math.abs(H[id]-H[iu])/(2*dz),n=fbm(x*.06,z*.06,3);
+            c.set(0x5b7d3c).lerp(c2.set(0x8a8f52),n);c.lerp(c2.set(0xa59a76),sstep(40,85,h));
+            c.lerp(c2.set(0x4f8a3f),1-sstep(66,100,Math.hypot(x-AHC.px,z-AHC.pz)));
+            c.lerp(c2.set(0x76705f),sstep(.35,.75,sl));c.multiplyScalar(.9+.2*n);col[i*3]=c.r;col[i*3+1]=c.g;col[i*3+2]=c.b;}
+          g.setAttribute('color',new THREE.BufferAttribute(col,3));g.computeVertexNormals();
+          const tm=new THREE.Mesh(g,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1}));tm.receiveShadow=true;scene.add(tm);
+          const pts=[];for(let s=0;s<=274;s+=3){const x=-196-s;pts.push([x,ahRz(x)]);}
+          const ribbon=(w,dy,color)=>{const pos=[],idx=[];pts.forEach((q,k)=>{const a=pts[Math.max(0,k-1)],b=pts[Math.min(pts.length-1,k+1)],tx=b[0]-a[0],tz=b[1]-a[1],l=Math.hypot(tx,tz),nx=-tz/l,nz=tx/l,y=ahRy(q[0])+dy;
+              pos.push(q[0]+nx*w,y,q[1]+nz*w,q[0]-nx*w,y,q[1]-nz*w);if(k){const i=(k-1)*2;idx.push(i,i+1,i+2,i+1,i+3,i+2);}});
+            const rg=new THREE.BufferGeometry();rg.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));rg.setIndex(idx);rg.computeVertexNormals();
+            const m=new THREE.Mesh(rg,new THREE.MeshStandardMaterial({color,roughness:.9,side:THREE.DoubleSide}));m.receiveShadow=true;scene.add(m);};
+          ribbon(4.8,.12,0x2a2d31);ribbon(.12,.16,0xe8c547);}
+        // ---- Gated community ----
+        {const WG=new THREE.Group();scene.add(WG);
+          const seg=(cx,cz,a,d)=>{bx(WG,K.stone,cx,39.7,cz,a,3.4,d);wb(cx,39.7,cz,a,3.4,d);};
+          seg(-480,-85,96,.8);seg(-480,-5,96,.8);seg(-528,-45,.8,80);seg(-432,-67,.8,36);seg(-432,-23,.8,36);
+          gate.l1=bx(WG,K.metal,-431.4,39.5,-47,.3,3,4);gate.l2=bx(WG,K.metal,-431.4,39.5,-43,.3,3,4);
+          gate.boxes.push(wb(-432,39.5,-47,.6,3,4),wb(-432,39.5,-43,.6,3,4));
+          bx(WG,K.stone,-432,41.9,-45,.9,1.4,10);
+          const sg=new THREE.Group();sg.position.set(-431.4,41.9,-45);sg.rotation.y=Math.PI/2;createNeonSign(sg,'AURA ESTATES',0,0,0,'#111827','#fcd34d',7,1.1);scene.add(sg);
+          const HW=15,HD=11,HT=4.2,Y=38.18;
+          [[-508,-68,1],[-508,-22,-1],[-470,-70,1],[-470,-20,-1],[-448,-70,1],[-448,-20,-1]].forEach(([cx,cz,dir],k)=>{
+            const g=new THREE.Group();g.position.set(cx,Y,cz);scene.add(g);const inn=new THREE.Group();g.add(inn);
+            const fz=dir*HD/2,bz=-dir*HD/2,sw=(HW-2.6)/2,wm=k%2?K.wall:K.stone;
+            bx(g,wm,0,HT/2,bz,HW,HT,.4);wb(cx,Y+HT/2,cz+bz,HW,HT,.4);
+            for(const sd of[-1,1]){bx(g,wm,sd*HW/2,HT/2,0,.4,HT,HD);wb(cx+sd*HW/2,Y+HT/2,cz,.4,HT,HD);
+              bx(g,wm,sd*(1.3+sw/2),HT/2,fz,sw,HT,.4);wb(cx+sd*(1.3+sw/2),Y+HT/2,cz+fz,sw,HT,.4);
+              bx(g,K.glass,sd*(1.3+sw/2),2.3,fz+dir*.22,sw*.6,1.6,.05);}
+            bx(g,wm,0,HT-.5,fz,2.6,1,.4);bx(g,K.roof,0,HT+.2,0,HW+1.4,.4,HD+1.4);bx(g,K.drive,0,.05,fz+dir*5.5,4,.1,11);
+            bx(inn,K.wood,0,.02,0,HW-.6,.05,HD-.6);bx(inn,K.sofa,-3,.45,-dir*2.5,4,.9,1.2);bx(inn,K.wood,-3,.3,-dir*.6,2,.6,1);
+            bx(inn,K.black,4,1.4,-dir*(HD/2-.4),3,1.6,.1);bx(inn,K.lamp,0,HT-.2,0,2,.1,2);bx(inn,K.wood,-5,.5,dir*3,1.2,1,2.4);
+            const safe=bx(inn,K.gold,5.5,.5,dir*(HD/2-1.2),.9,.9,.7);
+            houses.push({safe,sx:cx+5.5,sz:cz+dir*(HD/2-1.2),taken:false});culls.push({g:inn,x:cx,z:cz,r:65});});}
+        // ---- Aura General Hospital (placed on the first clear lot) ----
+        {const W=36,D=26,HH=7,T=.5;let hx=0,hz=0,found=false;
+          const clear=(cx,cz)=>{for(let x=-W/2-4;x<=W/2+4;x+=6)for(let z=-D/2-4;z<=D/2+4;z+=6)if(collidesHorizontally(cx+x,cz+z,.2,1.8,1.5))return false;return true;};
+          for(let x=-170;x<=110&&!found;x+=10)for(let z=-140;z<=160;z+=10)if(clear(x,z)){hx=x;hz=z;found=true;break;}
+          if(found){const g=new THREE.Group();g.position.set(hx,.18,hz);scene.add(g);const inn=new THREE.Group();g.add(inn);
+            bx(g,K.white,0,HH/2,-D/2,W,HH,T);wb(hx,HH/2,hz-D/2,W,HH,T);
+            for(const sd of[-1,1]){bx(g,K.white,sd*W/2,HH/2,0,T,HH,D);wb(hx+sd*W/2,HH/2,hz,T,HH,D);
+              const sw=(W-6)/2;bx(g,K.white,sd*(3+sw/2),HH/2,D/2,sw,HH,T);wb(hx+sd*(3+sw/2),HH/2,hz+D/2,sw,HH,T);}
+            bx(g,K.white,0,HH-1,D/2,6,2,T);bx(g,K.roof,0,HH+.25,0,W+1,.5,D+1);bx(g,K.white,0,4.6,D/2+2.5,10,.3,5);
+            bx(g,K.red,-11,4.5,D/2+.3,1,4,.15);bx(g,K.red,-11,4.5,D/2+.3,4,1,.15);bx(g,K.red,11,4.5,D/2+.3,1,4,.15);bx(g,K.red,11,4.5,D/2+.3,4,1,.15);
+            createNeonSign(g,'AURA GENERAL HOSPITAL',0,6.3,D/2+.3,'#ffffff','#dc2626',12,1.4);
+            bx(inn,K.floor,0,.02,0,W-1,.05,D-1);
+            for(let x=-15;x<=15;x+=6)for(const z of[-6,6])bx(inn,K.lamp,x,HH-.3,z,2.4,.1,.8);
+            bx(inn,K.wood,0,.55,6,8,1.1,1.2);bx(inn,K.white,0,1.12,6,8.2,.08,1.4);
+            for(let x=-14;x<=-8;x+=2)bx(inn,K.sofa,x,.4,10,1.2,.8,1);
+            const bed=(x,z)=>{bx(inn,K.white,x,.45,z,1.1,.5,2.3);bx(inn,K.blue,x,.75,z+.3,1.1,.12,1.6);bx(inn,K.white,x,.8,z-.9,.7,.14,.5);};
+            for(const x of[-14,-8,-2,8,13])bed(x,-D/2+3);
+            for(const x of[-11,-5,10.5])bx(inn,K.blue,x,1.3,-D/2+3.2,.05,2.2,2.6);
+            for(const x of[-16,-10,-4,6,11])bx(inn,K.metal,x,1,-D/2+4.2,.06,2,.06);
+            hospitalSpawn={x:hx-14,z:hz-D/2+5.6};culls.push({g:inn,x:hx,z:hz,r:80});}}
+        // ---- I-88 highway upgrade: lighting poles + edge lines ----
+        {const n=30,pg=new THREE.CylinderGeometry(.12,.16,9,8),hg=new THREE.BoxGeometry(2.2,.2,.5),poles=new THREE.InstancedMesh(pg,M(0x6b7280,.6),n),heads=new THREE.InstancedMesh(hg,K.lamp,n),d=new THREE.Object3D();let k=0;
+          for(let i=0;i<15;i++)for(const sd of[-1,1]){const z=-180+i*27,x=sd<0?139.6:164.4;d.position.set(x,4.5,z);d.updateMatrix();poles.setMatrixAt(k,d.matrix);d.position.set(x-sd*1.1,9,z);d.updateMatrix();heads.setMatrixAt(k,d.matrix);k++;}
+          scene.add(poles,heads);const eg=new THREE.Group();scene.add(eg);for(const x of[141.7,162.3])bx(eg,K.white,x,.13,10,.25,.02,400);}
+        ahCull=function(dt){
+          for(let i=0;i<manholeCovers.length;i++){const c=manholeCovers[i],tx=manholes[i][0]+(manholeOpen[i]?1.5:0);c.position.x+=(tx-c.position.x)*Math.min(1,dt*6);manholeHoles[i].visible=manholeOpen[i];}
+          for(const c of culls)c.g.visible=Math.hypot(player.x-c.x,player.z-c.z)<c.r;
+          const go=gate.open?4:0;gate.l1.position.z+=((-47-go)-gate.l1.position.z)*Math.min(1,dt*3);gate.l2.position.z+=((-43+go)-gate.l2.position.z)*Math.min(1,dt*3);
+          if(!under()&&player.x<-196)gameState.zoneName=player.x<-430?'AURA ESTATES':'AURA HILLS';};
+        ahHint=function(){if(!gate.open&&Math.hypot(player.x+432,player.z+45)<6)return '[F] FORCE OPEN GATE';for(const h of houses)if(!h.taken&&Math.hypot(player.x-h.sx,player.z-h.sz)<2.4)return '[F] CRACK SAFE';return '';};
+        ahF=function(){
+          if(!gate.open&&Math.hypot(player.x+432,player.z+45)<6){gate.open=true;gate.boxes.forEach(b=>{const k=worldBoxes.indexOf(b);if(k>=0)worldBoxes.splice(k,1);});sfx.mantle();crime(.35);pushFeed('GATE FORCED OPEN — SECURITY ALERTED','border-l-rose-500');return;}
+          for(const h of houses)if(!h.taken&&Math.hypot(player.x-h.sx,player.z-h.sz)<2.4){h.taken=true;h.safe.visible=false;gameState.cash+=600;spawnParticles(h.sx,39.5,h.sz,0xf5c542,14,5);sfx.pickup();crime(.5);pushFeed('SAFE CRACKED +$600','border-l-amber-400');updateHUD(true);return;}};
+      }
+      {
+        const rr=n=>{const v=Math.sin(n*127.1)*43758.5453;return v-Math.floor(v);},sm=c=>new THREE.MeshStandardMaterial({color:c,roughness:.85});
+        // ---- Taller skyline: glass towers on clear lots ----
+        {const cv=document.createElement('canvas');cv.width=64;cv.height=128;const x=cv.getContext('2d');x.fillStyle='#1d2b3a';x.fillRect(0,0,64,128);
+          for(let r=0;r<16;r++)for(let c=0;c<8;c++){x.fillStyle=rr(r*9+c)<.35?'#ffe9a8':'#2f4a63';x.fillRect(c*8+1,r*8+1,6,6);}
+          const base=new THREE.CanvasTexture(cv);base.colorSpace=THREE.SRGBColorSpace;base.wrapS=base.wrapT=THREE.RepeatWrapping;
+          const tg=new THREE.BoxGeometry(1,1,1),roofM=sm(0x20242a);let placed=0;
+          const clearT=(cx,cz,w)=>{for(let a=-w/2-3;a<=w/2+3;a+=5)for(let b=-w/2-3;b<=w/2+3;b+=5)if(collidesHorizontally(cx+a,cz+b,.2,1.8,1.5))return false;return true;};
+          for(let k=1;k<600&&placed<9;k++){const cx=-170+rr(k*1.3)*290,cz=-150+rr(k*2.9)*320,w=14+rr(k)*6,h=45+rr(k*5.1)*50;
+            if(Math.hypot(cx+11.5,cz-18.5)<30||manholes.some(m=>Math.hypot(cx-m[0],cz-m[1])<w))continue;
+            if(!clearT(cx,cz,w))continue;
+            const t=base.clone();t.needsUpdate=true;t.repeat.set(Math.round(w/3),Math.round(h/6));
+            const m=new THREE.Mesh(tg,new THREE.MeshStandardMaterial({map:t,emissiveMap:t,emissive:0xffffff,emissiveIntensity:.25,roughness:.25,metalness:.4}));
+            m.position.set(cx,h/2,cz);m.scale.set(w,h,w);m.castShadow=true;m.receiveShadow=true;scene.add(m);
+            const r=new THREE.Mesh(tg,roofM);r.position.set(cx,h+.4,cz);r.scale.set(w+.6,.8,w+.6);scene.add(r);
+            addWorldBox(cx-w/2,cx+w/2,0,h,cz-w/2,cz+w/2,'tower',false);placed++;}}
+        // ---- Highway: lane studs + overhead gantries ----
+        {const sg=new THREE.InstancedMesh(new THREE.BoxGeometry(.2,.05,.2),new THREE.MeshBasicMaterial({color:0xffb020}),50),d=new THREE.Object3D();
+          for(let i=0;i<50;i++){d.position.set(152,.14,-185+i*8);d.updateMatrix();sg.setMatrixAt(i,d.matrix);}scene.add(sg);
+          const gm=sm(0x6b7280);
+          [[-110,'AURA HILLS  EXIT 12'],[140,'DOWNTOWN  EXIT 14']].forEach(([gz,txt])=>{const g=new THREE.Group();scene.add(g);
+            for(const px of[139.5,164.5]){const o=new THREE.Mesh(new THREE.BoxGeometry(.6,7,.6),gm);o.position.set(px,3.5,gz);g.add(o);}
+            const b=new THREE.Mesh(new THREE.BoxGeometry(26,.5,.6),gm);b.position.set(152,7.2,gz);g.add(b);
+            createNeonSign(g,txt,152,5.9,gz+.35,'#0b5d2a','#ffffff',10,1.6);});}
+        // ---- Aura Hills trees ----
+        {const n=500,mesh=new THREE.InstancedMesh(new THREE.ConeGeometry(2,7,7),sm(0x2f5d34),n),d=new THREE.Object3D();let c=0;
+          for(let k=1;k<5000&&c<n;k++){const x=-216-rr(k*2.1)*338,z=-165+rr(k*3.7)*330,h=hillsH(x,z);
+            const sl=Math.abs(hillsH(x+3,z)-hillsH(x-3,z))/6,dr=Math.abs(z-ahRz(x))/Math.hypot(1,ahRzD(x));
+            if(sl>.7||h<3||(-196-x<300&&dr<12)||Math.hypot(x-AHC.px,z-AHC.pz)<72)continue;
+            d.position.set(x,h+3.2,z);d.scale.setScalar(.8+rr(k)*.9);d.updateMatrix();mesh.setMatrixAt(c++,d.matrix);}
+          mesh.count=c;mesh.castShadow=true;scene.add(mesh);}
+      }
       const rats=[],ratG=new THREE.BoxGeometry(.22,.16,.5),ratTG=new THREE.BoxGeometry(.03,.03,.35),ratM=new THREE.MeshStandardMaterial({color:0x3b332c,roughness:1});let ratHit=0;
       [[-110,-30],[-70,-30],[-20,-30],[34,-30],[100,-30],[20,-50],[20,-10],[20,50],[20,85],[0,24]].forEach((q,i)=>{if(!sewerOK(q[0],q[1],.3))return;
         const m=new THREE.Mesh(ratG,ratM),tl=new THREE.Mesh(ratTG,ratM);tl.position.z=-.38;m.add(tl);m.position.set(q[0],SFY+.1,q[1]);scene.add(m);
@@ -7609,7 +7761,7 @@
       }
       const hazeC=new THREE.Color(0xb8d4ea);
       function auraFrame(dt,t){
-        climbFrame(dt);ratFrame(dt,t);
+        climbFrame(dt);ratFrame(dt,t);if(ahCull)ahCull(dt);
         const u=under();
         if(u!==AT.on){AT.on=u;if(u){scene.background=new THREE.Color(0x070a09);skyGroup.visible=false;}else{scene.background=AT.bg;{const hi=gameState.settings.graphics==='high';skyGroup.visible=hi;sunLight.intensity=hi?1.65:1.45;hemiLight.intensity=hi?.96:.88;}}sewerLights.forEach(l=>l.visible=u);uLight.visible=u;}
         if(u){scene.fog.color.set(0x0a100d);scene.fog.density=.016;sunLight.intensity=0;hemiLight.intensity=.22;uLight.position.set(player.x,player.y+2.2,player.z);
@@ -7618,8 +7770,8 @@
         copFrame(dt,t);suspFrame(dt,t);
         const cp=document.getElementById('ao-compass');if(cp){const d=['N','NE','E','SE','S','SW','W','NW'][((Math.round(((-player.yaw%6.283)+6.283)%6.283/.7854))+4)%8];cp.textContent=u?`SEWERS  ·  DEPTH ${Math.round(-player.y)}m`:`${d}  ·  ALT ${Math.max(0,Math.round(player.y))}m`;}
         const tp=document.getElementById('ao-tip');let msg='';
-        if(!gameState.inCar){if(u){for(let i=0;i<manholes.length;i++)if(Math.hypot(player.x-manholes[i][0],player.z-manholes[i][1])<3.2)msg='[E] CLIMB LADDER TO SURFACE';}
-          else for(const m of manholes)if(Math.hypot(player.x-m[0],player.z-m[1])<2.4)msg='[E] ENTER SEWER';}
+        if(!gameState.inCar){if(u){for(let i=0;i<manholes.length;i++)if(Math.hypot(player.x-manholes[i][0],player.z-manholes[i][1])<3.2)msg='[F] CLIMB LADDER TO SURFACE';}
+          else{const i=nearestManhole(2.4);if(i>=0)msg=manholeOpen[i]?'[F] CLIMB DOWN':'[F] OPEN MANHOLE';else if(ahHint){const h2=ahHint();if(h2)msg=h2;}}}
         if(tp){tp.style.display=msg?'block':'none';tp.textContent=msg;}
       }
 
