@@ -1089,6 +1089,7 @@
           return c;
         });
         const cubeTex = new THREE.CubeTexture(faces);
+        cubeTex.colorSpace = THREE.SRGBColorSpace;
         cubeTex.needsUpdate = true;
         return cubeTex;
       }
@@ -1505,6 +1506,7 @@
 
         for (const entry of registeredMaterials) {
           if (useTextures && procTextures[entry.texType]) {
+            if (entry.mat.map && entry.mat.map !== procTextures[entry.texType]) entry.mat.map.dispose();
             const cloned = procTextures[entry.texType].clone();
             cloned.needsUpdate = true;
             cloned.repeat.set(entry.repeatX, entry.repeatY);
@@ -2741,7 +2743,9 @@
           const dist = Math.hypot(sk.x - player.x, sk.z - player.z);
 
           if (!sk.interiorLoaded && dist < LOAD_DIST) {
-            const ig = new THREE.Group();
+            let ig = sk.interiorCache;
+            if (!ig) {
+            ig = new THREE.Group();
             ig.position.set(sk.x, 0.18, sk.z);
 
             const deskMat = makeMat(0x0f172a);
@@ -2775,6 +2779,8 @@
             plantTop.position.set(3.2, 1.15, 1.4);
 
             ig.add(desk, deskTop, elevShaft, elevPadRing, couchL, couchR, planter, plantTop);
+            sk.interiorCache = ig;
+            }
             scene.add(ig);
 
             sk.interiorGroup = ig;
@@ -3480,6 +3486,7 @@
             }
           } else if (npc.spawned && distToPlayer > DESPAWN_DIST) {
             scene.remove(npc.mesh);
+            freeGeo(npc.mesh);
             npc.mesh = null;
             if (npc.sleepZGroup) {
               scene.remove(npc.sleepZGroup);
@@ -3707,10 +3714,12 @@
       const crateMat = makeMat(0xc2853e, { texType: 'wood', repeatX: 1, repeatY: 1, bumpScale: 0.02 });
       const barrelMat = makeMat(0xb91c1c, { texType: 'corrugated', repeatX: 3, repeatY: 1, metalness: 0.80, roughness: 0.32 });
 
+      const partGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16), partMats = {};
+      function freeGeo(o) { if (o) o.traverse((c) => { if (c.geometry) c.geometry.dispose(); }); }
       function spawnParticles(x, y, z, colorHex, count = 10, speed = 5.5) {
-        const mat = new THREE.MeshBasicMaterial({ color: colorHex });
+        const mat = partMats[colorHex] || (partMats[colorHex] = new THREE.MeshBasicMaterial({ color: colorHex }));
         for (let i = 0; i < count; i++) {
-          const m = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.16), mat);
+          const m = new THREE.Mesh(partGeo, mat);
           m.position.set(x, y, z);
           scene.add(m);
           particleBursts.push({
@@ -4499,6 +4508,7 @@
                 sfx.smash();
                 spawnParticles(cr.x, cr.y + 0.55, cr.z, 0xd97706, 12, 6.5);
                 scene.remove(cr.mesh);
+                freeGeo(cr.mesh);
                 const wbIdx = worldBoxes.indexOf(cr.box);
                 if (wbIdx !== -1) worldBoxes.splice(wbIdx, 1);
                 if (cr.loot) spawnWorldPickup(cr.loot.type, cr.loot.id, cr.x, cr.y, cr.z);
@@ -4517,6 +4527,7 @@
                 sfx.smash();
                 spawnParticles(br.x, br.y + 0.6, br.z, 0xf97316, 18, 9.0);
                 scene.remove(br.mesh);
+                freeGeo(br.mesh);
                 const wbIdx = worldBoxes.indexOf(br.box);
                 if (wbIdx !== -1) worldBoxes.splice(wbIdx, 1);
                 hazardBarrels.splice(b, 1);
@@ -4559,6 +4570,7 @@
 
           if (impacted || w.life <= 0) {
             scene.remove(w.mesh);
+            freeGeo(w.mesh);
             projectileWieners.splice(i, 1);
           }
         }
@@ -4604,6 +4616,7 @@
                 sfx.smash();
                 spawnParticles(c.x, c.y + 0.55, c.z, 0x92400e, 14, 6.5);
                 scene.remove(c.mesh);
+                freeGeo(c.mesh);
                 const idx = worldBoxes.indexOf(c.box);
                 if (idx !== -1) worldBoxes.splice(idx, 1);
                 if (c.loot) spawnWorldPickup(c.loot.type, c.loot.id, c.x, c.y, c.z);
@@ -4630,6 +4643,7 @@
                 sfx.smash();
                 spawnParticles(b.x, b.y + 0.6, b.z, 0xf97316, 18, 8.5);
                 scene.remove(b.mesh);
+                freeGeo(b.mesh);
                 const idx = worldBoxes.indexOf(b.box);
                 if (idx !== -1) worldBoxes.splice(idx, 1);
                 hazardBarrels.splice(i, 1);
@@ -4807,7 +4821,11 @@
       // =======================================================================
       // 12. HUD, CIRCULAR WATCH, COMPACT AMMO BAR, RADAR & MODALS
       // =======================================================================
-      function updateHUD() {
+      let hudClock = 0;
+      function updateHUD(force) {
+        const hn = performance.now();
+        if (!force && hn - hudClock < 50) return;
+        hudClock = hn;
         document.getElementById('hud-cash').textContent = Math.floor(gameState.cash).toLocaleString();
         document.getElementById('hud-zone').textContent = gameState.zoneName;
         document.getElementById('hud-pov').textContent = gameState.inCar
@@ -5725,7 +5743,7 @@
       // 15. COLLISION, RAMP ELEVATION, PROXIMITY LODS & SIMULATION STEP
       // =======================================================================
       function computeSupportFloor(x, z, footY, radius) {
-        if (footY < -12) return sewerFloor(x, z);
+        if (footY < -1.0) return sewerFloor(x, z);
         let highest = (x >= 164) ? 0.02 : 0.18;
         if (z < -170) highest = Math.max(highest, terrainH(x, z));
 
@@ -5755,6 +5773,7 @@
 
       function collidesHorizontally(nx, nz, footY, bodyH, radius) {
         if (nx < -138 + radius || nx > 370 - radius || nz < -585 + radius || nz > 208 - radius) return true;
+        if (footY < -1.0 && !sewerOK(nx, nz, radius)) return true;
         for (let i = 0; i < worldBoxes.length; i++) {
           const b = worldBoxes[i];
           if (b.maxY <= footY + 0.42 || b.minY >= footY + bodyH - 0.08) continue;
@@ -6574,12 +6593,14 @@
               syncEquippedMeshes();
               pushFeed(`EQUIPPED ${RIGHT_WEAPONS[p.id].name.toUpperCase()}`, 'border-l-amber-400');
               scene.remove(p.group);
+              freeGeo(p.group);
               worldPickups.splice(i, 1);
             } else if (addLeftItemToBag(p.id, 1)) {
               sfx.pickup();
               syncEquippedMeshes();
               pushFeed(`COLLECTED ${LEFT_ITEMS[p.id].name.toUpperCase()}`, 'border-l-sky-400');
               scene.remove(p.group);
+              freeGeo(p.group);
               worldPickups.splice(i, 1);
             }
           }
@@ -6610,8 +6631,9 @@
         updateSkyscraperInteriors();
         updateNPCs(dt, elapsed);
 
-        sunLight.position.set(player.x + 78, 130, player.z + 52);
-        sunLight.target.position.set(player.x, 0, player.z);
+        const sunY = Math.max(0, player.y);
+        sunLight.position.set(player.x + 78, sunY + 130, player.z + 52);
+        sunLight.target.position.set(player.x, sunY, player.z);
         sunLight.target.updateMatrixWorld();
 
         updateZoneAndPrompts();
@@ -7245,12 +7267,13 @@
 
       // ---------- ATMOSPHERE, SNOW & WADING ----------
       const bio = { base: null, snow: null, last: 'city' };
+      const bioC = {};
       function updateBiomeAtmosphere(dt, elapsed) {
         const b = biomeAt(player.x, player.z);
         if (!bio.base) bio.base = scene.fog.color.clone();
         const tgt = { alpine: [0xdbe9f4, 0.0062], woods: [0x9ccaa6, 0.0040], cove: [0xaee2f4, 0.0018] }[b];
         const k = Math.min(1, dt * 1.5);
-        scene.fog.color.lerp(tgt ? new THREE.Color(tgt[0]) : bio.base, k);
+        scene.fog.color.lerp(tgt ? (bioC[tgt[0]] || (bioC[tgt[0]] = new THREE.Color(tgt[0]))) : bio.base, k);
         scene.fog.density += ((tgt ? tgt[1] : 0.0024) - scene.fog.density) * k;
         if (b !== bio.last) {
           bio.last = b;
@@ -7314,16 +7337,21 @@
       function ridge(x,z,o){let a=.5,f=1,s=0;for(let k=0;k<(o||5);k++){s+=a*(1-Math.abs(vnoise(x*f,z*f)*2-1));f*=2.1;a*=.5;}return s;}
       function roadC(z){const t=-170-z;return 116+64*Math.sin(t*0.019)+24*Math.sin(t*0.052+1);}
       function roadH(z){return 0.2+Math.min(82,(-170-z)*0.16);}
+      function riverX(z){return roadC(z)-72+14*Math.sin(z*.04);}
       function terrainH(x,z){
         if(z>-170) return -99;
-        const t=-170-z, env=sstep(0,80,t);
-        let m=env*(18+ridge(x*0.0085,z*0.0085)*260*(0.35+0.65*sstep(30,300,t))+fbm(x*0.03,z*0.03)*14);
-        m=Math.max(m,roadH(z)*0.85);
-        const w=sstep(6,30,Math.abs(x-roadC(z)));
-        return roadH(z)*(1-w)+(0.2+m)*w;
+        const t=-170-z, env=sstep(0,120,t);
+        const wx=x+(fbm(x*.006+9,z*.006)-.5)*90, wz=z+(fbm(x*.006,z*.006+4)-.5)*90;
+        const rise=.3+.7*sstep(30,320,t);
+        const mass=fbm(wx*.0042,wz*.0042,4), pk=Math.pow(fbm(wx*.0036+3,wz*.0036,5),3);
+        let m=env*(8+(mass*mass*60+pk*300)*rise+fbm(x*.025,z*.025,4)*9+ridge(x*.018,z*.018,3)*8*sstep(40,120,t));
+        m=Math.max(m,roadH(z)*.85);
+        const w=sstep(8,64,Math.abs(x-roadC(z)));
+        const hh=roadH(z)*(1-w)+(0.2+m)*w, cv=5*(1-sstep(3,18,Math.abs(x-riverX(z))))*sstep(20,120,t);
+        return cv>0.01?Math.max(.3,hh-cv):hh;
       }
-      const SCX=20,SCZ=-30,SFY=-40;
-      function sewerFloor(x,z){const r=Math.hypot(x-SCX,z-SCZ);return r<50?SFY-5*(1-sstep(8,34,r)):SFY;}
+      const SCX=20,SCZ=-30,SFY=-9;
+      function sewerFloor(){return SFY;}
       const rockMat=new THREE.MeshStandardMaterial({color:0x5a554d,roughness:1,flatShading:true});
       const pipeMat=new THREE.MeshStandardMaterial({color:0x6f7f77,roughness:.8,metalness:.35,side:THREE.BackSide});
       const concMat=new THREE.MeshStandardMaterial({color:0x7d8280,roughness:.95});
@@ -7332,16 +7360,21 @@
 
       // ---- Mountains with winding road ----
       (function buildMountains(){
-        const X0=-138,X1=370,Z0=-170,Z1=-590,SX=170,SZ=150;
+        const X0=-138,X1=370,Z0=-170,Z1=-590,SX=254,SZ=210;
         const g=new THREE.PlaneGeometry(X1-X0,Z0-Z1,SX,SZ); g.rotateX(-Math.PI/2);
-        const p=g.attributes.position, col=new Float32Array(p.count*3), c=new THREE.Color();
+        const p=g.attributes.position, col=new Float32Array(p.count*3), c=new THREE.Color(), c2=new THREE.Color(), stv=SX+1, Hh=new Float32Array(p.count), dx=(X1-X0)/SX, dz=(Z0-Z1)/SZ;
+        for(let i=0;i<p.count;i++){const x=p.getX(i)+(X0+X1)/2, z=p.getZ(i)+(Z0+Z1)/2, h=terrainH(x,z);Hh[i]=h;p.setXYZ(i,x,h-0.1,z);}
         for(let i=0;i<p.count;i++){
-          const x=p.getX(i)+(X0+X1)/2, z=p.getZ(i)+(Z0+Z1)/2, h=terrainH(x,z);
-          p.setXYZ(i,x,h-0.1,z);
-          const sl=Math.abs(terrainH(x+3,z)-terrainH(x-3,z))/6+Math.abs(terrainH(x,z+3)-terrainH(x,z-3))/6, n=fbm(x*.08,z*.08,3);
-          if(h>165+n*25) c.set(0xeef3f8); else if(sl>.62||h>120) c.set(0x6d655b).lerp(new THREE.Color(0x8a8175),n);
-          else if(h>55) c.set(0x3f5a33).lerp(new THREE.Color(0x6a6f4a),n); else c.set(0x4f7339).lerp(new THREE.Color(0x6e8a45),n);
-          if(sl>.9) c.lerp(new THREE.Color(0x5a5249),.6);
+          const x=p.getX(i), z=p.getZ(i), h=Hh[i], cx=i%stv, cz=(i/stv)|0;
+          const il=cx>0?i-1:i, ir=cx<SX?i+1:i, iu=cz>0?i-stv:i, id=cz<SZ?i+stv:i;
+          const sl=Math.abs(Hh[ir]-Hh[il])/(2*dx)+Math.abs(Hh[id]-Hh[iu])/(2*dz), n=fbm(x*.08,z*.08,3), n2=fbm(x*.02+7,z*.02,3), snowLine=150+n*30;
+          c.set(0x547a3a).lerp(c2.set(0x6e8a45),n);
+          c.lerp(c2.set(0x34502f),sstep(35,70,h));
+          c.lerp(c2.set(0x8a8070),sstep(95,140,h));
+          c.lerp(c2.set(0x6d655b).lerp(new THREE.Color(0x8a8175),n),sstep(.4,.85,sl));
+          if(sl>.4) c.multiplyScalar(.92+.08*Math.sin(h*.45+n*6));
+          c.lerp(c2.set(0xf2f6fa),sstep(snowLine-12,snowLine+8,h)*(1-sstep(.7,1.0,sl)));
+          c.multiplyScalar(.9+.2*n2);
           col[i*3]=c.r;col[i*3+1]=c.g;col[i*3+2]=c.b;
         }
         g.setAttribute('color',new THREE.BufferAttribute(col,3)); g.computeVertexNormals();
@@ -7355,77 +7388,86 @@
         ribbon(5.2,0.05,0x23262b); ribbon(0.12,0.08,0xe9c33a);
         // pines + rocks
         const pineG=new THREE.ConeGeometry(2.1,8,7);pineG.translate(0,4.5,0);
-        const pines=new THREE.InstancedMesh(pineG,new THREE.MeshStandardMaterial({color:0x1f3d24,roughness:1,flatShading:true}),900);
-        const rocks=new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1.6,0),rockMat,260);
+        const pines=new THREE.InstancedMesh(pineG,new THREE.MeshStandardMaterial({color:0x1f3d24,roughness:1,flatShading:true}),1500);
+        const rocks=new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1.6,0),rockMat,420);
         const dm=new THREE.Object3D();let np=0,nr=0;
-        for(let k=0;k<6000&&(np<900||nr<260);k++){
+        for(let k=0;k<16000&&(np<1500||nr<420);k++){
           const x=X0+8+Math.random()*(X1-X0-16),z=-175-Math.random()*400,h=terrainH(x,z),d=Math.abs(x-roadC(z));
           if(d<11) continue;
           const sl=Math.abs(terrainH(x+3,z)-terrainH(x-3,z))/6;
-          if(np<900&&h>4&&h<95&&sl<.55&&fbm(x*.05,z*.05,2)>.42){dm.position.set(x,h-.2,z);const s=.8+Math.random()*1.3;dm.scale.set(s,s*(.9+Math.random()*.6),s);dm.rotation.set(0,Math.random()*6,0);dm.updateMatrix();pines.setMatrixAt(np++,dm.matrix);}
-          else if(nr<260&&sl>.3){dm.position.set(x,h,z);const s=.6+Math.random()*2.2;dm.scale.set(s,s*.7,s);dm.rotation.set(Math.random()*3,Math.random()*3,0);dm.updateMatrix();rocks.setMatrixAt(nr++,dm.matrix);}
+          if(np<1500&&h>4&&h<95&&sl<.55&&fbm(x*.05,z*.05,2)>.42){dm.position.set(x,h-.2,z);const s=.8+Math.random()*1.3;dm.scale.set(s,s*(.9+Math.random()*.6),s);dm.rotation.set(0,Math.random()*6,0);dm.updateMatrix();pines.setMatrixAt(np++,dm.matrix);}
+          else if(nr<420&&sl>.3){dm.position.set(x,h,z);const s=.6+Math.random()*2.2;dm.scale.set(s,s*.7,s);dm.rotation.set(Math.random()*3,Math.random()*3,0);dm.updateMatrix();rocks.setMatrixAt(nr++,dm.matrix);}
         }
         pines.count=np;rocks.count=nr;pines.castShadow=true;scene.add(pines,rocks);
+        {const rp=[],ri=[],RW=5;let k=0;
+          for(let z=-176;z>=-584;z-=3){const cx=riverX(z),y=Math.max(terrainH(cx,z),.3)+1.1;rp.push(cx-RW,y,z,cx+RW,y,z);if(k>0){const a=(k-1)*2;ri.push(a,a+2,a+1,a+1,a+2,a+3);}k++;}
+          const rg=new THREE.BufferGeometry();rg.setAttribute('position',new THREE.Float32BufferAttribute(rp,3));rg.setIndex(ri);rg.computeVertexNormals();
+          scene.add(new THREE.Mesh(rg,new THREE.MeshStandardMaterial({color:0x3c8aa6,roughness:.12,metalness:.25,transparent:true,opacity:.8,side:THREE.DoubleSide})));}
         camera.far=1200;camera.updateProjectionMatrix();
       })();
 
-      // ---- Underground sewer: pipes + cavern ----
+      // ---- Sewer network: real tunnels beneath the city streets (no teleport) ----
       const manholes=[[-4,24],[48,-16],[-40,-30],[20,-66]];
-      const sewerLights=[];
+      const sewerLights=[], manholeCovers=[], sRects=[];
       (function buildSewer(){
         const root=new THREE.Group();scene.add(root);
-        function arm(axis,a,b){
-          const L=Math.abs(b-a),mid=(a+b)/2,x=axis==='x';
-          const cyl=new THREE.Mesh(new THREE.CylinderGeometry(5.4,5.4,L,28,1,true),pipeMat);
-          if(x){cyl.rotation.z=Math.PI/2;cyl.position.set(mid,SFY+3.6,SCZ);}else{cyl.rotation.x=Math.PI/2;cyl.position.set(SCX,SFY+3.6,mid);}
-          root.add(cyl);
-          const fl=new THREE.Mesh(new THREE.BoxGeometry(x?L:6.4,.3,x?6.4:L),concMat);fl.position.set(x?mid:SCX,SFY-.15,x?SCZ:mid);root.add(fl);
-          const wt=new THREE.Mesh(new THREE.BoxGeometry(x?L:2.2,.1,x?2.2:L),waterMat);wt.position.set(x?mid:SCX,SFY-.02,x?SCZ:mid);root.add(wt);
-          for(let t=a+8*Math.sign(b-a);Math.abs(t-mid)<L/2;t+=12*Math.sign(b-a)){
-            const rib=new THREE.Mesh(new THREE.TorusGeometry(5.4,.28,6,28),new THREE.MeshStandardMaterial({color:0x4b5650,metalness:.5,roughness:.6}));
-            if(x){rib.rotation.y=Math.PI/2;rib.position.set(t,SFY+3.6,SCZ);}else rib.position.set(SCX,SFY+3.6,t);root.add(rib);}
-          for(let t=a+14*Math.sign(b-a);Math.abs(t-mid)<L/2;t+=24*Math.sign(b-a)){
-            const lm=new THREE.Mesh(new THREE.BoxGeometry(.5,.3,.5),lampMat);lm.position.set(x?t:SCX+4.6,SFY+6.6,x?SCZ+4.6:t);root.add(lm);
-            if(sewerLights.length<10){const pl=new THREE.PointLight(0xffc766,30,30,2);pl.position.copy(lm.position);pl.visible=false;root.add(pl);sewerLights.push(pl);}}
-          const lo=Math.min(a,b),hi=Math.max(a,b);
-          for(const s of[-1,1]){const o=s*4.2;if(x)addWorldBox(lo,hi,SFY-2,SFY+10,SCZ+o-.8,SCZ+o+.8,'solid',false);else addWorldBox(SCX+o-.8,SCX+o+.8,SFY-2,SFY+10,lo,hi,'solid',false);}
-          if(x)addWorldBox(a-1,a+1,SFY-2,SFY+10,SCZ-5,SCZ+5,'solid',false);
-        }
-        arm('x',SCX+44,200);arm('x',-125,SCX-44);arm('z',SCZ-44,-150);arm('z',SCZ+44,180);
-        // cavern floor, dome, rock wall
-        const fg=new THREE.PlaneGeometry(104,104,52,52);fg.rotateX(-Math.PI/2);const fp=fg.attributes.position;
-        for(let i=0;i<fp.count;i++){fp.setY(i,sewerFloor(fp.getX(i)+SCX,fp.getZ(i)+SCZ)-SFY+(fbm(fp.getX(i)*.2,fp.getZ(i)*.2,3)-.4)*.5);}
-        fg.computeVertexNormals();const fm=new THREE.Mesh(fg,new THREE.MeshStandardMaterial({color:0x6a6760,roughness:1,flatShading:true}));fm.position.set(SCX,SFY,SCZ);root.add(fm);
-        const dg=new THREE.IcosahedronGeometry(54,4),dp=dg.attributes.position;
-        for(let i=0;i<dp.count;i++){const x=dp.getX(i),y=dp.getY(i),z=dp.getZ(i),k=1+(fbm(x*.07+3,z*.07+y*.07,4)-.5)*.14;dp.setXYZ(i,x*k,y*k*.6,z*k);}
-        dg.computeVertexNormals();const dome=new THREE.Mesh(dg,new THREE.MeshStandardMaterial({color:0x4a463f,roughness:1,flatShading:true,side:THREE.BackSide}));dome.position.set(SCX,SFY,SCZ);root.add(dome);
-        const rg=new THREE.BoxGeometry(6.4,13,6.4);
-        for(let i=0;i<56;i++){const a=i/56*Math.PI*2;if([0,1,2,3].some(k=>Math.abs(((a-k*Math.PI/2+Math.PI*3)%(Math.PI*2))-Math.PI)<.17&&false))continue;
-          const d=((a%(Math.PI/2))+Math.PI/2)%(Math.PI/2),near=Math.min(d,Math.PI/2-d)<.15;if(near)continue;
-          const x=SCX+Math.cos(a)*45.5,z=SCZ+Math.sin(a)*45.5,r=new THREE.Mesh(rg,rockMat);r.position.set(x,SFY+5,z);r.rotation.y=a+Math.random();r.scale.set(1+Math.random()*.5,.8+Math.random()*.6,1+Math.random()*.5);root.add(r);
-          addWorldBox(x-3.4,x+3.4,SFY-2,SFY+11,z-3.4,z+3.4,'solid',false);}
-        // pillars, central pool, feeder pipes with waterfalls
-        for(let i=0;i<6;i++){const a=i/6*Math.PI*2+.3,x=SCX+Math.cos(a)*24,z=SCZ+Math.sin(a)*24;
-          const pl=new THREE.Mesh(new THREE.CylinderGeometry(2.4,3.2,28,10),rockMat);pl.position.set(x,SFY+10,z);root.add(pl);addWorldBox(x-2.6,x+2.6,SFY-2,SFY+20,z-2.6,z+2.6,'solid',false);}
-        const pool=new THREE.Mesh(new THREE.CylinderGeometry(13,13,.3,40),waterMat);pool.position.set(SCX,SFY-3.6,SCZ);root.add(pool);
-        for(let i=0;i<4;i++){const a=i/4*Math.PI*2+Math.PI/4,x=SCX+Math.cos(a)*14,z=SCZ+Math.sin(a)*14;
-          const fp2=new THREE.Mesh(new THREE.CylinderGeometry(2.3,2.3,16,16),new THREE.MeshStandardMaterial({color:0x5d6b64,metalness:.5,roughness:.6}));fp2.position.set(x,SFY+17,z);root.add(fp2);
-          const wf=new THREE.Mesh(new THREE.CylinderGeometry(1.6,1.9,17,12,1,true),new THREE.MeshBasicMaterial({color:0x9ad9c0,transparent:true,opacity:.4}));wf.position.set(x,SFY+0.5,z);root.add(wf);}
-        for(let i=0;i<4;i++){const a=i/4*Math.PI*2+.8,pl=new THREE.PointLight(i%2?0x58ffc0:0xffb050,i%2?60:90,60,2);pl.position.set(SCX+Math.cos(a)*18,SFY+8,SCZ+Math.sin(a)*18);pl.visible=false;root.add(pl);sewerLights.push(pl);}
-        // manhole covers + ladder markers
-        manholes.forEach(m=>{const c=new THREE.Mesh(new THREE.CylinderGeometry(.75,.75,.06,20),new THREE.MeshStandardMaterial({color:0x2b2e31,metalness:.8,roughness:.5}));c.position.set(m[0],.22,m[1]);scene.add(c);});
-        [[SCX-44-80,SCZ],[SCX+44+110,SCZ],[SCX,SCZ-44-60],[SCX,SCZ+44+70]].forEach((p,i)=>{const lad=new THREE.Mesh(new THREE.BoxGeometry(1.2,8,.3),new THREE.MeshBasicMaterial({color:0x38bdf8}));lad.position.set(p[0],SFY+4,p[1]);root.add(lad);});
-        root.userData.ladders=[[SCX-124,SCZ],[SCX+148,SCZ],[SCX,SCZ-104],[SCX,SCZ+110]];
-        buildSewer.ladders=root.userData.ladders;
+        const SW=5.4,H2=SW/2,WH=4.6,CY=SFY+WH,sg=new THREE.BoxGeometry(1,1,1);
+        const wallM=new THREE.MeshStandardMaterial({color:0x6b706c,roughness:.95}),flrM=new THREE.MeshStandardMaterial({color:0x585c58,roughness:.9}),
+              pipeM=new THREE.MeshStandardMaterial({color:0x7b5a3c,metalness:.5,roughness:.6}),blueM=new THREE.MeshBasicMaterial({color:0x38bdf8});
+        const box=(m,x,y,z,a,b,d)=>{const o=new THREE.Mesh(sg,m);o.position.set(x,y,z);o.scale.set(a,b,d);root.add(o);return o;};
+        const N={A:[-130,-30],B:[-40,-30],C:[20,-30],D:[48,-30],E:[150,-30],F:[48,-16],G:[20,-66],H:[20,24],I:[20,110],J:[-4,24]};
+        const E=[['A','B'],['B','C'],['C','D'],['D','E'],['D','F'],['C','G'],['C','H'],['H','I'],['H','J']],exits=['J','F','B','G'];
+        ['A','E','I'].forEach(k=>{const q=N[k];if(!collidesHorizontally(q[0],q[1],.2,1.8,1.4)&&!collidesHorizontally(q[0],q[1]+1,.2,1.8,1.4)){exits.push(k);manholes.push(q.slice());}});
+        const dirOf=(p,q)=>p[0]!==q[0]?(q[0]>p[0]?'+x':'-x'):(q[1]>p[1]?'+z':'-z'),has={};
+        for(const k in N)has[k]=new Set();
+        for(const [a,b] of E){has[a].add(dirOf(N[a],N[b]));has[b].add(dirOf(N[b],N[a]));}
+        const holeShape=new THREE.Shape();holeShape.moveTo(-H2,-H2);holeShape.lineTo(H2,-H2);holeShape.lineTo(H2,H2);holeShape.lineTo(-H2,H2);holeShape.closePath();
+        const hp=new THREE.Path();hp.absarc(0,0,1.05,0,Math.PI*2,true);holeShape.holes.push(hp);
+        const holeGeo=new THREE.ExtrudeGeometry(holeShape,{depth:.6,bevelEnabled:false});holeGeo.rotateX(Math.PI/2);
+        const holeM=new THREE.MeshStandardMaterial({color:0x5a5e5a,roughness:.95,side:THREE.DoubleSide}),lamps=[];
+        for(const k in N){const [x,z]=N[k],ex=exits.indexOf(k);
+          sRects.push([x-H2,x+H2,z-H2,z+H2]);
+          box(flrM,x,SFY-.25,z,SW,.5,SW);
+          if(ex<0)box(wallM,x,CY+.3,z,SW,.6,SW);
+          else{const c=new THREE.Mesh(holeGeo,holeM);c.position.set(x,CY+.6,z);root.add(c);
+            const sh=new THREE.Mesh(new THREE.CylinderGeometry(1.05,1.05,-SFY+.1,16,1,true),new THREE.MeshStandardMaterial({color:0x4d514d,roughness:1,side:THREE.BackSide}));sh.position.set(x,(SFY+.1)/2,z);root.add(sh);
+            for(const sx of[-.3,.3])box(blueM,x+sx,SFY/2,z+.95,.05,-SFY,.05);
+            for(let y=SFY+.6;y<0;y+=.6)box(blueM,x,y,z+.95,.6,.05,.05);
+            lamps.push([x,CY-.1,z+1.6]);}
+          for(const d of['+x','-x','+z','-z'])if(!has[k].has(d)){const sgn=d[0]==='+'?1:-1;
+            if(d[1]==='x')box(wallM,x+sgn*(H2+.25),SFY+WH/2,z,.5,WH,SW+1);else box(wallM,x,SFY+WH/2,z+sgn*(H2+.25),SW+1,WH,.5);}}
+        for(const [a,b] of E){const A=N[a],B=N[b],ax=A[1]===B[1],cx=(A[0]+B[0])/2,cz=(A[1]+B[1])/2,L=(ax?Math.abs(A[0]-B[0]):Math.abs(A[1]-B[1]))-SW;
+          sRects.push([Math.min(A[0],B[0])-H2,Math.max(A[0],B[0])+H2,Math.min(A[1],B[1])-H2,Math.max(A[1],B[1])+H2]);
+          if(ax){box(flrM,cx,SFY-.25,cz,L,.5,SW);box(wallM,cx,CY+.3,cz,L,.6,SW);box(waterMat,cx,SFY+.04,cz,L,.06,1.5);
+            for(const sd of[-1,1])box(wallM,cx,SFY+WH/2,cz+sd*(H2+.25),L,WH,.5);}
+          else{box(flrM,cx,SFY-.25,cz,SW,.5,L);box(wallM,cx,CY+.3,cz,SW,.6,L);box(waterMat,cx,SFY+.04,cz,1.5,.06,L);
+            for(const sd of[-1,1])box(wallM,cx+sd*(H2+.25),SFY+WH/2,cz,.5,WH,L);}
+          const pg=new THREE.Mesh(new THREE.CylinderGeometry(.28,.28,L,10),pipeM);
+          if(ax){pg.rotation.z=Math.PI/2;pg.position.set(cx,CY-.5,cz+H2-.6);}else{pg.rotation.x=Math.PI/2;pg.position.set(cx+H2-.6,CY-.5,cz);}root.add(pg);
+          for(let t=-L/2+4;t<L/2-2;t+=9)lamps.push(ax?[cx+t,CY-.1,cz]:[cx,CY-.1,cz+t]);}
+        const lm=new THREE.InstancedMesh(sg,lampMat,lamps.length),dm=new THREE.Object3D();
+        lamps.forEach((l,i)=>{dm.position.set(l[0],l[1],l[2]);dm.scale.set(.6,.12,.6);dm.updateMatrix();lm.setMatrixAt(i,dm.matrix);});root.add(lm);
+        const cvG=new THREE.CylinderGeometry(.75,.75,.06,20),cvM=new THREE.MeshStandardMaterial({color:0x2b2e31,metalness:.8,roughness:.5});
+        manholes.forEach(m=>{const c=new THREE.Mesh(cvG,cvM);c.position.set(m[0],.22,m[1]);scene.add(c);manholeCovers.push(c);});
       })();
-      const ladderPts=[[-100,-30],[170,-30],[20,-130],[20,140]], ladderExit=[manholes[2],manholes[1],manholes[3],manholes[0]];
-      const under=()=>player.y<-12;
-      function goUnder(i){player.x=SCX+Math.cos(i*1.57+.7)*30;player.z=SCZ+Math.sin(i*1.57+.7)*30;player.y=SFY-1;player.vy=0;player.grounded=false;pushFeed('SEWER SYSTEM — FOLLOW THE PIPES. [E] AT BLUE LADDERS TO CLIMB OUT','border-l-emerald-400');}
-      function goUp(i){const m=ladderExit[i];player.x=m[0]+1.5;player.z=m[1];player.y=.4;player.vy=0;pushFeed('BACK ON THE STREETS','border-l-sky-400');}
+      function sewerOK(x,z,r){for(let i=0;i<sRects.length;i++){const q=sRects[i];if(x>=q[0]+r&&x<=q[1]-r&&z>=q[2]+r&&z<=q[3]-r)return true;}return false;}
+      const under=()=>player.y<-1.2;
+      const climb={on:false,dir:0,t:0,i:0};
+      function nearestManhole(r){for(let i=0;i<manholes.length;i++)if(Math.hypot(player.x-manholes[i][0],player.z-manholes[i][1])<r)return i;return -1;}
+      function startClimb(dir,i){climb.on=true;climb.dir=dir;if(dir<0)reviveRats();climb.t=0;climb.i=i;manholeCovers[i].visible=false;sfx.mantle();
+        pushFeed(dir<0?'DESCENDING INTO THE SEWERS — TUNNELS RUN UNDER THE STREETS':'CLIMBING OUT',dir<0?'border-l-emerald-400':'border-l-sky-400');}
+      function climbFrame(dt){
+        if(!climb.on)return;
+        climb.t=Math.min(1,climb.t+dt/2.2);
+        const e=climb.t*climb.t*(3-2*climb.t),top=.18,bot=SFY+.02,m=manholes[climb.i];
+        player.x=m[0];player.z=m[1];player.vy=0;player.grounded=true;
+        player.y=climb.dir<0?top+(bot-top)*e:bot+(top-bot)*e;player.peakAirY=player.y;
+        if(climb.t>=1){climb.on=false;manholeCovers[climb.i].visible=true;}
+      }
       window.addEventListener('keydown',e=>{
-        if(e.code!=='KeyE'||gameState.screen!=='playing'||gameState.inCar)return;
-        if(under()){for(let i=0;i<4;i++)if(Math.hypot(player.x-ladderPts[i][0],player.z-ladderPts[i][1])<9)return goUp(i);}
-        else for(let i=0;i<manholes.length;i++)if(Math.hypot(player.x-manholes[i][0],player.z-manholes[i][1])<2.4)return goUnder(i);
+        if(e.code!=='KeyE'||gameState.screen!=='playing'||gameState.inCar||climb.on)return;
+        const u=under(),i=nearestManhole(u?3.2:2.4);
+        if(i>=0)startClimb(u?1:-1,i);
       });
 
       // ---- Police & wanted level ----
@@ -7449,8 +7491,9 @@
         lr.position.set(.45,1.58,-.2);lb.position.set(-.45,1.58,-.2);g.add(lr,lb);
         for(const sx of[-1,1])for(const sz of[-1.4,1.4]){const w=new THREE.Mesh(new THREE.CylinderGeometry(.38,.38,.28,14),new THREE.MeshStandardMaterial({color:0x111}));w.rotation.z=Math.PI/2;w.position.set(sx*1.02,.38,sz);g.add(w);}
         g.rotation.order='YXZ';scene.add(g);AO.cars.push({mesh:g,x,z,yaw:0,sp:0,hp:240,lr,lb,stuck:0});}
-      function removeCop(c){scene.remove(c.mesh);AO.cops.splice(AO.cops.indexOf(c),1);}
-      function tracer(x1,y1,z1,x2,y2,z2){const l=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x1,y1,z1),new THREE.Vector3(x2,y2,z2)]),new THREE.LineBasicMaterial({color:0xfff2a8}));scene.add(l);setTimeout(()=>scene.remove(l),70);}
+      function removeCop(c){scene.remove(c.mesh);c.mesh.traverse(o=>{if(o.geometry)o.geometry.dispose();});AO.cops.splice(AO.cops.indexOf(c),1);}
+      const tracerMat=new THREE.LineBasicMaterial({color:0xfff2a8});
+      function tracer(x1,y1,z1,x2,y2,z2){const g=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x1,y1,z1),new THREE.Vector3(x2,y2,z2)]);const l=new THREE.Line(g,tracerMat);scene.add(l);setTimeout(()=>{scene.remove(l);g.dispose();},70);}
       function hurtCop(c,a){c.hp-=a;spawnParticles(c.x,1.2,c.z,0xdc2626,6,4);crime(.15);if(c.hp<=0){gameState.cash+=40;pushFeed('OFFICER DOWN (+$40)','border-l-amber-400');crime(.5);removeCop(c);}}
       function copFrame(dt,t){
         const s=stars(),pu=under();
@@ -7464,7 +7507,7 @@
         // melee & projectile damage
         const atk=player.attackTimer>0&&!player.hitApplied?0:0;
         if(player.attackTimer>0&&AO.lastAtk<=0){AO.lastAtk=.4;const fx=Math.sin(player.yaw+Math.PI),fz=Math.cos(player.yaw+Math.PI);
-          for(const c of AO.cops.slice()){const dx=c.x-player.x,dz=c.z-player.z,d=Math.hypot(dx,dz);if(d<2.9&&(dx*fx+dz*fz)/Math.max(.1,d)>.2)hurtCop(c,(RIGHT_WEAPONS[gameState.activeRightWeapon]||{damage:18}).damage);}}
+          for(const c of AO.cops.slice()){const dx=c.x-player.x,dz=c.z-player.z,d=Math.hypot(dx,dz);if(d<2.9&&Math.abs(player.y-c.mesh.position.y)<2.5&&(dx*fx+dz*fz)/Math.max(.1,d)>.2)hurtCop(c,(RIGHT_WEAPONS[gameState.activeRightWeapon]||{damage:18}).damage);}}
         AO.lastAtk-=dt;
         for(const w of projectileWieners)for(const c of AO.cops.slice())if(!w.copHit&&Math.hypot(w.x-c.x,w.z-c.z)<1&&w.y<c.mesh.position.y+2&&w.y>c.mesh.position.y-.2){w.copHit=1;hurtCop(c,55);}
         // foot cops
@@ -7475,7 +7518,7 @@
           if(!collidesHorizontally(c.x+vx,c.z,.2,1.7,.4))c.x+=vx;if(!collidesHorizontally(c.x,c.z+vz,.2,1.7,.4))c.z+=vz;
           c.mesh.position.set(c.x,computeSupportFloor(c.x,c.z,c.mesh.position.y+.6,.4)+Math.abs(Math.sin(t*9+c.x))*.04*(want>0),c.z);c.mesh.rotation.y=Math.atan2(dx,dz);
           c.shoot-=dt;c.atk-=dt;
-          if(d<2.2&&c.atk<=0){c.atk=.9;applyPlayerDamage(9,'OFFICER BATON');}
+          if(d<2.2&&c.atk<=0&&Math.abs(py-c.mesh.position.y)<2.5){c.atk=.9;applyPlayerDamage(9,'OFFICER BATON');}
           else if(d<26&&d>2.5&&c.shoot<=0&&Math.abs(py-c.mesh.position.y)<4){c.shoot=1.05+Math.random()*.5;tracer(c.x,1.3,c.z,player.x+(Math.random()-.5)*.8,player.y+1,player.z+(Math.random()-.5)*.8);if(Math.random()<.45)applyPlayerDamage(5+s,'POLICE FIRE');}
         }
         // police cars
@@ -7490,9 +7533,9 @@
           c.mesh.position.set(c.x,gy+.02,c.z);c.mesh.rotation.y=c.yaw;
           c.mesh.rotation.x=-Math.atan2(terrainH(c.x+Math.sin(c.yaw)*2,c.z+Math.cos(c.yaw)*2)-terrainH(c.x-Math.sin(c.yaw)*2,c.z-Math.cos(c.yaw)*2),4)*(c.z<-170?1:0);
           const fl=Math.sin(t*14)>0;c.lr.visible=fl;c.lb.visible=!fl;
-          if(d<3.3&&Math.abs(c.sp)>5){applyPlayerDamage(10,'POLICE RAM');c.sp*=.4;if(gameState.inCar){const v=vehicles[gameState.activeCarIndex];v.speed*=.7;}}
+          if(d<3.3&&!pu&&Math.abs(c.sp)>5){applyPlayerDamage(10,'POLICE RAM');c.sp*=.4;if(gameState.inCar){const v=vehicles[gameState.activeCarIndex];v.speed*=.7;}}
           if(gameState.inCar){const v=vehicles[gameState.activeCarIndex];if(Math.hypot(v.x-c.x,v.z-c.z)<3&&Math.abs(v.speed)>7){c.hp-=Math.abs(v.speed)*5;v.speed*=.8;spawnParticles(c.x,1,c.z,0xf59e0b,8,6);}}
-          if(c.hp<=0||c.stuck>6||(s===0&&d>90)){spawnParticles(c.x,1,c.z,0xf97316,16,8);scene.remove(c.mesh);AO.cars.splice(AO.cars.indexOf(c),1);}
+          if(c.hp<=0||c.stuck>6||(s===0&&d>90)){spawnParticles(c.x,1,c.z,0xf97316,16,8);scene.remove(c.mesh);c.mesh.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});AO.cars.splice(AO.cars.indexOf(c),1);}
         }
         // wanted HUD
         const st=document.getElementById('ao-stars');if(st){const n=stars();st.style.display=n>0?'flex':'none';st.innerHTML=[1,2,3,4,5].map(i=>`<span style="color:${i<=n?(Math.sin(t*10)>0?'#ef4444':'#3b82f6'):'#475569'}">★</span>`).join('');}
@@ -7544,16 +7587,38 @@
         const f=(x,z,col,r)=>{ctx.fillStyle=col;ctx.beginPath();ctx.arc(X(x),Y(z),r,0,6.3);ctx.fill();};
         if(!under()){AO.cops.forEach(c=>f(c.x,c.z,'#3b82f6',3));AO.cars.forEach(c=>f(c.x,c.z,Math.sin(performance.now()/120)>0?'#ef4444':'#3b82f6',4.5));manholes.forEach(m=>f(m[0],m[1],'#34d399',2));}
       };
+      const rats=[],ratG=new THREE.BoxGeometry(.22,.16,.5),ratTG=new THREE.BoxGeometry(.03,.03,.35),ratM=new THREE.MeshStandardMaterial({color:0x3b332c,roughness:1});let ratHit=0;
+      [[-110,-30],[-70,-30],[-20,-30],[34,-30],[100,-30],[20,-50],[20,-10],[20,50],[20,85],[0,24]].forEach((q,i)=>{if(!sewerOK(q[0],q[1],.3))return;
+        const m=new THREE.Mesh(ratG,ratM),tl=new THREE.Mesh(ratTG,ratM);tl.position.z=-.38;m.add(tl);m.position.set(q[0],SFY+.1,q[1]);scene.add(m);
+        rats.push({mesh:m,x:q[0],z:q[1],hx:q[0],hz:q[1],bite:0,ph:i*1.7,dead:false});});
+      function reviveRats(){for(const r of rats){r.dead=false;r.x=r.hx;r.z=r.hz;r.mesh.visible=true;}}
+      function killRat(r){r.dead=true;r.mesh.visible=false;spawnParticles(r.x,SFY+.3,r.z,0x7c2d12,6,3);gameState.cash+=5;sfx.hit();}
+      function ratFrame(dt,t){
+        if(!under()||climb.on)return;
+        if(Math.random()<dt*.5)sfx.tone(1500+Math.random()*500,800,.06,'sine',.025);
+        const swing=player.attackTimer>0&&ratHit<=0;if(swing)ratHit=.4;ratHit-=dt;
+        const fx=Math.sin(player.yaw+Math.PI),fz=Math.cos(player.yaw+Math.PI);
+        for(const r of rats){if(r.dead)continue;
+          const dx=player.x-r.x,dz=player.z-r.z,d=Math.hypot(dx,dz)||1;let tx,tz,sp;
+          if(d<14){tx=dx/d;tz=dz/d;sp=d>.9?4.6:0;}else{tx=Math.sin(t*.7+r.ph);tz=Math.cos(t*.5+r.ph);sp=1.2;}
+          const nx=r.x+tx*sp*dt,nz=r.z+tz*sp*dt;if(sewerOK(nx,nz,.2)){r.x=nx;r.z=nz;}
+          r.mesh.position.set(r.x,SFY+.1+Math.abs(Math.sin(t*14+r.ph))*.04,r.z);r.mesh.rotation.y=Math.atan2(tx,tz);
+          r.bite-=dt;if(d<1&&r.bite<=0&&Math.abs(player.y-SFY)<2){r.bite=1;applyPlayerDamage(3,'SEWER RAT');sfx.tone(1800,1200,.05,'square',.03);}
+          const hit=(swing&&d<2.6&&(dx*fx+dz*fz)/d>.2)||projectileWieners.some(w=>Math.hypot(w.x-r.x,w.z-r.z)<.8&&Math.abs(w.y-(SFY+.2))<1.2);
+          if(hit)killRat(r);}
+      }
+      const hazeC=new THREE.Color(0xb8d4ea);
       function auraFrame(dt,t){
+        climbFrame(dt);ratFrame(dt,t);
         const u=under();
-        if(u!==AT.on){AT.on=u;if(u){scene.background=new THREE.Color(0x070a09);skyGroup.visible=false;}else{scene.background=AT.bg;skyGroup.visible=true;sunLight.intensity=AT.sun;hemiLight.intensity=AT.hemi;}sewerLights.forEach(l=>l.visible=u);uLight.visible=u;}
+        if(u!==AT.on){AT.on=u;if(u){scene.background=new THREE.Color(0x070a09);skyGroup.visible=false;}else{scene.background=AT.bg;{const hi=gameState.settings.graphics==='high';skyGroup.visible=hi;sunLight.intensity=hi?1.65:1.45;hemiLight.intensity=hi?.96:.88;}}sewerLights.forEach(l=>l.visible=u);uLight.visible=u;}
         if(u){scene.fog.color.set(0x0a100d);scene.fog.density=.016;sunLight.intensity=0;hemiLight.intensity=.22;uLight.position.set(player.x,player.y+2.2,player.z);
           sewerLights.forEach((l,i)=>{if(i<10&&Math.random()<.01)l.intensity=10+Math.random()*30;else if(i<10)l.intensity+=(30-l.intensity)*.1;});}
-        else if(player.z<-175){scene.fog.color.lerp(new THREE.Color(0xb8d4ea),.02);}
+        else if(player.z<-175){scene.fog.color.lerp(hazeC,.02);}
         copFrame(dt,t);suspFrame(dt,t);
         const cp=document.getElementById('ao-compass');if(cp){const d=['N','NE','E','SE','S','SW','W','NW'][((Math.round(((-player.yaw%6.283)+6.283)%6.283/.7854))+4)%8];cp.textContent=u?`SEWERS  ·  DEPTH ${Math.round(-player.y)}m`:`${d}  ·  ALT ${Math.max(0,Math.round(player.y))}m`;}
         const tp=document.getElementById('ao-tip');let msg='';
-        if(!gameState.inCar){if(u){for(let i=0;i<4;i++)if(Math.hypot(player.x-ladderPts[i][0],player.z-ladderPts[i][1])<9)msg='[E] CLIMB LADDER TO SURFACE';}
+        if(!gameState.inCar){if(u){for(let i=0;i<manholes.length;i++)if(Math.hypot(player.x-manholes[i][0],player.z-manholes[i][1])<3.2)msg='[E] CLIMB LADDER TO SURFACE';}
           else for(const m of manholes)if(Math.hypot(player.x-m[0],player.z-m[1])<2.4)msg='[E] ENTER SEWER';}
         if(tp){tp.style.display=msg?'block':'none';tp.textContent=msg;}
       }
@@ -7586,8 +7651,11 @@
           }
         }
 
+        skyGroup.position.copy(camera.position);
         renderer.render(scene, camera);
       }
+
+      document.addEventListener('visibilitychange', () => { lastTime = performance.now(); if (document.hidden && sfx.ctx && sfx.ctx.state === 'running') sfx.ctx.suspend().catch(() => {}); else if (!document.hidden && sfx.ctx && gameState.screen === 'playing') sfx.ctx.resume().catch(() => {}); });
 
       window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
