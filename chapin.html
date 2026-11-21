@@ -9,6 +9,9 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Oswald:wght@600;700&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script type="importmap">
+    {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"}}
+  </script>
   <style>
     * {
       box-sizing: border-box;
@@ -33,6 +36,37 @@
       height: 100vh;
       display: block;
       z-index: 0;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      filter: contrast(1.08) saturate(1.12) sepia(0.03);
+    }
+    #ps3-filter {
+      position: fixed;
+      inset: 0;
+      z-index: 29;
+      pointer-events: none;
+      opacity: 0.13;
+      mix-blend-mode: soft-light;
+      background:
+        repeating-linear-gradient(0deg, rgba(255,255,255,.16) 0 1px, rgba(0,0,0,.14) 1px 3px),
+        radial-gradient(ellipse at center, transparent 62%, rgba(5,8,14,.30) 100%);
+    }
+    .glass-panel {
+      border-radius: 2px !important;
+    }
+    .menu-btn,
+    .menu-btn-primary,
+    .glass-panel,
+    .glass-panel-amber {
+      font-variant-numeric: tabular-nums;
+    }
+    .menu-btn {
+      border-radius: 3px !important;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 5px 14px rgba(0,0,0,.42) !important;
+    }
+    .menu-btn-primary {
+      border-radius: 3px !important;
+      clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
     }
     /* All in-game overlays hidden by default until explicitly activated */
     #hud,
@@ -260,6 +294,7 @@
   </div>
   <!-- Fullscreen 3D WebGL Canvas -->
   <canvas id="game-canvas"></canvas>
+  <div id="ps3-filter" aria-hidden="true"></div>
 
   <!-- Hidden File Input for .JSON Save Import -->
   <input type="file" id="save-file-input" accept=".json,application/json" class="hidden" />
@@ -563,9 +598,8 @@
   <div id="start-menu" class="fixed inset-0 z-30 flex items-center justify-between bg-gradient-to-r from-slate-950/88 via-slate-950/55 to-transparent p-6 sm:p-14">
     <div class="max-w-lg w-full flex flex-col justify-between h-full max-h-[640px]">
       <div>
-        <h1 class="font-display text-5xl sm:text-7xl font-bold uppercase leading-none text-white tracking-tight drop-shadow-lg">
-          GRAND THEFT<br/>
-          <span class="text-amber-400">AURA</span>
+        <h1 class="drop-shadow-lg">
+          <img src="assets/images/title.png" alt="Grand Theft Aura" class="w-full max-w-[520px] h-auto object-contain" />
         </h1>
       </div>
 
@@ -597,22 +631,7 @@
         </button>
       </div>
 
-      <!-- Quick Reference Controls Card -->
-      <div class="glass-panel p-4 max-w-md" id="desktop-controls-overview">
-        <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold mb-2">CONTROLS OVERVIEW</div>
-        <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-slate-300">
-          <div><span class="text-white font-bold">WASD + SHIFT</span> Move / Sprint</div>
-          <div><span class="text-white font-bold">SPACE / C</span> Mantle / Crouch</div>
-          <div><span class="text-white font-bold">HOLD G</span> Pickpocket (sneak behind them)</div>
-          <div><span class="text-white font-bold">LMB (HOLD)</span> Rapid Fire / Punch</div>
-          <div><span class="text-white font-bold">RMB (CLICK)</span> Toggle Ballistic Aim</div>
-          <div><span class="text-white font-bold">Q / SCROLL</span> Weapon Wheel</div>
-          <div><span class="text-white font-bold">F / V</span> Drive &amp; Lift / Aerial POV</div>
-          <div><span class="text-white font-bold">B</span> Call Nuke Bomber (aim at open city)</div>
-          <div><span class="text-white font-bold">N</span> Toggle Auto Bomber Raids</div>
-        </div>
       </div>
-    </div>
   </div>
 
   <!-- =====================================================================
@@ -623,7 +642,9 @@
       <div class="flex items-center justify-between border-b border-white/15 pb-3 mb-5">
         <div>
           <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold">SIMULATION PAUSED</div>
-          <h2 class="font-display text-3xl uppercase text-white">GRAND THEFT AURA</h2>
+          <h2>
+            <img src="assets/images/title.png" alt="Grand Theft Aura" class="w-[220px] max-w-full h-auto object-contain mt-1" />
+          </h2>
         </div>
         <span id="pause-key-hint" class="text-xs font-tactical text-slate-400 border border-white/15 rounded px-2 py-0.5">[TAB]</span>
       </div>
@@ -703,6 +724,20 @@
         <p id="setting-gfx-detail" class="text-xs text-slate-400 mt-2 leading-relaxed">
           Textured PBR materials, atmospheric sky, and tier-scaled soft shadows keep the city detailed without wasting render budget.
         </p>
+      </div>
+
+      <div id="desktop-controls-overview" class="mb-6 pt-4 border-t border-white/15">
+        <div class="font-tactical text-sm font-bold uppercase text-slate-200 mb-3">COMPUTER CONTROLS</div>
+        <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px] text-slate-300">
+          <div><span class="text-amber-300 font-bold">WASD</span> MOVE</div>
+          <div><span class="text-amber-300 font-bold">SHIFT</span> SPRINT</div>
+          <div><span class="text-amber-300 font-bold">SPACE / C</span> MANTLE / CROUCH</div>
+          <div><span class="text-amber-300 font-bold">G</span> PICKPOCKET</div>
+          <div><span class="text-amber-300 font-bold">LMB / RMB</span> FIRE / AIM</div>
+          <div><span class="text-amber-300 font-bold">Q / SCROLL</span> WEAPON WHEEL</div>
+          <div><span class="text-amber-300 font-bold">F / V</span> VEHICLE / POV</div>
+          <div><span class="text-amber-300 font-bold">J</span> AIR BUNKER</div>
+        </div>
       </div>
 
       <div class="flex items-center justify-between pt-4 border-t border-white/15">
@@ -821,107 +856,10 @@
 
     async function init() {
       const THREE = await loadThreeWithFallback();
-
-      // =======================================================================
-      // 1. RIGHT-HAND WEAPON & LEFT-HAND ITEM DEFINITIONS
-      // =======================================================================
-      const MAX_HOTDOG_AMMO = 60;
-
-      const RIGHT_WEAPONS = {
-        fists: {
-          id: 'fists',
-          name: 'Fists',
-          damage: 18,
-          cooldown: 0.28,
-          reach: 2.05,
-          isRanged: false,
-          desc: 'Alternating left/right hook punches.',
-          svg: `<svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M7 4h3v6H7V4zm4-1h3v7h-3V3zm4 1h3v6h-3V4zM5 11h14v5a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4v-5z"/></svg>`
-        },
-        bat: {
-          id: 'bat',
-          name: 'Wooden Bat',
-          damage: 45,
-          cooldown: 0.46,
-          reach: 2.55,
-          isRanged: false,
-          desc: 'Seasoned ash slugger. Shatters crates and topples lampposts.',
-          svg: `<svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M18.7 3.3a2.4 2.4 0 0 1 3.4 3.4L10.5 18.3l-2.8-2.8L18.7 3.3zM6.3 16.9l2.8 2.8-3.2 2.2-1.8-1.8 2.2-3.2z"/></svg>`
-        },
-        crowbar: {
-          id: 'crowbar',
-          name: 'Steel Crowbar',
-          damage: 60,
-          cooldown: 0.52,
-          reach: 2.45,
-          isRanged: false,
-          desc: 'Forged hex-steel prybar with heavy overhead impact.',
-          svg: `<svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M18 4c-2-1.5-5-1-6.5 1L6 16l-2 4m14-16l2 2"/></svg>`
-        },
-        pipe: {
-          id: 'pipe',
-          name: 'Tactical Pipe',
-          damage: 52,
-          cooldown: 0.48,
-          reach: 2.45,
-          isRanged: false,
-          desc: 'Galvanized iron pipe with threaded joint collar.',
-          svg: `<svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M16 3h5v4h-2v12h2v2h-7v-2h2V7h-2V3h2z" transform="rotate(35 12 12)"/></svg>`
-        },
-        hotdog_shooter: {
-          id: 'hotdog_shooter',
-          name: 'Hotdog Shooter',
-          damage: 55,
-          cooldown: 0.095,
-          reach: 85.0,
-          isRanged: true,
-          desc: 'Rapid-fire pneumatic launcher firing high-velocity wieners. Right-click to toggle zoom aim; refill sausages at Aura Hotdogs or Plaza Cart.',
-          svg: `<svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M4 13c0-3 3-6 8-6h4c3 0 5 2 5 4.5S19 16 16 16H9c-3 0-5-1.5-5-3zm3-1.5c1.5 1 3.5-1 5 0s3.5-1 5 0" stroke="#ef4444" stroke-width="1.6"/></svg>`
-        }
-      };
-
-      const LEFT_ITEMS = {
-        medkit: {
-          id: 'medkit',
-          name: 'Medkit',
-          stat: '+40 HEALTH',
-          desc: 'Trauma field kit. Press [U] to restore 40 HP.',
-          color: '#ef4444',
-          svg: `<svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M9 3h6v3h4a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4V3zm2 2v1h2V5h-2zm0 5v3H8v2h3v3h2v-3h3v-2h-3v-3h-2z"/></svg>`
-        },
-        soda: {
-          id: 'soda',
-          name: 'Energy Drink',
-          stat: '+65 STAM & SPEED',
-          desc: 'Electrolyte boost. Press [U] to refill stamina and boost sprint speed.',
-          color: '#38bdf8',
-          svg: `<svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M8 3h8l1 2v14l-1 2H8l-1-2V5l1-2zm1 5v6h6V8H9z"/></svg>`
-        },
-        burger: {
-          id: 'burger',
-          name: 'Street Burger',
-          stat: '+20 HP & +20 STAM',
-          desc: 'Double patty burger. Press [U] to restore health and stamina.',
-          color: '#f59e0b',
-          svg: `<svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M4 10a8 6 0 0 1 16 0H4zm-1 2h18v2H3v-2zm1 4h16v1a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-1z"/></svg>`
-        },
-        flashlight: {
-          id: 'flashlight',
-          name: 'Flashlight',
-          stat: 'TOGGLE BEAM [U]',
-          desc: 'Tactical LED torch. Press [U] to toggle a 3D spotlight beam.',
-          color: '#facc15',
-          svg: `<svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M14 3l7 7-3 3-2-2-8 8H4v-4l8-8-2-2 4-2z"/></svg>`
-        },
-        cash: {
-          id: 'cash',
-          name: 'Cash Stack',
-          stat: 'DEPOSIT +$100',
-          desc: 'Strapped $100 bills. Press [U] to deposit into your cash wallet.',
-          color: '#10b981',
-          svg: `<svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M3 6h18v12H3V6zm9 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>`
-        }
-      };
+      const { RIGHT_WEAPONS, LEFT_ITEMS } = await import('./js/items.js');
+      const sharedState = await import('./js/state.js');
+      const { MAX_HOTDOG_AMMO, gameState, player, worldBoxes, driveableRamps, mapShapes, enterableZones, smashableCrates, hazardBarrels, worldPickups, particleBursts, projectileWieners, lampPosts, aviationBeacons, npcs, buildingLods, skyscrapers, sausageRefillZones, keys } = sharedState;
+      gameState.wastedTimer = 0;
 
       // =======================================================================
       // 2. PROCEDURAL WEB AUDIO ENGINE
@@ -1074,78 +1012,11 @@
         }
       }
       const sfx = new SoundEngine();
+      let chuteActive = false;
 
       // =======================================================================
-      // 3. GAME STATE & PLAYER CONTROLLER STATE
+      // 3. GAME STATE & PLAYER CONTROLLER STATE (shared with main edition)
       // =======================================================================
-      const gameState = {
-        screen: 'start', // 'start' | 'playing' | 'paused'
-        inventoryOpen: false,
-        mapOpen: false,
-        settingsOpen: false,
-        thirdPerson: false,
-        isAiming: false,
-        wastedTimer: 0,
-        hp: 100,
-        maxHp: 100,
-        stamina: 100,
-        speedBoostTimer: 0,
-        cash: 150,
-        hotdogAmmo: MAX_HOTDOG_AMMO,
-        rightWeapons: ['fists', 'bat'],
-        activeRightWeapon: 'fists',
-        leftHotbar: [
-          { id: 'medkit', count: 1 },
-          { id: 'flashlight', count: 1 },
-          { id: 'soda', count: 1 },
-          null,
-          null
-        ],
-        activeLeftSlot: 0,
-        inspectedLeftSlot: 0,
-        flashlightOn: false,
-        inCar: false,
-        activeCarIndex: -1,
-        zoneName: 'CENTRAL PLAZA',
-        damageCooldown: 0,
-        wheelTimer: 0,
-        dialogueTimer: 0,
-        settings: {
-          sensitivity: 1.0,
-          graphics: 'medium',
-          sfx: true
-        }
-      };
-
-      const player = {
-        x: -11.5,
-        y: 0.18,
-        z: 18.5,
-        vy: 0,
-        radius: 0.42,
-        height: 1.75,
-        eyeHeight: 1.62,
-        crouching: false,
-        yaw: 0.22,
-        pitch: -0.02,
-        grounded: true,
-        peakAirY: 0.18,
-        landingDip: 0,
-        sprintCycle: 0,
-        walkCycle: 0,
-        punchCombo: 0,
-        attackTimer: 0,
-        attackDuration: 0.28,
-        hitApplied: false,
-        leftUseTimer: 0,
-        mantle: {
-          active: false,
-          timer: 0,
-          duration: 0.26,
-          startX: 0, startY: 0, startZ: 0,
-          endX: 0, endY: 0, endZ: 0
-        }
-      };
 
       const multiplayer = {
         mode: 'single',
@@ -1479,6 +1350,19 @@
       sunDisc.lookAt(0, 0, 0);
       skyGroup.add(sunDisc);
 
+      const sunRays = new THREE.Group();
+      sunRays.visible = false;
+      for (let i = 0; i < 10; i++) {
+        const ray = new THREE.Mesh(
+          new THREE.PlaneGeometry(7 + (i % 3) * 3, 190),
+          new THREE.MeshBasicMaterial({ color: 0xfff1b8, transparent: true, opacity: 0.055, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false })
+        );
+        ray.rotation.z = (i - 4.5) * 0.105;
+        ray.position.y = -75;
+        sunRays.add(ray);
+      }
+      skyGroup.add(sunRays);
+
       const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, fog: false });
       for (let i = 0; i < 18; i++) {
         const ang = (i / 18) * Math.PI * 2;
@@ -1541,6 +1425,9 @@
           sunDisc.visible = sunHeight > -0.04;
           sunDisc.position.set(Math.cos(phase) * 300, sunHeight * 300, 60);
           sunDisc.lookAt(camera.position);
+          sunRays.visible = gameState.settings.graphics === 'high' && sunHeight > -0.04;
+          sunRays.position.copy(sunDisc.position);
+          sunRays.lookAt(camera.position);
           cloudMat.opacity = 0.85 * (0.35 + daylight * 0.65);
         }
 
@@ -1958,7 +1845,9 @@
         sunLight.intensity = isHigh ? 1.65 : tier === 'medium' ? 1.5 : 1.42;
         hemiLight.intensity = isHigh ? 0.96 : tier === 'medium' ? 0.92 : 0.86;
         renderer.shadowMap.enabled = !mobileRender;
-        const targetSize = mobileRender ? 512 : isHigh ? 1536 : tier === 'medium' ? 1024 : 512;
+        renderer.shadowMap.type = isHigh ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+        const targetSize = mobileRender ? 512 : isHigh ? 2048 : tier === 'medium' ? 1024 : 512;
+        sunRays.visible = isHigh;
         if (sunLight.shadow.mapSize.width !== targetSize) {
           sunLight.shadow.mapSize.width = targetSize;
           sunLight.shadow.mapSize.height = targetSize;
@@ -1979,21 +1868,6 @@
       // =======================================================================
       // 6. WORLD COLLIDERS, REAL GLASS BUILDINGS, FREEWAY, DESERT & SKYSCRAPERS
       // =======================================================================
-      const worldBoxes = [];
-      const driveableRamps = [];
-      const mapShapes = [];
-      const enterableZones = [];
-      const smashableCrates = [];
-      const hazardBarrels = [];
-      const worldPickups = [];
-      const particleBursts = [];
-      const projectileWieners = [];
-      const lampPosts = [];
-      const aviationBeacons = [];
-      const npcs = [];
-      const buildingLods = [];
-      const skyscrapers = [];
-      const sausageRefillZones = [];
 
       function addWorldBox(minX, maxX, minY, maxY, minZ, maxZ, tag = 'solid', climbable = true) {
         const box = { minX, maxX, minY, maxY, minZ, maxZ, tag, climbable };
@@ -4259,6 +4133,8 @@
 
       function buildSportsCar({ name, bodyHex, accentHex, x, z, yaw, isCoupe = true, isSupercar = false }) {
         const root = new THREE.Group();
+        const carScale = 1.35;
+        root.scale.setScalar(carScale);
         root.position.set(x, 0.12, z);
         root.rotation.y = yaw;
 
@@ -4496,7 +4372,8 @@
           flameR,
           root,
           chassis,
-          cameraSeat: new THREE.Vector3(-0.38, isSupercar ? 0.94 : 1.24, 0.12),
+          carScale,
+          cameraSeat: new THREE.Vector3(-0.38, isSupercar ? 1.02 : 1.30, 0.12),
           cameraYaw: yaw + Math.PI,
           cameraPitch: 0.25,
           cameraLookIdle: 2,
@@ -4599,7 +4476,7 @@
         }
       }
 
-      function getNearestVehicle(maxDist = 4.2) {
+      function getNearestVehicle(maxDist = 5.2) {
         let best = null;
         let bestDist = maxDist;
         vehicles.forEach((v, idx) => {
@@ -4680,8 +4557,9 @@
         if (v) {
           v.flameL.visible = false;
           v.flameR.visible = false;
-          const exitX = v.x - Math.cos(v.yaw) * 2.1;
-          const exitZ = v.z + Math.sin(v.yaw) * 2.1;
+          const exitDistance = 2.1 * (v.carScale || 1.35);
+          const exitX = v.x - Math.cos(v.yaw) * exitDistance;
+          const exitZ = v.z + Math.sin(v.yaw) * exitDistance;
           player.x = exitX;
           player.z = exitZ;
           player.y = Math.max(0.18, v.y + 0.06);
@@ -6243,7 +6121,7 @@
       // =======================================================================
       // 14. INPUT BINDINGS (POINTER LOCK + DRAG FALLBACK + KEYBOARD + RMB AIM)
       // =======================================================================
-      const keys = {};
+
       let isDraggingLook = false;
       let isPrimaryFireHeld = false;
       let lastMouseX = 0;
@@ -6471,7 +6349,7 @@
               updateHUD();
               return;
             }
-            const near = getNearestVehicle(4.2);
+            const near = getNearestVehicle(5.2);
             if (near) enterVehicle(near.idx);
           }
         } else if (['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'].includes(code)) {
@@ -6756,7 +6634,7 @@
               ? `RIDE ELEVATOR TO ROOF (${elev.sk.name})`
               : `RIDE ELEVATOR TO LOBBY`;
           } else {
-            const nearCar = getNearestVehicle(4.2);
+            const nearCar = getNearestVehicle(5.2);
             let nearNpc = null;
             for (const npc of npcs) {
               if (!npc.spawned || npc.asleep) continue;
@@ -7192,7 +7070,7 @@
               v.cameraYaw += yawDelta * followBlend;
               v.cameraPitch += (0.25 - v.cameraPitch) * followBlend;
             }
-            const aerialDist = 11.4 + Math.min(4.2, Math.abs(v.speed) * 0.085);
+            const aerialDist = (11.4 * (v.carScale || 1.35)) + Math.min(5.0, Math.abs(v.speed) * 0.085);
             const orbit = v.cameraPitch;
             const horizontalDist = aerialDist * Math.cos(orbit);
             const camX = v.x + Math.sin(v.cameraYaw) * horizontalDist;
@@ -7272,7 +7150,9 @@
             if (player.y <= supportY && player.vy <= 0) {
               if (!player.grounded) {
                 const fallDist = player.peakAirY - supportY;
-                if (fallDist > 3.6) {
+                if (fallDist > 8.0 && !chuteActive) {
+                  applyPlayerDamage(1000, 'FATAL FALL');
+                } else if (fallDist > 3.6 && !chuteActive) {
                   const fallDmg = Math.min(65, (fallDist - 3.6) * 8.5);
                   applyPlayerDamage(fallDmg, 'FALL IMPACT');
                 }
@@ -9863,11 +9743,11 @@
         scene.add(jet);
 
         // ---------------- State ----------------
-        const J = { flying: false, pos: new V3(-384, FY + GEAR, RZ), q: new QT().setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)), speed: 0, thr: 0, ab: false, sink: 0, ground: true, gp: 0, hull: 100, nukes: 4, sx: 0, sy: 0, pRate: 0, rRate: 0, yRate: 0, inv: false, cam: 0, camQ: new QT(), gunT: 0, nukeCd: 0, muz: 0, help: 0, dead: 0, warnT: 0, tip: false };
+        const J = { flying: false, pos: new V3(-384, FY + GEAR, RZ), q: new QT().setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)), speed: 0, thr: 0, ab: false, sink: 0, ground: true, gp: 0, hull: 100, nukes: 4, sx: 0, sy: 0, pRate: 0, rRate: 0, yRate: 0, inv: false, cam: 0, camQ: new QT(), gunT: 0, nukeCd: 0, muz: 0, help: 0, dead: 0, warnT: 0, tip: false, chute: null };
         const jk = {}, bombs = [], fx = [];
         window.__jetFlying = () => J.flying;
         const nearJet = () => J.dead <= 0 && !J.flying && !gameState.inCar && !meteorDrop.active && Math.hypot(player.x - J.pos.x, player.z - J.pos.z) < 7 && Math.abs(player.y - (J.pos.y - GEAR)) < 3.5;
-        function resetJet() { J.pos.set(-384, FY + GEAR, RZ); J.q.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)); J.speed = 0; J.thr = 0; J.sink = 0; J.ground = true; J.gp = 0; J.hull = 100; J.nukes = 4; J.dead = 0; J.pRate = J.rRate = J.yRate = J.sx = J.sy = 0; jet.visible = true; }
+        function resetJet() { J.pos.set(-384, FY + GEAR, RZ); J.q.setFromEuler(new THREE.Euler(0, Math.PI / 2, 0)); J.speed = 0; J.thr = 0; J.sink = 0; J.ground = true; J.gp = 0; J.hull = 100; J.nukes = 4; J.dead = 0; J.pRate = J.rRate = J.yRate = J.sx = J.sy = 0; jet.visible = true; if (J.chute) J.chute.visible = false; chuteActive = false; }
         function placeAt(x, z, fx_, fz_) {
           const tries = [[0, 0], [2, 0], [-2, 0], [0, 2], [0, -2], [4, 4], [-4, -4], [6, 0], [0, 6], [-6, 0], [0, -6]];
           for (const [ox, oz] of tries) {
@@ -9907,13 +9787,50 @@
           camera.up.set(0, 1, 0); camera.rotation.z = 0; camera.fov = 72; camera.near = 0.14; camera.far = 520; camera.updateProjectionMatrix(); jet.userData.can.visible = true;
           for (const k of ['crosshair']) { const e = document.getElementById(k); if (e) e.style.display = 'flex'; }
         }
+        function buildParachute() {
+          const group = new THREE.Group();
+          const canopyMat = new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.75, side: THREE.DoubleSide, emissive: 0x0a1d4d, emissiveIntensity: 0.18 });
+          const canopy = new THREE.Mesh(new THREE.SphereGeometry(3.2, 16, 8, 0, Math.PI * 2, 0, Math.PI * 0.48), canopyMat);
+          canopy.scale.y = 0.48;
+          canopy.position.y = 4.2;
+          canopy.castShadow = true;
+          group.add(canopy);
+          const ropeMat = new THREE.LineBasicMaterial({ color: 0xf1f5f9, transparent: true, opacity: 0.78 });
+          for (const sx of [-2.2, 2.2]) {
+            for (const sz of [-2.2, 2.2]) {
+              const points = [new THREE.Vector3(sx, 3.7, sz), new THREE.Vector3(sx * 0.18, 0.15, sz * 0.18)];
+              group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), ropeMat));
+            }
+          }
+          scene.add(group);
+          return group;
+        }
         function leaveJet() {
           if (J.ground && J.speed < 12) {
             endFlight(); J.speed = 0; J.thr = 0;
             a1.copy(XL).applyQuaternion(J.q);
             placeAt(J.pos.x + a1.x * 7, J.pos.z + a1.z * 7, -a1.x, -a1.z);
             pushFeed('EXITED THE STRIKE JET', 'border-l-sky-400');
-          } else { boom(J.pos, 0.5); const x = J.pos.x, z = J.pos.z; endFlight(); jet.visible = false; J.dead = 5; placeAt(x, z, 0, 1); pushFeed('EJECTED — THE JET WAS LOST. A NEW ONE WILL BE WHEELED OUT.', 'border-l-amber-400'); }
+          } else {
+            boom(J.pos, 0.5);
+            endFlight();
+            jet.visible = false;
+            J.dead = 5;
+            J.chute = J.chute || buildParachute();
+            J.chute.visible = true;
+            chuteActive = true;
+            player.x = J.pos.x;
+            player.z = J.pos.z;
+            player.y = J.pos.y;
+            player.vy = -12;
+            player.pvx = 0;
+            player.pvz = 0;
+            player.grounded = false;
+            player.peakAirY = player.y;
+            J.speed = 0;
+            J.thr = 0;
+            pushFeed('EJECTED — PARACHUTE DEPLOYED', 'border-l-sky-400');
+          }
         }
         function crash(msg) { boom(J.pos, 1); endFlight(); jet.visible = false; J.dead = 5; hangarSpawn(); pushFeed(msg + ' — EJECTED SAFELY. NEW JET WILL BE READY AT THE BUNKER.', 'border-l-rose-500'); }
         function jetDamage(a) { J.hull = Math.max(0, J.hull - a * 0.8); flashEdge('rgba(239,68,68,.48)'); if (J.hull <= 0) crash('JET DESTROYED'); }
@@ -10121,7 +10038,25 @@
           fxStep(dt); bombStep(dt); J.muz = Math.max(0, J.muz - dt);
           if (J.dead > 0) { J.dead -= dt; if (J.dead <= 0) { resetJet(); pushFeed('A NEW STRIKE JET WAS WHEELED OUT AT THE AURA AIR BUNKER', 'border-l-sky-400'); } }
           if (!J.tip && elapsed > 8) { J.tip = true; pushFeed('NEW: PRESS [J] TO WARP TO THE AURA AIR BUNKER (STRIKE JET + NUKES)', 'border-l-sky-400'); }
-          if (!J.flying) { _step(dt, elapsed); jetVisuals(elapsed); return; }
+          if (!J.flying) {
+            if (chuteActive && J.chute) {
+              player.grounded = false;
+              _step(dt, elapsed);
+              if (player.grounded) {
+                chuteActive = false;
+                J.chute.visible = false;
+                pushFeed('PARACHUTE LANDED', 'border-l-sky-400');
+              } else {
+                player.vy = Math.max(-5.5, player.vy);
+                J.chute.position.set(player.x, player.y + 1.0, player.z);
+                J.chute.rotation.y = player.yaw;
+              }
+            } else {
+              _step(dt, elapsed);
+            }
+            jetVisuals(elapsed);
+            return;
+          }
           if (J.help > 0 && J.help < 900) J.help -= dt;
           jetUpdate(dt);
           if (!J.flying) { _step(dt, elapsed); jetVisuals(elapsed); return; }
