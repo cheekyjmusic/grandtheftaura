@@ -203,21 +203,45 @@
     html.mobile-device #minimap-box { width: 112px; height: 112px; }
     html.mobile-device #vehicle-hud { left: 50%; right: auto; bottom: 4px; transform: translateX(-50%) scale(.58); transform-origin: bottom center; }
     html.mobile-device #dual-hand-card, html.mobile-device #onfoot-hotbar { display: none !important; }
-    html.mobile-device #start-menu { justify-content: center; padding: 12px; overflow-y: auto; }
-    html.mobile-device #start-menu > div { width: min(100%, 520px); height: auto; max-height: calc(100dvh - 24px); overflow-y: auto; gap: 12px; }
-    html.mobile-device #start-menu > div > .glass-panel { display: none; }
-    html.mobile-device #start-menu h1 { font-size: clamp(32px, 8vw, 48px); }
-    html.mobile-device #start-menu p { font-size: 11px; line-height: 1.4; }
-    html.mobile-device #start-menu > div > div:nth-child(2) { gap: 6px; margin: 0; }
-    html.mobile-device #start-menu > div > div:nth-child(2) button { padding: 8px 12px; font-size: 14px; }
-    html.mobile-device #start-menu > div > div:nth-child(2) #host-room-row { min-height: 38px; }
-    html.mobile-device #pause-menu > div, html.mobile-device #settings-menu > div, html.mobile-device #inventory-menu > div { max-height: calc(100dvh - 24px); overflow-y: auto; }
+    html.mobile-device #start-menu { justify-content: center; align-items: center; padding: max(8px, env(safe-area-inset-top)) 12px max(8px, env(safe-area-inset-bottom)); overflow: hidden; }
+    html.mobile-device #start-menu > div { width: min(100%, 520px); height: auto; max-height: 100%; gap: 8px; justify-content: center; overflow: hidden; }
+    html.mobile-device #start-menu > div > .glass-panel, html.mobile-device #desktop-controls-overview { display: none !important; }
+    html.mobile-device #start-menu h1 { font-size: clamp(28px, 7vh, 42px); line-height: .9; }
+    html.mobile-device #start-menu > div > div:nth-child(2) { gap: 5px; margin: 0; width: min(100%, 360px); }
+    html.mobile-device #start-menu > div > div:nth-child(2) button { min-height: 34px; padding: 6px 10px; font-size: 13px; }
+    html.mobile-device #start-menu > div > div:nth-child(2) #host-room-row { min-height: 34px; }
+    html.mobile-device #start-menu > div > div:nth-child(2) #join-room-code { min-height: 34px; }
+    html.mobile-device #pause-menu > div, html.mobile-device #settings-menu > div, html.mobile-device #inventory-menu > div { max-height: calc(100dvh - 16px); overflow-y: auto; }
+    html.mobile-device #hud-pov { font-size: 10px; }
+    html.mobile-device #hud > .fixed.top-4.left-4 > .glass-panel { padding: 6px 9px; gap: 8px; }
+    html.mobile-device #interact-key, html.mobile-device #mantle-prompt, html.mobile-device #vehicle-hud > div:last-child, html.mobile-device #watch-keybind-strip, html.mobile-device #jh-help, html.mobile-device #pause-key-hint, html.mobile-device #ao-tip, html.mobile-device #sniper-scope svg text:last-child { display: none !important; }
+    html.mobile-device #hud > .fixed.top-4.right-4 #dual-hand-card, html.mobile-device #hud > .fixed.bottom-4.left-4 > .glass-panel { display: none !important; }
+    html.mobile-device #minimap-box[title] { cursor: pointer; }
+    html.mobile-device #hud-ammo-hint, html.mobile-device #meteor-aim-banner .text-xs { display: none !important; }
+    html.mobile-device #npc-dialogue { max-width: min(88vw, 360px); bottom: 76px; padding: 8px 12px; }
+    html.mobile-device #mobile-controls { touch-action: none; }
+    html.mobile-device #mobile-controls.visible { position: fixed; inset: 0; overflow: hidden; }
+    html.mobile-device #mobile-look { left: 50%; right: 0; top: 0; bottom: 0; }
+    html.mobile-device #mobile-stick { z-index: 4; width: 124px; height: 124px; }
+    html.mobile-device .mobile-tools { left: 50%; right: auto; transform: translateX(-50%); }
+    html.mobile-device .mobile-tools .mobile-btn { min-width: 42px; height: 34px; border-radius: 11px; }
+    html.mobile-device .mobile-actions { right: max(10px, env(safe-area-inset-right)); bottom: max(10px, env(safe-area-inset-bottom)); }
+    html.mobile-device .mobile-car-controls, html.mobile-device .mobile-jet-controls { right: max(10px, env(safe-area-inset-right)); bottom: max(10px, env(safe-area-inset-bottom)); }
+    html.mobile-device #lock-hint, html.mobile-device #onfoot-hotbar, html.mobile-device #dual-hand-card { display: none !important; }
+    html.mobile-device #hud .text-tiny, html.mobile-device #hud [data-keybind] { display: none !important; }
+    html.mobile-device #hud > .fixed.bottom-4.left-4 > div:first-child { width: 92px; height: 92px; }
+    html.mobile-device #hud-hp-val { font-size: 18px; }
+    html.mobile-device #hud-stam-val { font-size: 9px; }
+    html.mobile-device #ammo-hud-card { width: 136px; padding: 6px; }
+    html.mobile-device #meteor-aim-banner { top: 48px; padding: 6px 9px; }
+    html.mobile-device #interact-prompt { padding: 6px 9px; }
     @media (max-height: 500px) and (orientation: landscape) {
-      html.mobile-device #start-menu > div { display: flex; align-items: stretch; width: min(100%, 520px); }
+      html.mobile-device #start-menu > div { display: flex; align-items: center; width: min(100%, 520px); }
+      html.mobile-device #start-menu h1 { font-size: 32px; }
       .mobile-stick-wrap { width: 116px; height: 116px; }
-      .mobile-actions { grid-template-columns: repeat(2, 46px); gap: 5px; }
-      .mobile-actions .mobile-btn { min-width: 46px; width: 46px; height: 46px; }
-      .mobile-extra-actions { grid-template-columns: repeat(3, 44px); }
+      .mobile-actions { grid-template-columns: repeat(2, 44px); gap: 5px; }
+      .mobile-actions .mobile-btn { min-width: 44px; width: 44px; height: 44px; }
+      .mobile-extra-actions { grid-template-columns: repeat(3, 42px); }
       .mobile-drive-pedals { grid-template-columns: repeat(2, 52px); gap: 5px; }
       .mobile-drive-pedals .mobile-btn { min-width: 52px; width: 52px; height: 52px; }
       .mobile-jet-buttons { grid-template-columns: repeat(3, 46px); gap: 5px; }
@@ -270,7 +294,7 @@
         </div>
         <div class="h-5 w-px bg-white/15"></div>
         <div class="flex flex-col">
-          <span class="text-[10px] font-tactical uppercase text-slate-400 leading-none">POV [V]</span>
+          <span class="text-[10px] font-tactical uppercase text-slate-400 leading-none">POV</span>
           <span id="hud-pov" class="text-xs font-bold uppercase tracking-wider text-sky-400 mt-0.5">1ST PERSON</span>
         </div>
       </div>
@@ -311,14 +335,14 @@
     <!-- TOP-RIGHT: Live Circular Radar Mini-Map + Dual-Hand Status + Sausage Ammo Counter -->
     <div class="fixed top-4 right-4 flex flex-col items-end gap-2">
       <!-- Circular Radar Mini-Map -->
-      <div id="minimap-box" title="Click or press [M] for Full City Map" class="relative w-[178px] h-[178px] glass-panel p-1.5 rounded-full cursor-pointer pointer-events-auto">
+      <div id="minimap-box" title="Open full city map" class="relative w-[178px] h-[178px] glass-panel p-1.5 rounded-full cursor-pointer pointer-events-auto">
         <canvas id="minimap-canvas" width="164" height="164" class="w-full h-full rounded-full block"></canvas>
         <!-- Orbiting North Compass Marker -->
         <div id="minimap-north" class="absolute w-5 h-5 -ml-2.5 -mt-2.5 rounded-full bg-rose-600 text-white font-display text-[10px] flex items-center justify-center border border-white/80 shadow pointer-events-none" style="left: 89px; top: 9px;">
           N
         </div>
         <div class="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-slate-950/90 px-2 py-0.5 rounded-full text-[9px] font-tactical font-bold text-slate-300 border border-white/15">
-          MAP [M]
+          MAP
         </div>
       </div>
 
@@ -394,7 +418,7 @@
         </svg>
       </div>
 
-      <!-- GTA-Style Radial Weapon Switcher ([Q] or Scroll Wheel) -->
+      <!-- GTA-Style Radial Weapon Switcher -->
       <div id="radial-menu" class="absolute w-72 h-72 items-center justify-center">
         <svg viewBox="0 0 260 260" class="w-full h-full drop-shadow-2xl">
           <circle cx="130" cy="130" r="118" fill="rgba(9, 12, 18, 0.86)" stroke="rgba(255,255,255,0.16)" stroke-width="1.5" />
@@ -458,8 +482,8 @@
         </div>
       </div>
 
-      <!-- Compact Watch Strap Keybind Strip -->
-      <div class="glass-panel px-3 py-1 flex items-center gap-2 text-[9px] font-tactical font-bold uppercase text-slate-300">
+      <!-- Compact Watch Strap Status -->
+      <div class="glass-panel px-3 py-1 flex items-center gap-2 text-[9px] font-tactical font-bold uppercase text-slate-300" id="watch-keybind-strip">
         <span>[C] CROUCH</span>
         <span>[G] PICKPOCKET</span>
         <span class="text-white/25">&bull;</span>
@@ -539,17 +563,10 @@
   <div id="start-menu" class="fixed inset-0 z-30 flex items-center justify-between bg-gradient-to-r from-slate-950/88 via-slate-950/55 to-transparent p-6 sm:p-14">
     <div class="max-w-lg w-full flex flex-col justify-between h-full max-h-[640px]">
       <div>
-        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/50 text-amber-300 font-tactical text-xs font-bold uppercase mb-3">
-          <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
-          OPEN-WORLD SANDBOX &bull; WEBGL
-        </div>
         <h1 class="font-display text-5xl sm:text-7xl font-bold uppercase leading-none text-white tracking-tight drop-shadow-lg">
           GRAND THEFT<br/>
           <span class="text-amber-400">AURA</span>
         </h1>
-        <p class="text-xs sm:text-sm text-slate-300 mt-3 max-w-md leading-relaxed">
-          Aim your orbital meteor landing anywhere in Sunnyvale City or Redrock Desert! Explore walk-in skyscrapers, the Reserve Bank, Aura Exotic Motors' flame-spitting supercar, and Aura Hotdogs' rapid-fire Wiener Shooter.
-        </p>
       </div>
 
       <!-- Primary Start Buttons -->
@@ -581,7 +598,7 @@
       </div>
 
       <!-- Quick Reference Controls Card -->
-      <div class="glass-panel p-4 max-w-md">
+      <div class="glass-panel p-4 max-w-md" id="desktop-controls-overview">
         <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold mb-2">CONTROLS OVERVIEW</div>
         <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-slate-300">
           <div><span class="text-white font-bold">WASD + SHIFT</span> Move / Sprint</div>
@@ -599,7 +616,7 @@
   </div>
 
   <!-- =====================================================================
-       PAUSE MENU ([TAB] OR [ESC])
+       PAUSE MENU
        ===================================================================== -->
   <div id="pause-menu" class="fixed inset-0 z-40 items-center justify-center bg-black/75 backdrop-blur-xs p-4">
     <div class="glass-panel-amber w-full max-w-md p-6">
@@ -608,7 +625,7 @@
           <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold">SIMULATION PAUSED</div>
           <h2 class="font-display text-3xl uppercase text-white">GRAND THEFT AURA</h2>
         </div>
-        <span class="text-xs font-tactical text-slate-400 border border-white/15 rounded px-2 py-0.5">[TAB]</span>
+        <span id="pause-key-hint" class="text-xs font-tactical text-slate-400 border border-white/15 rounded px-2 py-0.5">[TAB]</span>
       </div>
 
       <div class="flex flex-col gap-2.5">
@@ -711,7 +728,7 @@
           <h2 class="font-display text-2xl uppercase text-white">INVENTORY &amp; ARSENAL</h2>
         </div>
         <button id="btn-inv-close" class="menu-btn px-3.5 py-1.5 font-tactical text-xs font-bold uppercase text-white cursor-pointer">
-          CLOSE [E]
+          CLOSE
         </button>
       </div>
 
@@ -719,7 +736,7 @@
         <div class="bg-black/40 border border-white/10 rounded-lg p-4 flex flex-col justify-between">
           <div>
             <div class="flex items-center justify-between mb-3">
-              <span class="font-tactical text-xs font-bold uppercase text-sky-400">LEFT HAND &bull; UTILITY BAG [U]</span>
+              <span class="font-tactical text-xs font-bold uppercase text-sky-400">LEFT HAND &bull; UTILITY BAG</span>
               <span class="text-[10px] font-tactical text-slate-400">SLOTS 1–5</span>
             </div>
             <div id="inv-left-grid" class="grid grid-cols-5 gap-2 mb-4"></div>
@@ -727,7 +744,7 @@
           </div>
           <div class="grid grid-cols-2 gap-2 mt-4">
             <button id="btn-inv-use" class="menu-btn-primary py-2 px-3 font-tactical text-xs font-bold uppercase cursor-pointer">
-              USE / EQUIP [U]
+              USE / EQUIP
             </button>
             <button id="btn-inv-drop" class="menu-btn py-2 px-3 font-tactical text-xs font-bold uppercase text-rose-300 cursor-pointer">
               DROP ITEM
@@ -738,8 +755,8 @@
         <div class="bg-black/40 border border-white/10 rounded-lg p-4 flex flex-col justify-between">
           <div>
             <div class="flex items-center justify-between mb-3">
-              <span class="font-tactical text-xs font-bold uppercase text-amber-400">RIGHT HAND &bull; COMBAT [LMB]</span>
-              <span class="text-[10px] font-tactical text-slate-400">CYCLE [Q]</span>
+              <span class="font-tactical text-xs font-bold uppercase text-amber-400">RIGHT HAND &bull; COMBAT</span>
+              <span class="text-[10px] font-tactical text-slate-400">CYCLE</span>
             </div>
             <div id="inv-right-list" class="flex flex-col gap-2 max-h-[260px] overflow-y-auto pr-1"></div>
           </div>
@@ -752,7 +769,7 @@
   </div>
 
   <!-- =====================================================================
-       FULL CITY MAP MODAL ([M])
+       FULL CITY MAP MODAL
        ===================================================================== -->
   <div id="map-modal" class="fixed inset-0 z-40 items-center justify-center bg-black/80 p-4">
     <div class="glass-panel-amber w-full max-w-xl p-5 flex flex-col items-center">
@@ -762,7 +779,7 @@
           <h2 class="font-display text-xl uppercase text-white">CITY, FREEWAY &amp; DESERT MAP</h2>
         </div>
         <button id="btn-map-close" class="menu-btn px-3.5 py-1.5 font-tactical text-xs font-bold uppercase text-white cursor-pointer">
-          CLOSE [M]
+          CLOSE
         </button>
       </div>
       <canvas id="fullmap-canvas" width="440" height="440" class="w-full max-w-[420px] aspect-square rounded-lg border border-white/20 bg-slate-950"></canvas>
@@ -5631,11 +5648,22 @@
         el._t = setTimeout(() => { el.style.opacity = '0'; }, 190);
       }
 
+      function mobileFriendlyText(text) {
+        if (!(navigator.maxTouchPoints > 0 || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches))) return text;
+        return String(text)
+          .replace(/\s*\[[A-Z0-9 +/.-]+\]/g, '')
+          .replace(/MOUSE\s*OR\s*WASD/gi, 'touch controls')
+          .replace(/\b(?:WASD|W\/S|A\/D|ARROWS|LMB|RMB|SPACE|SHIFT)\b/gi, 'touch controls')
+          .replace(/\bMOUSE\b/gi, 'touch')
+          .replace(/PRESS\s+/gi, '')
+          .replace(/HOLD\s+/gi, '');
+      }
+
       function pushFeed(text, borderClass = 'border-l-amber-400') {
         const container = document.getElementById('feed-container');
         const div = document.createElement('div');
         div.className = `toast-item glass-panel px-3 py-1 text-[11px] font-tactical font-bold uppercase text-white border-l-2 ${borderClass}`;
-        div.textContent = text;
+        div.textContent = mobileFriendlyText(text);
         container.appendChild(div);
         while (container.children.length > 4) container.removeChild(container.firstChild);
         setTimeout(() => { if (div.parentNode) div.remove(); }, 2000);
@@ -5658,7 +5686,7 @@
         const clanBadge = document.getElementById('clan-alert-badge');
         if (activeClanAlertText && !meteorDrop.active) {
           clanBadge.classList.remove('hidden');
-          clanBadge.textContent = activeClanAlertText;
+          clanBadge.textContent = mobileFriendlyText(activeClanAlertText);
           clanBadge.className = activeClanAlertText.startsWith('⚠')
             ? 'glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-rose-500 text-rose-300 animate-pulse'
             : 'glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-amber-400 text-amber-300';
@@ -5966,6 +5994,7 @@
         } else {
           updateHUD();
         }
+        if (window.__syncMobileControls) window.__syncMobileControls(true);
       }
 
       function closeSubModals() {
@@ -6027,9 +6056,9 @@
           inspBox.innerHTML = `
             <div class="flex items-center justify-between">
               <span class="font-display text-lg uppercase text-white">${inspItem.name} <span class="text-xs text-slate-400">(x${inspSlot.count})</span></span>
-              <span class="text-xs font-tactical font-bold text-sky-400">${inspItem.stat}</span>
+              <span class="text-xs font-tactical font-bold text-sky-400">${mobileFriendlyText(inspItem.stat)}</span>
             </div>
-            <p class="text-xs text-slate-300 mt-1">${inspItem.desc}</p>
+            <p class="text-xs text-slate-300 mt-1">${mobileFriendlyText(inspItem.desc)}</p>
           `;
         } else {
           inspBox.innerHTML = `
@@ -6237,7 +6266,7 @@
 
       document.addEventListener('pointerlockchange', () => {
         const locked = document.pointerLockElement === canvas;
-        document.getElementById('lock-hint').style.display = locked ? 'none' : 'block';
+        document.getElementById('lock-hint').style.display = locked || mobileRender ? 'none' : 'block';
       });
 
       window.addEventListener('contextmenu', (e) => {
@@ -6261,7 +6290,7 @@
           return;
         }
 
-        if (document.pointerLockElement !== canvas && canvas.requestPointerLock) {
+        if (!mobileRender && document.pointerLockElement !== canvas && canvas.requestPointerLock) {
           try {
             const res = canvas.requestPointerLock();
             if (res && res.catch) res.catch(() => {});
@@ -6355,7 +6384,7 @@
               if (Math.hypot(player.x - npc.x, player.z - npc.z) < 2.5 && Math.abs(player.y - 0.18) < 1.8) {
                 const dlg = document.getElementById('npc-dialogue');
                 document.getElementById('npc-dialogue-name').textContent = npc.name;
-                document.getElementById('npc-dialogue-text').textContent = npc.line;
+                document.getElementById('npc-dialogue-text').textContent = mobileFriendlyText(npc.line);
                 dlg.style.display = 'block';
                 gameState.dialogueTimer = 4.2;
                 sfx.uiClick();
@@ -6506,7 +6535,7 @@
         sfx.uiClick();
         setScreen('playing');
         triggerMeteorLanding();
-        if (canvas.requestPointerLock) {
+        if (!mobileRender && canvas.requestPointerLock) {
           try {
             const p = canvas.requestPointerLock();
             if (p && p.catch) p.catch(() => {});
@@ -6520,7 +6549,7 @@
         sfx.uiClick();
         setScreen('playing');
         triggerMeteorLanding();
-        if (canvas.requestPointerLock) {
+        if (!mobileRender && canvas.requestPointerLock) {
           try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (_) {}
         }
       }
@@ -7860,7 +7889,7 @@
         }
         pp.el.style.display = 'block';
         const tag = n.asleep ? 'SLEEPING' : facing > 0.25 ? 'FACING YOU!' : 'BACK TURNED';
-        document.getElementById('pp-label').textContent = `HOLD [G] · PICKPOCKET ${n.name} (${n.age}) · ${tag}`;
+        document.getElementById('pp-label').textContent = mobileFriendlyText(`HOLD [G] · PICKPOCKET ${n.name} (${n.age}) · ${tag}`);
         document.getElementById('pp-prog').style.width = `${Math.min(100, pp.prog * 100)}%`;
         document.getElementById('pp-aware').style.width = `${Math.min(100, pp.aware * 100)}%`;
       }
@@ -10075,7 +10104,7 @@
         window.addEventListener('blur', () => { for (const k in jk) jk[k] = false; });
         window.addEventListener('mousedown', (e) => {
           if (!J.flying || gameState.screen !== 'playing') return; e.stopImmediatePropagation(); if (e.button === 2) e.preventDefault();
-          if (e.button === 0) { jk.M0 = true; if (document.pointerLockElement !== canvas) { try { const r = canvas.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (_) {} } }
+          if (e.button === 0) { jk.M0 = true; if (!mobileRender && document.pointerLockElement !== canvas) { try { const r = canvas.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (_) {} } }
         }, true);
         window.addEventListener('mouseup', (e) => { if (e.button === 0) jk.M0 = false; }, true);
         window.addEventListener('mousemove', (e) => {
@@ -10271,7 +10300,7 @@
           const dx = e.clientX - lookLastX, dy = e.clientY - lookLastY; lookLastX = e.clientX; lookLastY = e.clientY;
           if (J.flying) { J.sx = cl(J.sx + dx * 0.0032, -1, 1); J.sy = cl(J.sy - dy * 0.0032 * (J.inv ? -1 : 1), -1, 1); }
           else applyLookDelta(dx, dy);
-        });
+        }, { capture: true, passive: false });
         const mobileEndLook = (e) => { if (lookPointer === e.pointerId) { lookPointer = null; mobileLook.classList.remove('active'); } };
         window.addEventListener('pointerup', (e) => { if (stickPointer === e.pointerId) mobileClearStick(); mobileEndHold(e.pointerId); mobileEndLook(e); });
         window.addEventListener('pointercancel', (e) => { if (stickPointer === e.pointerId) mobileClearStick(); mobileEndHold(e.pointerId); mobileEndLook(e); });
