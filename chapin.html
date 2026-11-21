@@ -52,7 +52,11 @@
         radial-gradient(ellipse at center, transparent 62%, rgba(5,8,14,.30) 100%);
     }
     .glass-panel {
-      border-radius: 2px !important;
+      border-radius: 2px;
+    }
+    #minimap-box {
+      border-radius: 9999px !important;
+      overflow: hidden;
     }
     .menu-btn,
     .menu-btn-primary,
@@ -1049,7 +1053,9 @@
         lastStateSend: 0,
         lastNpcSend: 0,
         lastNpcVisibilityCheck: 0,
-        lastVehicleSend: 0
+        lastVehicleSend: 0,
+        joinReadyCallback: null,
+        joinSettled: false
       };
 
       function mpPlayerCount() {
@@ -1189,7 +1195,7 @@
         });
       }
 
-      function mpStartGuest(code) {
+      function mpStartGuest(code, onReady = null) {
         if (!window.Peer) return pushFeed('PEERJS COULD NOT LOAD', 'border-l-rose-500');
         const roomCode = String(code).trim().toUpperCase();
         if (!/^[A-Z2-9]{4}$/.test(roomCode)) return pushFeed('ENTER A 4-CHARACTER ROOM CODE', 'border-l-rose-500');
@@ -1198,6 +1204,8 @@
         multiplayer.mode = 'guest';
         const id = `G${Math.floor(Math.random() * 8999 + 1000)}${Math.floor(Math.random() * 10)}`;
         multiplayer.localId = id;
+        multiplayer.joinReadyCallback = typeof onReady === 'function' ? onReady : null;
+        multiplayer.joinSettled = false;
         multiplayer.peer = new Peer(`gta-aura-chapin-${roomCode}-${id}`);
         let connectionTimeout = null;
         multiplayer.peer.on('open', () => {
@@ -1223,6 +1231,7 @@
           });
           conn.on('error', err => {
             clearTimeout(connectionTimeout);
+            if (!multiplayer.joinSettled) mpResetConnectionState();
             pushFeed(`COULD NOT JOIN ROOM: ${err.type || 'CONNECTION'}`, 'border-l-rose-500');
           });
         });
@@ -1254,7 +1263,8 @@
           const snapshot = mpBuildWorldSnapshot();
           multiplayer.connections.get(id)?.send({ type: 'world_welcome', ...snapshot, playerId: id, playerCount: 1 + multiplayer.connections.size });
         } else if (data.type === 'player_state') {
-          multiplayer.remotePlayers.set(id, { ...(data.state || {}), targetTime: performance.now() });
+          const prev = multiplayer.remotePlayers.get(id) || {};
+          multiplayer.remotePlayers.set(id, { ...prev, ...(data.state || {}), targetTime: performance.now() });
           mpBroadcast({ type: 'player_state_relay', playerId: id, state: data.state }, id);
         } else if (data.type === 'car_enter') {
           const idx = Number(data.carIdx);
@@ -1278,6 +1288,9 @@
           mpBroadcast({ type: 'projectile_spawn', shooterId: id, projectile: data.projectile }, id);
         } else if (data.type === 'hit_player') {
           mpRelayHit(data.targetId, data.amount, data.source, id);
+        } else if (data.type === 'npc_damage') {
+          const npc = npcs[Number(data.npcId)];
+          if (npc) damageNpc(npc, Number(data.amount) || 0, Number(data.knockYaw) || 0);
         }
       }
 
@@ -1300,10 +1313,12 @@
           multiplayer.localId = data.playerId;
           multiplayer.playerCount = Number(data.playerCount) || 2;
           multiplayer.roomCode = data.roomCode || multiplayer.roomCode;
-          multiplayer.remotePlayers.set('1', { ...(data.hostState || {}), targetTime: performance.now() });
+          const prevHost = multiplayer.remotePlayers.get('1') || {};
+          multiplayer.remotePlayers.set('1', { ...prevHost, ...(data.hostState || {}), targetTime: performance.now() });
           for (const entry of data.playerStates || []) {
             if (!Array.isArray(entry) || entry[0] === multiplayer.localId) continue;
-            multiplayer.remotePlayers.set(entry[0], { ...(entry[1] || {}), targetTime: performance.now() });
+            const prev = multiplayer.remotePlayers.get(entry[0]) || {};
+            multiplayer.remotePlayers.set(entry[0], { ...prev, ...(entry[1] || {}), targetTime: performance.now() });
           }
           multiplayer.npcSnapshot = data.npcs || multiplayer.npcSnapshot;
           multiplayer.carOwners = new Map(data.carOwners || []);
@@ -1317,6 +1332,11 @@
             }
           }
           updateMultiplayerHud();
+          if (!multiplayer.joinSettled) {
+            multiplayer.joinSettled = true;
+            if (typeof multiplayer.joinReadyCallback === 'function') multiplayer.joinReadyCallback();
+            multiplayer.joinReadyCallback = null;
+          }
         } else if (data.type === 'player_join') {
           multiplayer.playerCount = Number(data.playerCount) || multiplayer.playerCount;
           if (!multiplayer.remotePlayers.has(data.playerId)) multiplayer.remotePlayers.set(data.playerId, { targetTime: performance.now() });
@@ -1325,7 +1345,8 @@
           multiplayer.playerCount = Number(data.playerCount) || multiplayer.playerCount;
           updateMultiplayerHud();
         } else if (data.type === 'player_state_relay') {
-          multiplayer.remotePlayers.set(data.playerId, { ...(data.state || {}), targetTime: performance.now() });
+          const prev = multiplayer.remotePlayers.get(data.playerId) || {};
+          multiplayer.remotePlayers.set(data.playerId, { ...prev, ...(data.state || {}), targetTime: performance.now() });
         } else if (data.type === 'npc_snapshot') {
           multiplayer.npcSnapshot = data.npcs || [];
         } else if (data.type === 'car_locks') {
@@ -1935,41 +1956,43 @@
         return obj;
       }
 
+      const graphicsTextureCache = new Map();
+
       function applyGraphicsTier(tier) {
         gameState.settings.graphics = tier;
         const isHigh = tier === 'high';
-        const tierTextures = new Map();
-        for (const texture of activeTierTextures) texture.dispose();
-        activeTierTextures.clear();
         animatedWaterTex = null;
 
         for (const entry of registeredMaterials) {
+          const mats = Array.isArray(entry.mat) ? entry.mat : [entry.mat];
           const baseTexture = procTextures[entry.texType];
+          let texture = null;
           if (baseTexture) {
             const key = `${entry.texType}:${entry.repeatX}:${entry.repeatY}`;
-            let texture = tierTextures.get(key);
+            texture = graphicsTextureCache.get(key);
             if (!texture) {
               texture = baseTexture.clone();
-              texture.needsUpdate = true;
               texture.repeat.set(entry.repeatX, entry.repeatY);
-              tierTextures.set(key, texture);
+              texture.minFilter = THREE.LinearMipmapLinearFilter;
+              texture.magFilter = THREE.LinearFilter;
+              texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+              texture.needsUpdate = true;
+              graphicsTextureCache.set(key, texture);
               activeTierTextures.add(texture);
             }
-            entry.mat.map = texture;
-            if (entry.texType === 'water') animatedWaterTex = texture;
-            if (isHigh && entry.bumpScale > 0) {
-              entry.mat.bumpMap = texture;
-              entry.mat.bumpScale = entry.bumpScale;
-            } else {
-              entry.mat.bumpMap = null;
-            }
-            entry.mat.flatShading = entry.keepSmooth ? false : !isHigh;
-          } else {
-            entry.mat.map = null;
-            entry.mat.bumpMap = null;
-            entry.mat.flatShading = entry.keepSmooth ? false : true;
           }
-          entry.mat.needsUpdate = true;
+
+          for (const mat of mats) {
+            const nextFlatShading = entry.keepSmooth ? false : (baseTexture ? !isHigh : true);
+            const nextBumpMap = isHigh && baseTexture && entry.bumpScale > 0 ? texture : null;
+            let changed = false;
+            if (mat.map !== texture) { mat.map = texture; changed = true; }
+            if (mat.bumpMap !== nextBumpMap) { mat.bumpMap = nextBumpMap; changed = true; }
+            if (mat.flatShading !== nextFlatShading) { mat.flatShading = nextFlatShading; changed = true; }
+            if (isHigh && mat.bumpScale !== undefined && entry.bumpScale > 0) mat.bumpScale = entry.bumpScale;
+            if (changed) mat.needsUpdate = true;
+          }
+          if (texture && entry.texType === 'water') animatedWaterTex = texture;
         }
 
         for (const obj of highDetailObjects) {
@@ -3837,6 +3860,11 @@
 
       function damageNpc(npc, amount, knockYaw) {
         if (!npc || npc.asleep) return;
+        if (multiplayer.mode === 'guest') {
+          const npcId = npcs.indexOf(npc);
+          if (npcId >= 0) mpSendToHost({ type: 'npc_damage', npcId, amount, knockYaw });
+          return;
+        }
         npc.hp = Math.max(0, npc.hp - amount);
         npc.stunTimer = 0.45;
         const kf = Math.min(16, 5 + amount * 0.09);
@@ -4644,6 +4672,7 @@
           const driver = v.driver;
           const exitPosition = v.root.localToWorld(new THREE.Vector3(-1.45, 0.16, 0));
           scene.attach(driver.mesh);
+          driver.mesh.scale.setScalar(1);
           driver.mesh.position.copy(exitPosition);
           driver.mesh.rotation.set(0, v.yaw - Math.PI / 2, 0);
           driver.x = exitPosition.x;
@@ -4694,11 +4723,27 @@
           v.flameL.visible = false;
           v.flameR.visible = false;
           const exitDistance = 2.1 * (v.carScale || 1.35);
-          const exitX = v.x - Math.cos(v.yaw) * exitDistance;
-          const exitZ = v.z + Math.sin(v.yaw) * exitDistance;
-          player.x = exitX;
-          player.z = exitZ;
-          player.y = Math.max(0.18, v.y + 0.06);
+          const forwardX = Math.sin(v.yaw);
+          const forwardZ = Math.cos(v.yaw);
+          const exitCandidates = [
+            { x: v.x - Math.cos(v.yaw) * exitDistance, z: v.z + Math.sin(v.yaw) * exitDistance },
+            { x: v.x + Math.cos(v.yaw) * exitDistance, z: v.z - Math.sin(v.yaw) * exitDistance },
+            { x: v.x - forwardX * exitDistance, z: v.z - forwardZ * exitDistance },
+            { x: v.x, z: v.z, y: v.y + 3.0 }
+          ];
+          let exitSpot = null;
+          for (const candidate of exitCandidates) {
+            const exitY = candidate.y !== undefined ? candidate.y : Math.max(0.18, v.y + 0.06);
+            const floorY = computeSupportFloor(candidate.x, candidate.z, exitY + 0.4, player.radius);
+            if (!collidesHorizontally(candidate.x, candidate.z, floorY, player.crouching ? 1.22 : player.height, player.radius)) {
+              exitSpot = { x: candidate.x, y: candidate.y !== undefined ? candidate.y : Math.max(floorY, v.y + 0.06), z: candidate.z };
+              break;
+            }
+          }
+          if (!exitSpot) exitSpot = { x: v.x, y: Math.max(0.18, v.y + 0.06), z: v.z };
+          player.x = exitSpot.x;
+          player.z = exitSpot.z;
+          player.y = exitSpot.y;
           player.vy = 0;
           player.grounded = true;
           player.peakAirY = player.y;
@@ -4998,7 +5043,8 @@
           entry.rig.rig.position.x += ((state.x || entry.rig.rig.position.x) - entry.rig.rig.position.x) * alpha;
           entry.rig.rig.position.y += (((state.y || 0.18) + (state.crouching ? -0.18 : 0)) - entry.rig.rig.position.y) * alpha;
           entry.rig.rig.position.z += ((state.z || entry.rig.rig.position.z) - entry.rig.rig.position.z) * alpha;
-          let yawDelta = ((state.yaw || 0) - entry.rig.rig.rotation.y + Math.PI) % (Math.PI * 2) - Math.PI;
+          const rawDiff = (state.yaw || 0) - entry.rig.rig.rotation.y;
+          const yawDelta = Math.atan2(Math.sin(rawDiff), Math.cos(rawDiff));
           entry.rig.rig.rotation.y += yawDelta * alpha;
           entry.rig.hip.scale.y += ((state.crouching ? 0.82 : 1) - entry.rig.hip.scale.y) * alpha;
           entry.rig.rig.visible = state.inCar ? false : true;
@@ -5038,7 +5084,8 @@
           v.x += ((remote.x || v.x) - v.x) * alpha;
           v.y += ((remote.y || v.y) - v.y) * alpha;
           v.z += ((remote.z || v.z) - v.z) * alpha;
-          let dy = ((remote.yaw || v.yaw) - v.yaw + Math.PI) % (Math.PI * 2) - Math.PI;
+          const carYawDiff = (remote.yaw || v.yaw) - v.yaw;
+          const dy = Math.atan2(Math.sin(carYawDiff), Math.cos(carYawDiff));
           v.yaw += dy * alpha;
           v.speed += ((remote.speed || 0) - v.speed) * alpha;
           v.steerAngle += ((remote.steerAngle || 0) - v.steerAngle) * alpha;
@@ -5093,11 +5140,22 @@
             const alpha = Math.min(1, dt * 8);
             npc.x += (snap.x - npc.x) * alpha;
             npc.z += (snap.z - npc.z) * alpha;
-            npc.yaw += ((((snap.yaw || npc.yaw) - npc.yaw + Math.PI) % (Math.PI * 2)) - Math.PI) * alpha;
+            const npcYawDiff = (snap.yaw || 0) - npc.yaw;
+            npc.yaw += Math.atan2(Math.sin(npcYawDiff), Math.cos(npcYawDiff)) * alpha;
             npc.hp = snap.hp;
             npc.asleep = !!snap.asleep;
             npc.hostile = !!snap.hostile;
+            npc.walkCycle = (snap.walkCycle || npc.walkCycle || 0);
             if (npc.mesh) {
+              const u = npc.mesh.userData;
+              if (u?.legL && u?.legR && u?.armL && u?.armR) {
+                npc.walkCycle += dt * (snap.moving ? (snap.hostile ? 12.5 : 7.5) : 0);
+                const swing = snap.moving ? Math.sin(npc.walkCycle) * (snap.hostile ? 0.78 : 0.52) : 0;
+                u.legL.rotation.x += (swing - u.legL.rotation.x) * Math.min(1, dt * 10);
+                u.legR.rotation.x += (-swing - u.legR.rotation.x) * Math.min(1, dt * 10);
+                u.armL.rotation.x += (-swing * 0.75 - u.armL.rotation.x) * Math.min(1, dt * 10);
+                u.armR.rotation.x += (swing * 0.75 - u.armR.rotation.x) * Math.min(1, dt * 10);
+              }
               npc.mesh.position.set(npc.x, npc.asleep ? 0.34 : 0.18, npc.z);
               npc.mesh.rotation.order = 'YXZ';
               npc.mesh.rotation.set(npc.asleep ? -Math.PI / 2 : 0, npc.yaw, 0);
@@ -5134,7 +5192,7 @@
 
         if (multiplayer.mode === 'host' && multiplayer.lastNpcSend >= 0.1) {
           multiplayer.lastNpcSend = 0;
-          multiplayer.npcSnapshot = npcs.map((npc, id) => ({ id, x: npc.x, z: npc.z, yaw: npc.yaw || 0, hp: npc.hp, asleep: !!npc.asleep, hostile: !!npc.hostile }));
+          multiplayer.npcSnapshot = npcs.map((npc, id) => ({ id, x: npc.x, z: npc.z, yaw: npc.yaw || 0, hp: npc.hp, asleep: !!npc.asleep, hostile: !!npc.hostile, walkCycle: npc.walkCycle || 0, moving: !!(npc.alertState === 'chasing' || npc.fleeTimer > 0 || npc.kvx || npc.kvz) }));
           mpBroadcast({ type: 'npc_snapshot', npcs: multiplayer.npcSnapshot });
         }
 
@@ -5171,6 +5229,22 @@
           fpLeft.itemMount.add(buildLeftItemMesh(lSlot.id));
         }
         spotLight.visible = Boolean(gameState.flashlightOn && lSlot && lSlot.id === 'flashlight');
+        syncFlashlightCameraRig();
+      }
+
+      function syncFlashlightCameraRig() {
+        const lSlot = gameState.leftHotbar[gameState.activeLeftSlot];
+        spotLight.visible = Boolean(gameState.flashlightOn && lSlot && lSlot.id === 'flashlight');
+        if (gameState.thirdPerson) {
+          if (spotLight.parent !== camera) camera.add(spotLight);
+          if (spotLight.target.parent !== camera) camera.add(spotLight.target);
+          spotLight.position.set(0, 0, -0.1);
+          spotLight.target.position.set(0, 0, -10);
+        } else if (spotLight.parent !== fpLeft.itemMount) {
+          fpLeft.itemMount.add(spotLight, spotLight.target);
+          spotLight.position.set(0, 0, -0.1);
+          spotLight.target.position.set(0, 0, -10);
+        }
       }
 
       // =======================================================================
@@ -6215,6 +6289,8 @@
           try {
             const data = JSON.parse(ev.target.result);
             if (!data || !data.player || !data.state) throw new Error('Invalid Grand Theft Aura save file.');
+            gameState.wastedTimer = 0;
+            document.getElementById('wasted-screen').style.display = 'none';
             if (gameState.inCar) exitCurrentCar(true);
             meteorDrop.active = false;
             meteorGroup.visible = false;
@@ -6343,6 +6419,22 @@
         }
       });
 
+      window.addEventListener('blur', () => {
+        for (const code in keys) keys[code] = false;
+        if (typeof jk !== 'undefined') for (const code in jk) jk[code] = false;
+        isPrimaryFireHeld = false;
+        isDraggingLook = false;
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          for (const code in keys) keys[code] = false;
+          if (typeof jk !== 'undefined') for (const code in jk) jk[code] = false;
+          isPrimaryFireHeld = false;
+          isDraggingLook = false;
+        }
+      });
+
       window.addEventListener('mouseup', (e) => {
         if (e.button === 0) {
           isPrimaryFireHeld = false;
@@ -6434,6 +6526,7 @@
             gameState.isAiming = false;
           }
           sfx.uiClick();
+          syncFlashlightCameraRig();
           updateHUD();
         } else if (code === 'KeyQ') {
           cycleRightWeapon(1);
@@ -6590,8 +6683,10 @@
       document.getElementById('join-room-code').oninput = (e) => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4); };
       document.getElementById('btn-join-multiplayer').onclick = () => {
         const code = document.getElementById('join-room-code').value;
-        mpStartGuest(code);
-        if (multiplayer.mode === 'guest') startMultiplayerSession();
+        mpStartGuest(code, () => {
+          if (multiplayer.mode === 'guest') startMultiplayerSession();
+        });
+        pushFeed('CONNECTING TO ROOM...', 'border-l-sky-400');
       };
 
       document.getElementById('btn-start-settings').onclick = () => {
@@ -6668,7 +6763,10 @@
       function computeSupportFloor(x, z, footY, radius) {
         if (footY < -1.0) return sewerFloor(x, z);
         let highest = (x >= 164) ? 0.02 : 0.18;
-        if (z < -170 || x < -196) highest = Math.max(highest, terrainH(x, z));
+        const terrainFloor = terrainH(x, z);
+        if ((z < -170 || x < -196 || isInWater(x, z)) && terrainFloor > -90) {
+          highest = terrainFloor < highest ? terrainFloor : highest;
+        }
 
         for (let r = 0; r < driveableRamps.length; r++) {
           const rm = driveableRamps[r];
@@ -6841,8 +6939,8 @@
           meteorDrop.vz += (targetVz - meteorDrop.vz) * Math.min(1, dt * 6.5);
           meteorDrop.vy += (targetVy - meteorDrop.vy) * Math.min(1, dt * 6.5);
 
-          meteorDrop.x = Math.max(-135, Math.min(365, meteorDrop.x + meteorDrop.vx * dt));
-          meteorDrop.z = Math.max(-170, Math.min(205, meteorDrop.z + meteorDrop.vz * dt));
+          meteorDrop.x = Math.max(-556, Math.min(370, meteorDrop.x + meteorDrop.vx * dt));
+          meteorDrop.z = Math.max(-585, Math.min(208, meteorDrop.z + meteorDrop.vz * dt));
           meteorDrop.y += meteorDrop.vy * dt;
 
           player.x = meteorDrop.x;
@@ -6850,8 +6948,8 @@
           player.z = meteorDrop.z;
 
           const timeToImpact = Math.max(0.05, (meteorDrop.y - 0.18) / Math.max(12, Math.abs(meteorDrop.vy)));
-          const predX = Math.max(-135, Math.min(365, meteorDrop.x + meteorDrop.vx * timeToImpact * 0.55));
-          const predZ = Math.max(-170, Math.min(205, meteorDrop.z + meteorDrop.vz * timeToImpact * 0.55));
+          const predX = Math.max(-556, Math.min(370, meteorDrop.x + meteorDrop.vx * timeToImpact * 0.55));
+          const predZ = Math.max(-585, Math.min(208, meteorDrop.z + meteorDrop.vz * timeToImpact * 0.55));
           const predSurfaceY = computeSupportFloor(predX, predZ, 90, 0.5);
 
           meteorReticle.visible = true;
@@ -7131,7 +7229,21 @@
           const fFloor = computeSupportFloor(nextX + cfx * 1.7, nextZ + cfz * 1.7, v.y + 0.65, 0.5);
           const rFloor = computeSupportFloor(nextX - cfx * 1.7, nextZ - cfz * 1.7, v.y + 0.65, 0.5);
           const gy = Math.max(carFloor, (fFloor + rFloor) * 0.5);
-          v.y = gy > v.y ? gy : v.y + (gy - v.y) * Math.min(1, dt * 14);
+          v.vy = v.vy || 0;
+          if (gy > v.y + 0.08) {
+            v.vy = Math.max(0, v.vy);
+            v.y = gy;
+          } else if (gy < v.y) {
+            v.vy -= 19.5 * dt;
+            v.y += v.vy * dt;
+            if (v.y <= gy) {
+              v.y = gy;
+              v.vy = 0;
+            }
+          } else {
+            v.vy = 0;
+            v.y = gy;
+          }
           const tpT = Math.max(-0.5, Math.min(0.5, Math.atan2(fFloor - rFloor, 3.4)));
           v.terrPitch = (v.terrPitch || 0) + (tpT - (v.terrPitch || 0)) * Math.min(1, dt * 10);
 
