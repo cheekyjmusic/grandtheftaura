@@ -169,21 +169,24 @@
     @keyframes rotatePhone { 0%, 15% { transform: rotate(0); } 55%, 85% { transform: rotate(90deg); } 100% { transform: rotate(90deg); } }
     #mobile-controls { display: none; position: fixed; inset: 0; z-index: 26; pointer-events: none; color: white; font-family: 'Rajdhani', sans-serif; }
     #mobile-controls.visible { display: block; }
-    #mobile-look { position: absolute; z-index: 1; left: 30%; right: 24%; top: 13%; bottom: 24%; pointer-events: auto; touch-action: none; }
+    #mobile-look { position: absolute; z-index: 1; left: 14%; right: 14%; top: 0; bottom: 0; pointer-events: auto; touch-action: none; }
     .mobile-look-hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); color: rgba(255,255,255,.2); font: 700 10px 'Rajdhani',sans-serif; letter-spacing: .18em; pointer-events: none; }
     #mobile-look.active .mobile-look-hint { opacity: 0; }
     .mobile-tools, .mobile-stick-wrap, .mobile-actions, .mobile-car-controls, .mobile-jet-controls { position: absolute; z-index: 3; pointer-events: auto; }
     .mobile-tools { top: max(8px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; gap: 6px; }
-    .mobile-btn { min-width: 46px; height: 44px; padding: 0 10px; border: 1px solid rgba(255,255,255,.25); border-radius: 14px; color: #f8fafc; background: rgba(8,13,22,.78); box-shadow: 0 4px 14px rgba(0,0,0,.38); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font: 700 11px 'Rajdhani',sans-serif; letter-spacing: .06em; touch-action: none; -webkit-tap-highlight-color: transparent; }
+    .mobile-btn { min-width: 42px; height: 38px; padding: 0 9px; border: 1px solid rgba(255,255,255,.25); border-radius: 14px; color: #f8fafc; background: rgba(8,13,22,.78); box-shadow: 0 4px 14px rgba(0,0,0,.38); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font: 700 11px 'Rajdhani',sans-serif; letter-spacing: .06em; touch-action: none; -webkit-tap-highlight-color: transparent; }
     .mobile-btn:active, .mobile-btn.pressed { transform: scale(.94); background: rgba(245,158,11,.88); color: #111827; }
     .mobile-btn:disabled { opacity: .42; filter: saturate(.5); }
     .mobile-btn.primary { border-color: rgba(251,191,36,.75); background: rgba(146,64,14,.82); }
     .mobile-stick-wrap { left: max(18px, env(safe-area-inset-left)); bottom: max(18px, env(safe-area-inset-bottom)); width: 138px; height: 138px; border: 1px solid rgba(255,255,255,.28); border-radius: 50%; background: radial-gradient(circle, rgba(30,41,59,.4), rgba(8,13,22,.72)); box-shadow: inset 0 0 24px rgba(0,0,0,.3), 0 5px 20px rgba(0,0,0,.28); touch-action: none; }
     #mobile-stick-thumb { position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin: -28px; border: 2px solid rgba(255,255,255,.8); border-radius: 50%; background: rgba(56,189,248,.58); box-shadow: 0 2px 12px rgba(0,0,0,.4); transform: translate(0,0); pointer-events: none; }
     .mobile-stick-label { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; color: rgba(255,255,255,.62); font: 700 9px 'Rajdhani',sans-serif; letter-spacing: .15em; pointer-events: none; }
-    .mobile-actions { right: max(12px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom)); display: grid; grid-template-columns: repeat(3, 54px); gap: 8px; justify-items: center; align-items: center; }
-    .mobile-actions .mobile-btn { min-width: 54px; width: 54px; height: 54px; border-radius: 50%; padding: 0 4px; font-size: 10px; }
+    .mobile-actions { right: max(12px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom)); display: grid; grid-template-columns: repeat(2, 48px); gap: 6px; justify-items: center; align-items: center; }
+    .mobile-actions .mobile-btn { min-width: 48px; width: 48px; height: 48px; border-radius: 50%; padding: 0 3px; font-size: 9px; }
     .mobile-actions .wide { grid-column: span 2; width: 100%; border-radius: 14px; }
+    .mobile-extra-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 46px); gap: 5px; padding: 8px; border: 1px solid rgba(255,255,255,.2); border-radius: 14px; background: rgba(8,13,22,.86); }
+    .mobile-extra-actions.hidden { display: none !important; }
+    .mobile-fullscreen { min-width: 48px; }
     .mobile-car-controls, .mobile-jet-controls { right: max(12px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom)); display: none; align-items: end; gap: 10px; }
     .mobile-car-controls.active, .mobile-jet-controls.active { display: flex; }
     .mobile-drive-pedals, .mobile-jet-buttons { display: grid; grid-template-columns: repeat(2, 58px); gap: 8px; }
@@ -200,17 +203,21 @@
     html.mobile-device #minimap-box { width: 112px; height: 112px; }
     html.mobile-device #vehicle-hud { left: 50%; right: auto; bottom: 4px; transform: translateX(-50%) scale(.58); transform-origin: bottom center; }
     html.mobile-device #dual-hand-card, html.mobile-device #onfoot-hotbar { display: none !important; }
+    html.mobile-device #start-menu { justify-content: center; padding: 12px; overflow-y: auto; }
+    html.mobile-device #start-menu > div { width: min(100%, 520px); height: auto; max-height: calc(100dvh - 24px); overflow-y: auto; gap: 12px; }
+    html.mobile-device #start-menu > div > .glass-panel { display: none; }
+    html.mobile-device #start-menu h1 { font-size: clamp(32px, 8vw, 48px); }
+    html.mobile-device #start-menu p { font-size: 11px; line-height: 1.4; }
+    html.mobile-device #start-menu > div > div:nth-child(2) { gap: 6px; margin: 0; }
+    html.mobile-device #start-menu > div > div:nth-child(2) button { padding: 8px 12px; font-size: 14px; }
+    html.mobile-device #start-menu > div > div:nth-child(2) #host-room-row { min-height: 38px; }
+    html.mobile-device #pause-menu > div, html.mobile-device #settings-menu > div, html.mobile-device #inventory-menu > div { max-height: calc(100dvh - 24px); overflow-y: auto; }
     @media (max-height: 500px) and (orientation: landscape) {
-      html.mobile-device #start-menu { justify-content: center; padding: 12px; overflow-y: auto; }
-      html.mobile-device #start-menu > div { display: grid; grid-template-columns: minmax(0,1fr) 230px; align-items: center; gap: 18px; width: 100%; max-width: 860px; height: auto; max-height: none; }
-      html.mobile-device #start-menu > div > .glass-panel { display: none; }
-      html.mobile-device #start-menu h1 { font-size: 40px; }
-      html.mobile-device #start-menu p { font-size: 11px; line-height: 1.35; }
-      html.mobile-device #start-menu > div > div:nth-child(2) { gap: 7px; margin: 0; }
-      html.mobile-device #start-menu > div > div:nth-child(2) button { padding: 8px 12px; font-size: 14px; }
+      html.mobile-device #start-menu > div { display: flex; align-items: stretch; width: min(100%, 520px); }
       .mobile-stick-wrap { width: 116px; height: 116px; }
-      .mobile-actions { grid-template-columns: repeat(3, 48px); gap: 5px; }
-      .mobile-actions .mobile-btn { min-width: 48px; width: 48px; height: 48px; }
+      .mobile-actions { grid-template-columns: repeat(2, 46px); gap: 5px; }
+      .mobile-actions .mobile-btn { min-width: 46px; width: 46px; height: 46px; }
+      .mobile-extra-actions { grid-template-columns: repeat(3, 44px); }
       .mobile-drive-pedals { grid-template-columns: repeat(2, 52px); gap: 5px; }
       .mobile-drive-pedals .mobile-btn { min-width: 52px; width: 52px; height: 52px; }
       .mobile-jet-buttons { grid-template-columns: repeat(3, 46px); gap: 5px; }
@@ -1138,6 +1145,7 @@
         playerCount: 1,
         lastStateSend: 0,
         lastNpcSend: 0,
+        lastNpcVisibilityCheck: 0,
         lastVehicleSend: 0
       };
 
@@ -1337,15 +1345,16 @@
       // 4. WEBGL RENDERER, SCENE, ENVIRONMENT REFLECTIONS & LIGHTING
       // =======================================================================
       const canvas = document.getElementById('game-canvas');
+      const mobileRender = navigator.maxTouchPoints > 0 || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
       const renderer = new THREE.WebGLRenderer({
         canvas,
-        antialias: true,
+        antialias: !mobileRender,
         powerPreference: 'high-performance'
       });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, mobileRender ? 0.9 : 1.25));
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
-      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.enabled = !mobileRender;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.12;
@@ -1931,8 +1940,8 @@
         rimLight.intensity = isHigh ? 0.55 : tier === 'medium' ? 0.22 : 0.12;
         sunLight.intensity = isHigh ? 1.65 : tier === 'medium' ? 1.5 : 1.42;
         hemiLight.intensity = isHigh ? 0.96 : tier === 'medium' ? 0.92 : 0.86;
-        renderer.shadowMap.enabled = true;
-        const targetSize = isHigh ? 1536 : tier === 'medium' ? 1024 : 512;
+        renderer.shadowMap.enabled = !mobileRender;
+        const targetSize = mobileRender ? 512 : isHigh ? 1536 : tier === 'medium' ? 1024 : 512;
         if (sunLight.shadow.mapSize.width !== targetSize) {
           sunLight.shadow.mapSize.width = targetSize;
           sunLight.shadow.mapSize.height = targetSize;
@@ -1945,7 +1954,7 @@
           if (child.isMesh && child.material) child.material.needsUpdate = true;
         });
 
-        const maxDpr = tier === 'low' ? 0.95 : tier === 'medium' ? 1.2 : 1.55;
+        const maxDpr = mobileRender ? 0.9 : tier === 'low' ? 0.95 : tier === 'medium' ? 1.2 : 1.55;
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr));
         renderer.setSize(window.innerWidth, window.innerHeight);
       }
@@ -5016,6 +5025,30 @@
         }
 
         if (multiplayer.mode === 'guest') {
+          const now = performance.now();
+          if (now - multiplayer.lastNpcVisibilityCheck >= 200) {
+            multiplayer.lastNpcVisibilityCheck = now;
+            for (const npc of npcs) {
+              const distance = Math.hypot(npc.x - player.x, npc.z - player.z);
+              if (!npc.spawned && distance < 82) {
+                npc.mesh = buildNpcMesh(npc.shirt, npc.pants, npc.bandana, npc);
+                npc.mesh.position.set(npc.x, npc.asleep ? 0.34 : 0.18, npc.z);
+                npc.mesh.rotation.y = npc.yaw;
+                scene.add(npc.mesh);
+                npc.spawned = true;
+              } else if (npc.spawned && distance > 98) {
+                scene.remove(npc.mesh);
+                freeGeo(npc.mesh);
+                npc.mesh = null;
+                if (npc.sleepZGroup) {
+                  scene.remove(npc.sleepZGroup);
+                  npc.sleepZGroup = null;
+                }
+                npc.spawned = false;
+              }
+            }
+          }
+
           for (const snap of multiplayer.npcSnapshot) {
             const npc = npcs[snap.id];
             if (!npc) continue;
@@ -5023,10 +5056,25 @@
             npc.x += (snap.x - npc.x) * alpha;
             npc.z += (snap.z - npc.z) * alpha;
             npc.yaw += ((((snap.yaw || npc.yaw) - npc.yaw + Math.PI) % (Math.PI * 2)) - Math.PI) * alpha;
-            if (npc.mesh) npc.mesh.position.set(npc.x, npc.mesh.position.y, npc.z);
             npc.hp = snap.hp;
             npc.asleep = !!snap.asleep;
             npc.hostile = !!snap.hostile;
+            if (npc.mesh) {
+              npc.mesh.position.set(npc.x, npc.asleep ? 0.34 : 0.18, npc.z);
+              npc.mesh.rotation.order = 'YXZ';
+              npc.mesh.rotation.set(npc.asleep ? -Math.PI / 2 : 0, npc.yaw, 0);
+              if (npc.asleep && !npc.sleepZGroup) {
+                npc.sleepZGroup = buildSleepZzzGroup();
+                scene.add(npc.sleepZGroup);
+              } else if (!npc.asleep && npc.sleepZGroup) {
+                scene.remove(npc.sleepZGroup);
+                npc.sleepZGroup = null;
+              }
+              if (npc.sleepZGroup) {
+                npc.sleepZGroup.position.set(npc.x, 0.78, npc.z);
+                npc.sleepZGroup.lookAt(camera.position);
+              }
+            }
           }
         }
       }
@@ -8173,7 +8221,7 @@
       buildCityLandmarks();
       populateWorldProps();
       spawnCityTraffic();
-      applyGraphicsTier('medium');
+      applyGraphicsTier(mobileRender ? 'low' : 'medium');
       syncEquippedMeshes();
       updateHUD();
 
@@ -10080,7 +10128,7 @@
         };
         jetVisuals(0);
 
-        const mobileDevice = navigator.maxTouchPoints > 0 || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+        const mobileDevice = mobileRender;
         if (mobileDevice) document.documentElement.classList.add('mobile-device');
         window.__requestLandscape = () => {
           if (!mobileDevice) return;
@@ -10093,14 +10141,17 @@
         };
         const mobileControls = document.createElement('div'); mobileControls.id = 'mobile-controls';
         mobileControls.innerHTML = '<div id="mobile-look" aria-label="Drag to look"><span class="mobile-look-hint">DRAG TO LOOK</span></div>'
-          + '<div class="mobile-tools"><button class="mobile-btn" data-mobile-action="map">MAP</button><button class="mobile-btn" data-mobile-action="bag">BAG</button><button class="mobile-btn" data-mobile-action="pov">POV</button><button class="mobile-btn primary" data-mobile-action="pause">PAUSE</button></div>'
+          + '<div class="mobile-tools"><button class="mobile-btn mobile-fullscreen" data-mobile-action="fullscreen" aria-label="Toggle fullscreen">FULL</button><button class="mobile-btn primary" data-mobile-action="pause">PAUSE</button></div>'
           + '<div class="mobile-stick-wrap" id="mobile-stick" aria-label="Movement joystick"><div id="mobile-stick-thumb"></div><div class="mobile-stick-label">MOVE</div></div>'
           + '<div class="mobile-actions" id="mobile-foot-actions">'
           + '<button class="mobile-btn primary" data-mobile-action="fire">FIRE</button><button class="mobile-btn" data-mobile-action="jump">JUMP</button><button class="mobile-btn primary wide" id="mobile-interact" data-mobile-action="interact">USE</button>'
+          + '<button class="mobile-btn" data-mobile-action="more" aria-expanded="false">MORE</button>'
+          + '<div class="mobile-extra-actions hidden" id="mobile-extra-actions">'
+          + '<button class="mobile-btn" data-mobile-action="map">MAP</button><button class="mobile-btn" data-mobile-action="bag">BAG</button><button class="mobile-btn" data-mobile-action="pov">POV</button>'
           + '<button class="mobile-btn" data-mobile-action="run" data-mobile-hold="ShiftLeft">RUN</button><button class="mobile-btn" data-mobile-action="crouch">CROUCH</button><button class="mobile-btn" data-mobile-action="aim">AIM</button>'
           + '<button class="mobile-btn" data-mobile-action="slot-prev">ITEM ◀</button><button class="mobile-btn" data-mobile-action="item">USE ITEM</button><button class="mobile-btn" data-mobile-action="slot-next">ITEM ▶</button>'
           + '<button class="mobile-btn" data-mobile-action="weapon">WEAPON</button><button class="mobile-btn" data-mobile-action="strike">STRIKE</button><button class="mobile-btn" data-mobile-action="auto">AUTO</button>'
-          + '<button class="mobile-btn" data-mobile-action="pickpocket" data-mobile-hold="KeyG">SNEAK</button><button class="mobile-btn" data-mobile-action="bunker">BUNKER</button></div>'
+          + '<button class="mobile-btn" data-mobile-action="pickpocket" data-mobile-hold="KeyG">SNEAK</button></div></div>'
           + '<div class="mobile-car-controls" id="mobile-car-controls"><div class="mobile-shifter"><div class="mobile-gear-caption">SHIFTER</div><button class="mobile-btn" data-mobile-action="gear-up" aria-label="Shift up">▲</button><div id="mobile-gear-label">1</div><button class="mobile-btn" data-mobile-action="gear-down" aria-label="Shift down">▼</button></div>'
           + '<div class="mobile-drive-pedals"><button class="mobile-btn primary" data-mobile-action="gas" data-mobile-hold="KeyW">GAS</button><button class="mobile-btn" data-mobile-action="brake" data-mobile-hold="KeyS">BRAKE</button><button class="mobile-btn" data-mobile-action="drift" data-mobile-hold="Space">DRIFT</button><button class="mobile-btn" data-mobile-action="horn">HORN</button><button class="mobile-btn wide" data-mobile-action="exit">EXIT</button></div></div>'
           + '<div class="mobile-jet-controls" id="mobile-jet-controls"><div class="mobile-jet-buttons"><button class="mobile-btn" data-mobile-action="jet-throttle-up" data-mobile-hold="KeyW">THR +</button><button class="mobile-btn" data-mobile-action="jet-throttle-down" data-mobile-hold="KeyS">THR −</button><button class="mobile-btn primary" data-mobile-action="jet-afterburner" data-mobile-hold="ShiftLeft">BOOST</button><button class="mobile-btn" data-mobile-action="jet-cannon">GUN</button><button class="mobile-btn" data-mobile-action="jet-nuke">NUKE</button><button class="mobile-btn" data-mobile-action="jet-pitch-up" data-mobile-hold="ArrowUp">PULL UP</button><button class="mobile-btn" data-mobile-action="jet-pitch-down" data-mobile-hold="ArrowDown">DIVE</button><button class="mobile-btn" data-mobile-action="jet-rudder-left" data-mobile-hold="KeyQ" aria-label="Yaw left">YAW ◀</button><button class="mobile-btn" data-mobile-action="jet-rudder-right" data-mobile-hold="KeyE" aria-label="Yaw right">YAW ▶</button><button class="mobile-btn" data-mobile-action="jet-camera">CAM</button><button class="mobile-btn" data-mobile-action="jet-invert">INVERT</button><button class="mobile-btn wide" data-mobile-action="exit">EXIT JET</button></div></div>';
@@ -10159,8 +10210,28 @@
             mobileTapKey(keyEl === 'F' ? 'KeyF' : 'KeyE');
           } else if (gameState.inCar) mobileTapKey('KeyF');
         };
+        const toggleFullscreen = async () => {
+          try {
+            if (document.fullscreenElement) await document.exitFullscreen();
+            else if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
+            else { pushFeed('FULLSCREEN IS NOT AVAILABLE IN THIS BROWSER', 'border-l-rose-500'); return; }
+          } catch (error) {
+            pushFeed(`FULLSCREEN FAILED: ${error.message || 'BROWSER BLOCKED THE REQUEST'}`, 'border-l-rose-500');
+          }
+        };
+        const updateFullscreenButton = () => {
+          const button = mobileControls.querySelector('[data-mobile-action="fullscreen"]');
+          if (button) button.textContent = document.fullscreenElement ? 'EXIT FULL' : 'FULL';
+        };
+        document.addEventListener('fullscreenchange', updateFullscreenButton);
         const mobileDoAction = (action) => {
-          if (action === 'map') gameState.mapOpen ? closeMapModal() : openMapModal();
+          if (action === 'fullscreen') toggleFullscreen();
+          else if (action === 'more') {
+            const drawer = document.getElementById('mobile-extra-actions');
+            const open = drawer.classList.toggle('hidden') === false;
+            mobileControls.querySelector('[data-mobile-action="more"]').setAttribute('aria-expanded', String(open));
+          }
+          else if (action === 'map') gameState.mapOpen ? closeMapModal() : openMapModal();
           else if (action === 'bag') gameState.inventoryOpen ? closeInventoryModal() : openInventoryModal();
           else if (action === 'pov') mobileTapKey('KeyV');
           else if (action === 'pause') setScreen(gameState.screen === 'paused' ? 'playing' : 'paused');
@@ -10173,7 +10244,6 @@
           else if (action === 'weapon') cycleRightWeapon(1);
           else if (action === 'strike') mobileTapKey('KeyB');
           else if (action === 'auto') mobileTapKey('KeyN');
-          else if (action === 'bunker') mobileTapKey('KeyJ');
           else if (action === 'gear-up') shiftVehicleGear(1);
           else if (action === 'gear-down') shiftVehicleGear(-1);
           else if (action === 'horn') sfx.horn();
@@ -10193,11 +10263,9 @@
         mobileControls.addEventListener('pointercancel', (e) => mobileEndHold(e.pointerId));
         mobileControls.addEventListener('lostpointercapture', (e) => mobileEndHold(e.pointerId));
         mobileStick.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); stickPointer = e.pointerId; mobileUpdateStick(e); try { mobileStick.setPointerCapture(e.pointerId); } catch (_) { } });
-        mobileStick.addEventListener('pointermove', (e) => { if (stickPointer === e.pointerId) { e.preventDefault(); mobileUpdateStick(e); } });
-        mobileStick.addEventListener('pointerup', (e) => { if (stickPointer === e.pointerId) mobileClearStick(); });
-        mobileStick.addEventListener('pointercancel', mobileClearStick);
         mobileLook.addEventListener('pointerdown', (e) => { if (!mobileDevice || gameState.screen !== 'playing' || gameState.inventoryOpen || gameState.mapOpen || gameState.settingsOpen) return; e.preventDefault(); lookPointer = e.pointerId; lookLastX = e.clientX; lookLastY = e.clientY; mobileLook.classList.add('active'); try { mobileLook.setPointerCapture(e.pointerId); } catch (_) { } });
-        mobileLook.addEventListener('pointermove', (e) => {
+        window.addEventListener('pointermove', (e) => {
+          if (stickPointer === e.pointerId) { e.preventDefault(); mobileUpdateStick(e); }
           if (lookPointer !== e.pointerId) return;
           e.preventDefault();
           const dx = e.clientX - lookLastX, dy = e.clientY - lookLastY; lookLastX = e.clientX; lookLastY = e.clientY;
@@ -10205,11 +10273,17 @@
           else applyLookDelta(dx, dy);
         });
         const mobileEndLook = (e) => { if (lookPointer === e.pointerId) { lookPointer = null; mobileLook.classList.remove('active'); } };
-        mobileLook.addEventListener('pointerup', mobileEndLook); mobileLook.addEventListener('pointercancel', mobileEndLook); mobileLook.addEventListener('lostpointercapture', mobileEndLook);
+        window.addEventListener('pointerup', (e) => { if (stickPointer === e.pointerId) mobileClearStick(); mobileEndHold(e.pointerId); mobileEndLook(e); });
+        window.addEventListener('pointercancel', (e) => { if (stickPointer === e.pointerId) mobileClearStick(); mobileEndHold(e.pointerId); mobileEndLook(e); });
+        mobileLook.addEventListener('lostpointercapture', mobileEndLook);
         window.addEventListener('blur', () => { mobileClearStick(); for (const id of mobileHeld.keys()) mobileEndHold(id); lookPointer = null; });
         window.addEventListener('orientationchange', () => { mobileClearStick(); });
-        window.__syncMobileControls = () => {
+        let lastMobileUiSync = 0;
+        window.__syncMobileControls = (force = false) => {
           if (!mobileDevice) return;
+          const now = performance.now();
+          if (!force && now - lastMobileUiSync < 120) return;
+          lastMobileUiSync = now;
           const active = gameState.screen === 'playing' && !gameState.inventoryOpen && !gameState.mapOpen && !gameState.settingsOpen;
           mobileControls.classList.toggle('visible', active);
           document.getElementById('mobile-foot-actions').style.display = !gameState.inCar && !J.flying ? 'grid' : 'none';
@@ -10224,8 +10298,13 @@
           const aim = mobileControls.querySelector('[data-mobile-action="aim"]'); aim.disabled = !activeWeapon || gameState.inCar;
           const vehicle = vehicles[gameState.activeCarIndex];
           document.getElementById('mobile-gear-label').textContent = vehicle ? GEAR_LABELS[vehicle.gearIndex] : '1';
+          if (gameState.inCar || J.flying || gameState.screen !== 'playing') {
+            document.getElementById('mobile-extra-actions').classList.add('hidden');
+            mobileControls.querySelector('[data-mobile-action="more"]').setAttribute('aria-expanded', 'false');
+          }
+          updateFullscreenButton();
         };
-        window.__syncMobileControls();
+        window.__syncMobileControls(true);
       }
 
       let lastTime = performance.now();
