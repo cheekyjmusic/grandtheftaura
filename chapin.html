@@ -726,6 +726,16 @@
         </p>
       </div>
 
+      <div class="flex items-center justify-between mb-6 pt-4 border-t border-white/15">
+        <div>
+          <div class="font-tactical text-sm font-bold uppercase text-slate-200">MOBILE CONTROLS</div>
+          <div class="text-xs text-slate-400">Touch joystick, buttons, and drag-to-look</div>
+        </div>
+        <button id="btn-setting-mobile" class="menu-btn px-4 py-2 font-display text-xs uppercase text-rose-400 border-rose-500/40 cursor-pointer">
+          DISABLED
+        </button>
+      </div>
+
       <div id="desktop-controls-overview" class="mb-6 pt-4 border-t border-white/15">
         <div class="font-tactical text-sm font-bold uppercase text-slate-200 mb-3">COMPUTER CONTROLS</div>
         <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px] text-slate-300">
@@ -859,6 +869,11 @@
       const { RIGHT_WEAPONS, LEFT_ITEMS } = await import('./js/items.js');
       const sharedState = await import('./js/state.js');
       const { MAX_HOTDOG_AMMO, gameState, player, worldBoxes, driveableRamps, mapShapes, enterableZones, smashableCrates, hazardBarrels, worldPickups, particleBursts, projectileWieners, lampPosts, aviationBeacons, npcs, buildingLods, skyscrapers, sausageRefillZones, keys } = sharedState;
+      try {
+        gameState.settings.mobileControls = localStorage.getItem('gtaAura.mobileControls.v1') === '1';
+      } catch (_) {
+        gameState.settings.mobileControls = false;
+      }
       gameState.wastedTimer = 0;
 
       // =======================================================================
@@ -1072,8 +1087,64 @@
         return code;
       }
 
+      function mpCurrentPlayerState() {
+        const moving = !!(keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'] || keys['ArrowUp'] || keys['ArrowDown'] || keys['ArrowLeft'] || keys['ArrowRight']);
+        return {
+          x: player.x, y: player.y, z: player.z, yaw: player.yaw, pitch: player.pitch,
+          crouching: player.crouching, grounded: player.grounded, moving,
+          sprinting: !!(keys['ShiftLeft'] || keys['ShiftRight']) && moving,
+          weapon: gameState.activeRightWeapon, attacking: player.attackTimer > 0,
+          inCar: gameState.inCar, carIdx: gameState.activeCarIndex, hp: gameState.hp
+        };
+      }
+
+      function mpRemoveRemotePlayers() {
+        for (const [id, remote] of multiplayer.remotePlayers) {
+          if (remote?.rig?.rig) scene.remove(remote.rig.rig);
+        }
+        multiplayer.remotePlayers.clear();
+        for (let i = multiplayer.remoteProjectiles.length - 1; i >= 0; i--) {
+          if (multiplayer.remoteProjectiles[i]?.mesh) scene.remove(multiplayer.remoteProjectiles[i].mesh);
+        }
+        multiplayer.remoteProjectiles.length = 0;
+      }
+
+      function mpResetConnectionState() {
+        const peer = multiplayer.peer;
+        multiplayer.peer = null;
+        multiplayer.mode = 'single';
+        multiplayer.hostConnection = null;
+        multiplayer.connections.clear();
+        multiplayer.carOwners.clear();
+        multiplayer.remoteCars.clear();
+        multiplayer.npcSnapshot = [];
+        multiplayer.playerCount = 1;
+        mpRemoveRemotePlayers();
+        multiplayer.roomCode = '';
+        multiplayer.localId = '1';
+        try { peer?.destroy(); } catch (_) {}
+        updateMultiplayerHud();
+      }
+
+      function mpBuildWorldSnapshot() {
+        const playerStates = [];
+        for (const [id, remote] of multiplayer.remotePlayers) {
+          if (remote) {
+            const { rig, targetTime, ...state } = remote;
+            playerStates.push([id, state]);
+          }
+        }
+        const carSnapshots = vehicles.map((v, carIdx) => ({ carIdx, x: v.x, y: v.y, z: v.z, yaw: v.yaw, speed: v.speed, steerAngle: v.steerAngle || 0, flameTimer: v.flameTimer || 0 }));
+        return {
+          hostId: '1', roomCode: multiplayer.roomCode, playerCount: 1 + multiplayer.connections.size,
+          hostState: mpCurrentPlayerState(), playerStates,
+          npcs: multiplayer.npcSnapshot, carOwners: Array.from(multiplayer.carOwners.entries()), carSnapshots
+        };
+      }
+
       function mpStartHost() {
         if (!window.Peer) return pushFeed('PEERJS COULD NOT LOAD', 'border-l-rose-500');
+        if (multiplayer.mode !== 'single') mpResetConnectionState();
         multiplayer.roomCode = mpRoomCode();
         multiplayer.mode = 'host';
         multiplayer.localId = '1';
@@ -1083,46 +1154,83 @@
           document.getElementById('host-room-code').textContent = multiplayer.roomCode;
           document.getElementById('host-room-row').className = 'flex items-center gap-2';
           updateMultiplayerHud();
+          pushFeed(`ROOM OPEN — CODE ${multiplayer.roomCode}`, 'border-l-amber-400');
         });
         multiplayer.peer.on('connection', conn => {
-          const id = conn.peer.split('-').pop();
+          const id = String(conn.peer || '').split('-').pop();
+          if (!id) {
+            conn.close();
+            return;
+          }
           multiplayer.connections.set(id, conn);
           conn.on('open', () => {
             multiplayer.playerCount = 1 + multiplayer.connections.size;
-            conn.send({ type: 'world_welcome', hostId: '1', playerId: id, roomCode: multiplayer.roomCode, playerCount: multiplayer.playerCount });
-            conn.send({ type: 'npc_snapshot', npcs: multiplayer.npcSnapshot });
-            conn.send({ type: 'car_locks', carOwners: Array.from(multiplayer.carOwners.entries()) });
+            const snapshot = mpBuildWorldSnapshot();
+            conn.send({ type: 'world_welcome', ...snapshot, playerId: id, playerCount: multiplayer.playerCount });
+            mpBroadcast({ type: 'player_join', playerId: id, playerCount: multiplayer.playerCount }, id);
             updateMultiplayerHud();
           });
           conn.on('data', data => mpHostData(id, data));
           conn.on('close', () => mpGuestDisconnected(id));
+          conn.on('error', err => pushFeed(`GUEST CONNECTION ERROR: ${err.type || 'CONNECTION'}`, 'border-l-rose-500'));
         });
-        multiplayer.peer.on('error', err => pushFeed(`MULTIPLAYER ERROR: ${err.type || 'CONNECTION'}`, 'border-l-rose-500'));
+        multiplayer.peer.on('error', err => {
+          if (err.type === 'unavailable-id' && multiplayer.mode === 'host') {
+            mpResetConnectionState();
+            setTimeout(mpStartHost, 100);
+            pushFeed('ROOM CODE COLLISION — CREATING A NEW ROOM', 'border-l-amber-400');
+            return;
+          }
+          if (multiplayer.mode === 'host') mpResetConnectionState();
+          pushFeed(`MULTIPLAYER ERROR: ${err.type || 'CONNECTION'}`, 'border-l-rose-500');
+        });
+        multiplayer.peer.on('close', () => {
+          if (multiplayer.mode === 'host') mpResetConnectionState();
+        });
       }
 
       function mpStartGuest(code) {
         if (!window.Peer) return pushFeed('PEERJS COULD NOT LOAD', 'border-l-rose-500');
-        multiplayer.roomCode = String(code).trim().toUpperCase();
-        if (!/^[A-Z2-9]{4}$/.test(multiplayer.roomCode)) return pushFeed('ENTER A 4-CHARACTER ROOM CODE', 'border-l-rose-500');
+        const roomCode = String(code).trim().toUpperCase();
+        if (!/^[A-Z2-9]{4}$/.test(roomCode)) return pushFeed('ENTER A 4-CHARACTER ROOM CODE', 'border-l-rose-500');
+        if (multiplayer.mode !== 'single') mpResetConnectionState();
+        multiplayer.roomCode = roomCode;
         multiplayer.mode = 'guest';
-        const id = `G${Math.floor(Math.random() * 8999 + 1000)}`;
+        const id = `G${Math.floor(Math.random() * 8999 + 1000)}${Math.floor(Math.random() * 10)}`;
         multiplayer.localId = id;
-        multiplayer.peer = new Peer(`gta-aura-chapin-${multiplayer.roomCode}-${id}`);
+        multiplayer.peer = new Peer(`gta-aura-chapin-${roomCode}-${id}`);
+        let connectionTimeout = null;
         multiplayer.peer.on('open', () => {
-          const conn = multiplayer.peer.connect(`gta-aura-chapin-${multiplayer.roomCode}-HOST`, { reliable: true });
+          const conn = multiplayer.peer.connect(`gta-aura-chapin-${roomCode}-HOST`, { reliable: true });
           multiplayer.hostConnection = conn;
+          connectionTimeout = setTimeout(() => {
+            if (multiplayer.mode === 'guest' && !conn.open) {
+              pushFeed('COULD NOT CONNECT — HOST NOT FOUND', 'border-l-rose-500');
+              mpResetConnectionState();
+            }
+          }, 12000);
           conn.on('open', () => {
+            clearTimeout(connectionTimeout);
             updateMultiplayerHud();
             mpSendToHost({ type: 'guest_ready' });
           });
           conn.on('data', data => mpGuestData(data));
           conn.on('close', () => {
-            multiplayer.mode = 'single';
-            updateMultiplayerHud();
+            clearTimeout(connectionTimeout);
+            if (multiplayer.mode !== 'guest') return;
+            mpResetConnectionState();
             pushFeed('HOST DISCONNECTED — SINGLEPLAYER RESUMED', 'border-l-rose-500');
           });
+          conn.on('error', err => {
+            clearTimeout(connectionTimeout);
+            pushFeed(`COULD NOT JOIN ROOM: ${err.type || 'CONNECTION'}`, 'border-l-rose-500');
+          });
         });
-        multiplayer.peer.on('error', err => pushFeed(`COULD NOT JOIN ROOM: ${err.type || 'CONNECTION'}`, 'border-l-rose-500'));
+        multiplayer.peer.on('error', err => {
+          clearTimeout(connectionTimeout);
+          if (multiplayer.mode === 'guest') mpResetConnectionState();
+          pushFeed(`COULD NOT JOIN ROOM: ${err.type || 'CONNECTION'}`, 'border-l-rose-500');
+        });
       }
 
       function mpGuestDisconnected(id) {
@@ -1135,13 +1243,17 @@
         multiplayer.remotePlayers.delete(id);
         multiplayer.playerCount = 1 + multiplayer.connections.size;
         mpBroadcast({ type: 'player_leave', playerId: id });
+        mpBroadcast({ type: 'player_count_sync', playerCount: multiplayer.playerCount });
         mpBroadcast({ type: 'car_locks', carOwners: Array.from(multiplayer.carOwners.entries()) });
         updateMultiplayerHud();
       }
 
       function mpHostData(id, data) {
         if (!data || typeof data !== 'object') return;
-        if (data.type === 'player_state') {
+        if (data.type === 'guest_ready') {
+          const snapshot = mpBuildWorldSnapshot();
+          multiplayer.connections.get(id)?.send({ type: 'world_welcome', ...snapshot, playerId: id, playerCount: 1 + multiplayer.connections.size });
+        } else if (data.type === 'player_state') {
           multiplayer.remotePlayers.set(id, { ...(data.state || {}), targetTime: performance.now() });
           mpBroadcast({ type: 'player_state_relay', playerId: id, state: data.state }, id);
         } else if (data.type === 'car_enter') {
@@ -1150,7 +1262,7 @@
             multiplayer.carOwners.set(idx, id);
             const grant = { type: 'car_enter_granted', carIdx: idx, playerId: id };
             multiplayer.connections.get(id)?.send(grant);
-            mpBroadcast(grant, id);
+            mpBroadcast({ type: 'car_locks', carOwners: Array.from(multiplayer.carOwners.entries()) }, id);
           } else {
             multiplayer.connections.get(id)?.send({ type: 'car_enter_denied', carIdx: idx });
           }
@@ -1187,6 +1299,30 @@
         if (data.type === 'world_welcome') {
           multiplayer.localId = data.playerId;
           multiplayer.playerCount = Number(data.playerCount) || 2;
+          multiplayer.roomCode = data.roomCode || multiplayer.roomCode;
+          multiplayer.remotePlayers.set('1', { ...(data.hostState || {}), targetTime: performance.now() });
+          for (const entry of data.playerStates || []) {
+            if (!Array.isArray(entry) || entry[0] === multiplayer.localId) continue;
+            multiplayer.remotePlayers.set(entry[0], { ...(entry[1] || {}), targetTime: performance.now() });
+          }
+          multiplayer.npcSnapshot = data.npcs || multiplayer.npcSnapshot;
+          multiplayer.carOwners = new Map(data.carOwners || []);
+          for (const car of data.carSnapshots || []) {
+            const v = vehicles[Number(car.carIdx)];
+            if (v) {
+              v.x = car.x; v.y = car.y; v.z = car.z; v.yaw = car.yaw;
+              v.speed = car.speed || 0;
+              v.root.position.set(v.x, v.y, v.z);
+              v.root.rotation.y = v.yaw;
+            }
+          }
+          updateMultiplayerHud();
+        } else if (data.type === 'player_join') {
+          multiplayer.playerCount = Number(data.playerCount) || multiplayer.playerCount;
+          if (!multiplayer.remotePlayers.has(data.playerId)) multiplayer.remotePlayers.set(data.playerId, { targetTime: performance.now() });
+          updateMultiplayerHud();
+        } else if (data.type === 'player_count_sync') {
+          multiplayer.playerCount = Number(data.playerCount) || multiplayer.playerCount;
           updateMultiplayerHud();
         } else if (data.type === 'player_state_relay') {
           multiplayer.remotePlayers.set(data.playerId, { ...(data.state || {}), targetTime: performance.now() });
@@ -4886,6 +5022,13 @@
             entry.rig.armL.rotation.x *= 0.82;
             entry.rig.armR.rotation.x *= 0.82;
           }
+          if (state.attacking) {
+            entry.rig.armR.rotation.x = -1.15;
+            entry.rig.elbowR.rotation.x = -0.85;
+            entry.rig.armL.rotation.x = -0.18;
+          } else {
+            entry.rig.elbowR.rotation.x *= 0.82;
+          }
         }
 
         for (const [idx, remote] of multiplayer.remoteCars) {
@@ -4981,14 +5124,7 @@
 
         if (multiplayer.lastStateSend >= 0.05) {
           multiplayer.lastStateSend = 0;
-          const moving = !!(keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'] || keys['ArrowUp'] || keys['ArrowDown'] || keys['ArrowLeft'] || keys['ArrowRight']);
-          const state = {
-            x: player.x, y: player.y, z: player.z, yaw: player.yaw, pitch: player.pitch,
-            crouching: player.crouching, grounded: player.grounded, moving,
-            sprinting: !!(keys['ShiftLeft'] || keys['ShiftRight']) && moving,
-            weapon: gameState.activeRightWeapon, attacking: player.attackTimer > 0,
-            inCar: gameState.inCar, carIdx: gameState.activeCarIndex, hp: gameState.hp
-          };
+          const state = mpCurrentPlayerState();
           if (multiplayer.mode === 'host') {
             mpBroadcast({ type: 'player_state_relay', playerId: '1', state });
           } else if (multiplayer.mode === 'guest') {
@@ -6016,6 +6152,14 @@
         sfxBtn.className = gameState.settings.sfx
           ? 'menu-btn px-4 py-2 font-display text-xs uppercase text-emerald-400 border-emerald-500/40 cursor-pointer'
           : 'menu-btn px-4 py-2 font-display text-xs uppercase text-rose-400 border-rose-500/40 cursor-pointer';
+
+        const mobileBtn = document.getElementById('btn-setting-mobile');
+        if (mobileBtn) {
+          mobileBtn.textContent = gameState.settings.mobileControls ? 'ENABLED' : 'DISABLED';
+          mobileBtn.className = gameState.settings.mobileControls
+            ? 'menu-btn px-4 py-2 font-display text-xs uppercase text-emerald-400 border-emerald-500/40 cursor-pointer'
+            : 'menu-btn px-4 py-2 font-display text-xs uppercase text-rose-400 border-rose-500/40 cursor-pointer';
+        }
       }
 
       function openMapModal() {
@@ -6405,9 +6549,7 @@
       }
 
       document.getElementById('btn-start-play').onclick = () => {
-        multiplayer.mode = 'single';
-        multiplayer.roomCode = '';
-        updateMultiplayerHud();
+        mpResetConnectionState();
         sfx.unlock();
         if (window.__requestLandscape) window.__requestLandscape();
         sfx.uiClick();
@@ -6498,6 +6640,13 @@
         sfx.enabled = gameState.settings.sfx;
         sfx.uiClick();
         syncSettingsButtons();
+      };
+      document.getElementById('btn-setting-mobile').onclick = () => {
+        gameState.settings.mobileControls = !gameState.settings.mobileControls;
+        try { localStorage.setItem('gtaAura.mobileControls.v1', gameState.settings.mobileControls ? '1' : '0'); } catch (_) {}
+        sfx.uiClick();
+        syncSettingsButtons();
+        if (window.__syncMobileControls) window.__syncMobileControls(true);
       };
 
       document.getElementById('btn-inv-close').onclick = () => { sfx.uiClick(); closeInventoryModal(); };
@@ -10216,6 +10365,7 @@
           else if (action === 'jet-invert') { J.inv = !J.inv; pushFeed(J.inv ? 'PITCH INVERTED' : 'PITCH NORMAL', 'border-l-sky-400'); }
         };
         mobileControls.addEventListener('pointerdown', (e) => {
+          if (!gameState.settings.mobileControls) return;
           const button = e.target.closest('[data-mobile-action]');
           if (!button) return;
           e.preventDefault(); e.stopPropagation();
@@ -10226,8 +10376,8 @@
         mobileControls.addEventListener('pointerup', (e) => mobileEndHold(e.pointerId));
         mobileControls.addEventListener('pointercancel', (e) => mobileEndHold(e.pointerId));
         mobileControls.addEventListener('lostpointercapture', (e) => mobileEndHold(e.pointerId));
-        mobileStick.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); stickPointer = e.pointerId; mobileUpdateStick(e); try { mobileStick.setPointerCapture(e.pointerId); } catch (_) { } });
-        mobileLook.addEventListener('pointerdown', (e) => { if (!mobileDevice || gameState.screen !== 'playing' || gameState.inventoryOpen || gameState.mapOpen || gameState.settingsOpen) return; e.preventDefault(); lookPointer = e.pointerId; lookLastX = e.clientX; lookLastY = e.clientY; mobileLook.classList.add('active'); try { mobileLook.setPointerCapture(e.pointerId); } catch (_) { } });
+        mobileStick.addEventListener('pointerdown', (e) => { if (!gameState.settings.mobileControls) return; e.preventDefault(); e.stopPropagation(); stickPointer = e.pointerId; mobileUpdateStick(e); try { mobileStick.setPointerCapture(e.pointerId); } catch (_) { } });
+        mobileLook.addEventListener('pointerdown', (e) => { if (!mobileDevice || !gameState.settings.mobileControls || gameState.screen !== 'playing' || gameState.inventoryOpen || gameState.mapOpen || gameState.settingsOpen) return; e.preventDefault(); lookPointer = e.pointerId; lookLastX = e.clientX; lookLastY = e.clientY; mobileLook.classList.add('active'); try { mobileLook.setPointerCapture(e.pointerId); } catch (_) { } });
         window.addEventListener('pointermove', (e) => {
           if (stickPointer === e.pointerId) { e.preventDefault(); mobileUpdateStick(e); }
           if (lookPointer !== e.pointerId) return;
@@ -10248,7 +10398,20 @@
           const now = performance.now();
           if (!force && now - lastMobileUiSync < 120) return;
           lastMobileUiSync = now;
-          const active = gameState.screen === 'playing' && !gameState.inventoryOpen && !gameState.mapOpen && !gameState.settingsOpen;
+          const active = mobileDevice
+            && gameState.settings.mobileControls === true
+            && gameState.screen === 'playing'
+            && !gameState.inventoryOpen
+            && !gameState.mapOpen
+            && !gameState.settingsOpen;
+          if (!active) {
+            mobileClearStick();
+            for (const pointerId of Array.from(mobileHeld.keys())) mobileEndHold(pointerId);
+            isPrimaryFireHeld = false;
+            jk.M0 = false;
+            lookPointer = null;
+            mobileLook.classList.remove('active');
+          }
           mobileControls.classList.toggle('visible', active);
           document.getElementById('mobile-foot-actions').style.display = !gameState.inCar && !J.flying ? 'grid' : 'none';
           document.getElementById('mobile-car-controls').classList.toggle('active', gameState.inCar && !J.flying);
