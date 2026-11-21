@@ -8,25 +8,51 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Oswald:wght@600;700&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script type="importmap">
   {
     "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
     }
   }
   </script>
   <link rel="stylesheet" href="styles/hud.css" />
+  <style>
+    #game-canvas { image-rendering: pixelated; filter: contrast(1.08) saturate(1.12) sepia(.03); transition: filter .35s ease, transform .35s ease; }
+    body.menu-active #game-canvas { filter: contrast(1.08) saturate(1.12) sepia(.03) blur(5px) brightness(.72); transform: scale(1.025); }
+    #loading-screen { transition: opacity .35s ease, visibility .35s ease; }
+    #loading-screen.is-hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+    #loading-progress { transition: width .25s ease; }
+    #ps3-filter { position:fixed; inset:0; z-index:4; pointer-events:none; opacity:.18; mix-blend-mode:soft-light;
+      background:repeating-linear-gradient(0deg,rgba(255,255,255,.10) 0 1px,rgba(0,0,0,.16) 1px 3px),radial-gradient(ellipse at center,transparent 62%,rgba(5,8,14,.30) 100%); }
+    #orientation-lock { display:none; position:fixed; inset:0; z-index:100; align-items:center; justify-content:center; text-align:center; background:#090b0f; }
+    #wasted-screen { display:none; }
+    #hud, #vehicle-hud, #ammo-hud-card, #sniper-scope, #npc-dialogue, #pause-menu, #settings-menu, #inventory-menu, #radial-menu, #map-modal, #error-banner { display:none; }
+    .menu-btn, .menu-btn-primary, .glass-panel, .glass-panel-amber { font-variant-numeric:tabular-nums; }
+    @media (orientation:portrait) and (max-width:900px) { #orientation-lock { display:flex; } }
+  </style>
 </head>
-<body>
+<body class="menu-active">
+  <div id="loading-screen" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950" role="status" aria-live="polite">
+    <div class="w-full max-w-sm px-8 text-center">
+      <img src="assets/images/title.png" alt="Grand Theft Aura" class="w-full h-auto object-contain mb-10" />
+      <div id="loading-status" class="font-tactical text-xs uppercase tracking-[.3em] text-amber-300">Preparing game</div>
+      <div class="mt-4 h-1 overflow-hidden rounded bg-white/10"><div id="loading-progress" class="h-full bg-amber-400" style="width:0%"></div></div>
+      <div id="loading-percent" class="mt-2 font-display text-sm text-slate-200">0%</div>
+    </div>
+  </div>
+  <div id="orientation-lock" aria-live="polite"><div><div style="font-size:54px">&#8635;</div><div class="font-display text-3xl uppercase text-amber-300 mt-4">Rotate to Play</div><p class="text-sm text-slate-300 mt-2">Grand Theft Aura is designed for landscape mode.</p></div></div>
   <!-- Fullscreen 3D WebGL Canvas -->
   <canvas id="game-canvas"></canvas>
+  <div id="ps3-filter" aria-hidden="true"></div>
 
   <!-- Hidden File Input for .JSON Save Import -->
   <input type="file" id="save-file-input" accept=".json,application/json" class="hidden" />
 
   <!-- Damage / Heal / Meteor Impact Screen Edge Vignette -->
   <div id="screen-flash" class="fixed inset-0 opacity-0 z-10"></div>
+  <div id="wasted-screen" class="fixed inset-0 z-30 items-center justify-center text-center" role="alert" aria-live="assertive"><div class="px-6"><div class="font-display text-7xl sm:text-9xl uppercase italic tracking-wider text-rose-600">WASTED</div><div id="wasted-cause" class="mt-3 font-tactical text-sm sm:text-lg uppercase tracking-[.28em] text-slate-200"></div><div class="mt-8 font-tactical text-xs uppercase tracking-[.22em] text-slate-400">MEDICAL RESPONSE IN PROGRESS</div></div></div>
 
   <!-- Non-Intrusive Error Fallback Banner -->
   <div id="error-banner" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 glass-panel-amber px-5 py-3 text-xs text-rose-300 max-w-md text-center"></div>
@@ -317,25 +343,20 @@
   <div id="start-menu" class="fixed inset-0 z-30 flex items-center justify-between bg-gradient-to-r from-slate-950/88 via-slate-950/55 to-transparent p-6 sm:p-14">
     <div class="max-w-lg w-full flex flex-col justify-between h-full max-h-[640px]">
       <div>
-        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/50 text-amber-300 font-tactical text-xs font-bold uppercase mb-3">
-          <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
-          OPEN-WORLD SANDBOX &bull; WEBGL
-        </div>
-        <h1 class="font-display text-5xl sm:text-7xl font-bold uppercase leading-none text-white tracking-tight drop-shadow-lg">
-          GRAND THEFT<br/>
-          <span class="text-amber-400">AURA</span>
+        <h1 class="drop-shadow-lg">
+          <img src="assets/images/title.png" alt="Grand Theft Aura" class="w-full max-w-[520px] h-auto object-contain" />
         </h1>
-        <p class="text-xs sm:text-sm text-slate-300 mt-3 max-w-md leading-relaxed">
-          Aim your orbital meteor landing anywhere in Sunnyvale City or Redrock Desert! Explore walk-in skyscrapers, the Reserve Bank, Aura Exotic Motors' flame-spitting supercar, and Aura Hotdogs' rapid-fire Wiener Shooter.
-        </p>
       </div>
 
       <!-- Primary Start Buttons -->
       <div class="flex flex-col gap-3 w-full max-w-xs my-6">
         <button id="btn-start-play" class="menu-btn-primary py-3.5 px-6 text-left flex items-center justify-between font-display text-xl uppercase cursor-pointer">
-          <span>PLAY</span>
+          <span>SINGLEPLAYER</span>
           <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         </button>
+        <button id="btn-host-multiplayer" class="menu-btn py-3 px-6 text-left flex items-center justify-between font-tactical text-base font-bold uppercase text-amber-300 cursor-pointer"><span>HOST MULTIPLAYER</span><span class="text-xs text-slate-400">ROOM CODE</span></button>
+        <div id="host-room-row" class="hidden items-center gap-2"><div id="host-room-code" class="glass-panel px-3 py-2 font-display text-lg tracking-[0.35em] text-amber-300 flex-1 text-center"></div><button id="btn-copy-room" class="menu-btn px-3 py-2 text-xs font-tactical font-bold uppercase text-white cursor-pointer">COPY</button></div>
+        <div class="flex items-center gap-2"><input id="join-room-code" maxlength="4" autocomplete="off" placeholder="CODE" class="menu-btn min-w-0 flex-1 px-3 py-2 text-center font-display text-lg uppercase tracking-[0.35em] text-white outline-none" /><button id="btn-join-multiplayer" class="menu-btn-primary px-4 py-2 font-tactical text-sm font-bold uppercase cursor-pointer">JOIN</button></div>
         <button id="btn-start-settings" class="menu-btn py-3 px-6 text-left flex items-center justify-between font-tactical text-base font-bold uppercase text-white cursor-pointer">
           <span>SETTINGS</span>
           <span class="text-xs text-amber-400">GFX / SENS</span>
@@ -346,19 +367,6 @@
         </button>
       </div>
 
-      <!-- Quick Reference Controls Card -->
-      <div class="glass-panel p-4 max-w-md">
-        <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold mb-2">CONTROLS OVERVIEW</div>
-        <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-slate-300">
-          <div><span class="text-white font-bold">WASD + SHIFT</span> Move / Sprint</div>
-          <div><span class="text-white font-bold">SPACE / C</span> Mantle / Crouch</div>
-          <div><span class="text-white font-bold">HOLD G</span> Pickpocket (sneak behind them)</div>
-          <div><span class="text-white font-bold">LMB (HOLD)</span> Rapid Fire / Punch</div>
-          <div><span class="text-white font-bold">RMB (CLICK)</span> Toggle Ballistic Aim</div>
-          <div><span class="text-white font-bold">Q / SCROLL</span> Weapon Wheel</div>
-          <div><span class="text-white font-bold">F / V</span> Drive &amp; Lift / Aerial POV</div>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -370,7 +378,7 @@
       <div class="flex items-center justify-between border-b border-white/15 pb-3 mb-5">
         <div>
           <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold">SIMULATION PAUSED</div>
-          <h2 class="font-display text-3xl uppercase text-white">GRAND THEFT AURA</h2>
+          <h2><img src="assets/images/title.png" alt="Grand Theft Aura" class="w-[220px] max-w-full h-auto object-contain mt-1" /></h2>
         </div>
         <span class="text-xs font-tactical text-slate-400 border border-white/15 rounded px-2 py-0.5">[TAB]</span>
       </div>
@@ -450,6 +458,25 @@
         <p id="setting-gfx-detail" class="text-xs text-slate-400 mt-2 leading-relaxed">
           Procedural PBR textures with metallic clearcoat vehicles, real transparent glass windows, proximity LODs, and 1024x1024 shadows.
         </p>
+      </div>
+
+      <div class="flex items-center justify-between mb-6 pt-4 border-t border-white/15">
+        <div>
+          <div class="font-tactical text-sm font-bold uppercase text-slate-200">MOBILE CONTROLS</div>
+          <div class="text-xs text-slate-400">Touch joystick, buttons, and drag-to-look</div>
+        </div>
+        <button id="btn-setting-mobile" class="menu-btn px-4 py-2 font-display text-xs uppercase text-rose-400 border-rose-500/40 cursor-pointer">DISABLED</button>
+      </div>
+
+      <div id="desktop-controls-overview" class="mb-6 pt-4 border-t border-white/15">
+        <div class="font-tactical text-sm font-bold uppercase text-slate-200 mb-3">COMPUTER CONTROLS</div>
+        <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px] text-slate-300">
+          <div><span class="text-amber-300 font-bold">WASD</span> MOVE</div><div><span class="text-amber-300 font-bold">SHIFT</span> SPRINT</div>
+          <div><span class="text-amber-300 font-bold">SPACE / C</span> MANTLE / CROUCH</div><div><span class="text-amber-300 font-bold">G</span> PICKPOCKET</div>
+          <div><span class="text-amber-300 font-bold">LMB / RMB</span> FIRE / AIM</div><div><span class="text-amber-300 font-bold">Q / SCROLL</span> WEAPON WHEEL</div>
+          <div><span class="text-amber-300 font-bold">F / V</span> VEHICLE / POV</div><div><span class="text-amber-300 font-bold">J</span> AIR BUNKER</div>
+          <div><span class="text-amber-300 font-bold">TAB</span> PAUSE</div>
+        </div>
       </div>
 
       <div class="flex items-center justify-between pt-4 border-t border-white/15">
@@ -541,6 +568,8 @@
   </div>
 
   <!-- Game entry point (native ES modules, no bundler) -->
+  <div id="multiplayer-hud" class="fixed top-4 left-1/2 -translate-x-1/2 z-28 hidden px-3 py-1.5 rounded-full glass-panel text-[10px] font-tactical font-bold uppercase text-slate-200 pointer-events-none"><span class="text-amber-400">ROOM</span> <span id="mp-room-label">----</span> &bull; <span id="mp-player-count">1 PLAYER</span></div>
+
   <script type="module" src="js/main.js"></script>
 </body>
 </html>

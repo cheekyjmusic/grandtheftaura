@@ -647,8 +647,9 @@ export function buildNpcMeshRaw(shirtC, pantsC, bandC, o = {}) {
     hip.add(pack);
   }
   hip.add(torso, head, armL, armR, legL, legR);
-  root.scale.setScalar(S);
+  root.scale.setScalar(S * (o.scale || 1));
   root.userData = { hip, torso, armL, armR, legL, legR, face };
+  if (o.gtFestival) hooks.decorateNpc(root, o);
   return root;
 }
 
@@ -805,6 +806,24 @@ export function makeCar(x,z){
   g.rotation.order='YXZ';worldRoot.add(g);AO.cars.push({mesh:g,x,z,yaw:0,sp:0,hp:240,lr,lb,stuck:0});}
 
 export function removeCop(c){worldRoot.remove(c.mesh);c.mesh.traverse(o=>{if(o.geometry)o.geometry.dispose();});AO.cops.splice(AO.cops.indexOf(c),1);}
+
+export function clearWantedLevel() {
+  AO.heat = 0;
+  AO.calm = 0;
+  AO.spawnT = 4;
+  for (const cop of AO.cops.slice()) removeCop(cop);
+  for (const car of AO.cars.slice()) {
+    worldRoot.remove(car.mesh);
+    car.mesh.traverse((object) => {
+      if (object.geometry) object.geometry.dispose();
+      if (object.material && object.material.dispose) object.material.dispose();
+    });
+    AO.cars.splice(AO.cars.indexOf(car), 1);
+  }
+  const starsElement = document.getElementById('ao-stars');
+  if (starsElement) starsElement.style.display = 'none';
+  pushFeed('WANTED LEVEL CLEARED', 'border-l-sky-400');
+}
 
 export const tracerMat=new THREE.LineBasicMaterial({color:0xfff2a8});
 

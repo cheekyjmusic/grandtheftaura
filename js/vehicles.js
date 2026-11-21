@@ -77,7 +77,7 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
   stripe.position.y = lower.position.y + lowerH / 2 + 0.01;
 
   const cabinLen = isSupercar ? 1.85 : (isCoupe ? 2.0 : 2.65);
-  const cabinH = isSupercar ? 0.38 : 0.52;
+  const cabinH = isSupercar ? 0.56 : 0.78;
   const cabinZ = isSupercar ? -0.10 : (isCoupe ? -0.22 : -0.05);
   const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.74, cabinH, cabinLen), bodyMat);
   cabin.position.set(0, lower.position.y + lowerH / 2 + cabinH / 2 - 0.02, cabinZ);
@@ -177,12 +177,12 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
     wheelSpinners.push(spinGroup);
   });
 
-  return { root, chassis, wheelPivots, wheelSpinners, flameL, flameR, name, isSupercar };
+  return { root, chassis, wheelPivots, wheelSpinners, flameL, flameR, windowMaterial: glassMat, name, isSupercar };
 }
 
 export function buildSportsCar(cfg) {
   const { name, x, z, yaw, isSupercar = false } = cfg;
-  const { root, chassis, wheelPivots, wheelSpinners, flameL, flameR } = buildSportsCarMesh(cfg);
+  const { root, chassis, wheelPivots, wheelSpinners, flameL, flameR, windowMaterial } = buildSportsCarMesh(cfg);
   worldRoot.add(root);
 
   const carObj = {
@@ -203,6 +203,7 @@ export function buildSportsCar(cfg) {
     flameTimer: 0,
     flameL,
     flameR,
+    windowMaterial,
     root,
     chassis,
     wheelPivots,
@@ -228,6 +229,7 @@ export function getNearestVehicle(maxDist = 4.2) {
 export function enterVehicle(idx) {
   const v = vehicles[idx];
   if (!v) return;
+  hooks.onVehicleEnter(v);
   gameState.inCar = true;
   gameState.activeCarIndex = idx;
   gameState.isAiming = false;
@@ -304,7 +306,7 @@ export function stepVehicleDriving(dt, elapsed) {
     const handbrake = keys['Space'] ? 1 : 0;
 
     const gIdx = v.gearIndex;
-    const gearCapMps = GEAR_CAPS_MPH[gIdx] / 2.237;
+    const gearCapMps = GEAR_CAPS_MPH[gIdx] / 2.237 * (v.isTank ? 0.48 : 1);
     const gearRatio = GEAR_RATIO_MULT[gIdx];
     const prevSpeed = v.speed;
 
@@ -344,7 +346,7 @@ export function stepVehicleDriving(dt, elapsed) {
 
       const normRpm = v.rpm / 8000;
       const torqueCurve = Math.max(0.32, 1 - Math.pow((normRpm - 0.62) / 0.65, 2));
-      const superMult = v.isSupercar ? 1.32 : 1.0;
+      const superMult = v.isTank ? 0.62 : v.isSupercar ? 1.32 : 1.0;
       const driveAccel = 23.0 * superMult * gearRatio * torqueCurve * levelData.params.vehicles.accelMultiplier;
 
       if (throttleInput) {

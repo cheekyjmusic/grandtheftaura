@@ -43,7 +43,7 @@ canvas.addEventListener('mousedown', (e) => {
     return;
   }
 
-  if (document.pointerLockElement !== canvas && canvas.requestPointerLock) {
+  if ((!gameState.settings.mobileControls || navigator.maxTouchPoints === 0) && document.pointerLockElement !== canvas && canvas.requestPointerLock) {
     try {
       const res = canvas.requestPointerLock();
       if (res && res.catch) res.catch(() => {});

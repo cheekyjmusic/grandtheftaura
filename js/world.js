@@ -2220,6 +2220,99 @@ export const lampMat=new THREE.MeshBasicMaterial({color:0xffd27a});
 export const waterMat=new THREE.MeshStandardMaterial({color:0x2f5f4a,roughness:.15,metalness:.2,transparent:true,opacity:.82,emissive:0x0b2a1e});
 
 // ---- Mountains with winding road ----
+export function buildCriminalHideout(){
+  const cx = 332, cz = 130, baseY = 0.02, half = 30, peak = 32;
+  const shellMat = new THREE.MeshStandardMaterial({ color: 0xc28b47, roughness: 0.96, flatShading: true, side: THREE.DoubleSide });
+  const chamberMat = new THREE.MeshStandardMaterial({ color: 0x34383b, roughness: 0.92 });
+  const trimMat = new THREE.MeshStandardMaterial({ color: 0x9a6a32, roughness: 0.85 });
+  const lightMat = new THREE.MeshBasicMaterial({ color: 0xffc15a });
+  const triangle = (a, b, c) => {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setFromPoints([new THREE.Vector3(...a), new THREE.Vector3(...b), new THREE.Vector3(...c)]);
+    geometry.setIndex([0, 1, 2]);
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(geometry, shellMat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    worldRoot.add(mesh);
+  };
+  const xw = cx - half, xe = cx + half, zn = cz - half, zs = cz + half;
+  const apex = [cx, peak, cz];
+  triangle([xw, baseY, zn], [xw, baseY, cz - 11], apex);
+  triangle([xw, baseY, cz + 11], [xw, baseY, zs], apex);
+  triangle([xw, 8.5, cz - 11], [xw, 8.5, cz + 11], apex);
+  triangle([xe, baseY, zn], [xe, baseY, zs], apex);
+  triangle([xw, baseY, zn], [xe, baseY, zn], apex);
+  triangle([xe, baseY, zs], [xw, baseY, zs], apex);
+
+  const box = (x, y, z, w, h, d, material, solid = false) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    worldRoot.add(mesh);
+    if (solid) addWorldBox(x - w / 2, x + w / 2, baseY, baseY + h, z - d / 2, z + d / 2, 'solid', false);
+    return mesh;
+  };
+  box(cx, baseY + 0.06, cz, 54, 0.12, 54, chamberMat);
+  box(cx, 8.1, cz, 50, 0.4, 50, chamberMat);
+  box(cx, 4, cz - 25, 50, 8, 2, chamberMat, true);
+  box(cx, 4, cz + 25, 50, 8, 2, chamberMat, true);
+  box(cx + 25, 4, cz, 2, 8, 50, chamberMat, true);
+  box(cx - 25, 4, cz - 20, 2, 8, 10, chamberMat, true);
+  box(cx - 25, 4, cz + 20, 2, 8, 10, chamberMat, true);
+  box(cx - 25, 7.8, cz, 2, 0.3, 30, chamberMat);
+  box(cx - 42, baseY + 0.04, cz, 34, 0.08, 24, trimMat);
+  box(cx - 24, 4, cz, 0.3, 0.3, 20, lightMat);
+  box(cx, 4, cz - 24, 0.3, 0.3, 16, lightMat);
+  const sign = new THREE.Group();
+  sign.position.set(xw - 0.25, 7.5, cz);
+  sign.rotation.y = -Math.PI / 2;
+  createNeonSign(sign, 'REDROCK SCORPION HIDEOUT', 0, 0, 0, '#1c1917', '#fbbf24', 13, 1.25);
+  worldRoot.add(sign);
+  const beacon = new THREE.PointLight(0xffb14a, 55, 30, 2);
+  beacon.position.set(cx, 6.5, cz);
+  worldRoot.add(beacon);
+  mapShapes.push({ x: cx, z: cz, w: 60, d: 60, color: '#b77935', border: '#78350f', enterable: true });
+
+  const tank = buildSportsCar({ name: 'REDROCK SCORPION TANK', bodyHex: 0x4b5541, accentHex: 0x252a22, x: cx + 1, z: cz, yaw: -Math.PI / 2, isCoupe: false });
+  tank.isTank = true;
+  tank.chassis.visible = false;
+  tank.wheelPivots.forEach((wheel) => { wheel.visible = false; });
+  const hull = new THREE.Group();
+  const armor = new THREE.MeshStandardMaterial({ color: 0x59664c, roughness: 0.78, metalness: 0.2 });
+  const darkArmor = new THREE.MeshStandardMaterial({ color: 0x30372e, roughness: 0.9 });
+  const hullBody = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.1, 4.7), armor);
+  hullBody.position.y = 0.95;
+  hullBody.castShadow = true;
+  hull.add(hullBody);
+  for (const side of [-1, 1]) {
+    const track = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.95, 4.9), darkArmor);
+    track.position.set(side * 1.55, 0.39, 0);
+    track.castShadow = true;
+    hull.add(track);
+    for (let i = 0; i < 10; i++) {
+      const pad = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.07, 0.28), armor);
+      pad.position.set(side * 1.56, 0.39, -2.05 + i * 0.45);
+      hull.add(pad);
+    }
+  }
+  const turret = new THREE.Mesh(new THREE.CylinderGeometry(0.86, 1.08, 0.62, 10), armor);
+  turret.position.set(0, 1.75, -0.15);
+  turret.castShadow = true;
+  hull.add(turret);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.19, 2.8, 10), darkArmor);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 1.78, 1.55);
+  hull.add(barrel);
+  const hatch = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.42, 0.13, 8), darkArmor);
+  hatch.position.set(0, 2.12, -0.18);
+  hull.add(hatch);
+  tank.root.add(hull);
+  tank.tankModel = hull;
+  return tank;
+}
+
 export function buildMountains(){
   const X0=-138,X1=370,Z0=-170,Z1=-590,SX=254,SZ=210;
   const g=new THREE.PlaneGeometry(X1-X0,Z0-Z1,SX,SZ); g.rotateX(-Math.PI/2);
@@ -2383,7 +2476,7 @@ export function buildAuraEstates(){
     for(let i=0;i<manholeCovers.length;i++){const c=manholeCovers[i],tx=manholes[i][0]+(manholeOpen[i]?1.5:0);c.position.x+=(tx-c.position.x)*Math.min(1,dt*6);manholeHoles[i].visible=manholeOpen[i];}
     for(const c of culls)c.g.visible=Math.hypot(player.x-c.x,player.z-c.z)<c.r;
     const go=gate.open?4:0;gate.l1.position.z+=((-47-go)-gate.l1.position.z)*Math.min(1,dt*3);gate.l2.position.z+=((-43+go)-gate.l2.position.z)*Math.min(1,dt*3);
-    if(!under()&&player.x<-196)gameState.zoneName=player.x<-430?'AURA ESTATES':'AURA HILLS';};
+    if(!under()&&player.x<-196)gameState.zoneName=player.x<-430?'AURA ESTATES':player.x>-350&&player.x<-220&&Math.abs(player.z)<105?'WESTSIDE DISTRICT':'AURA HILLS';};
   aura.ahHint=function(){if(!gate.open&&Math.hypot(player.x+432,player.z+45)<6)return '[F] FORCE OPEN GATE';for(const h of houses)if(!h.taken&&Math.hypot(player.x-h.sx,player.z-h.sz)<2.4)return '[F] CRACK SAFE';return '';};
   aura.ahF=function(){
     if(!gate.open&&Math.hypot(player.x+432,player.z+45)<6){gate.open=true;gate.boxes.forEach(b=>{const k=worldBoxes.indexOf(b);if(k>=0)worldBoxes.splice(k,1);});sfx.mantle();crime(.35);pushFeed('GATE FORCED OPEN — SECURITY ALERTED','border-l-rose-500');return;}
@@ -2418,9 +2511,42 @@ export function buildAuraSkylineAndHighway(){
   {const n=500,mesh=new THREE.InstancedMesh(new THREE.ConeGeometry(2,7,7),sm(0x2f5d34),n),d=new THREE.Object3D();let c=0;
     for(let k=1;k<5000&&c<n;k++){const x=-216-rr(k*2.1)*338,z=-165+rr(k*3.7)*330,h=hillsH(x,z);
       const sl=Math.abs(hillsH(x+3,z)-hillsH(x-3,z))/6,dr=Math.abs(z-ahRz(x))/Math.hypot(1,ahRzD(x));
-      if(sl>.7||h<3||(-196-x<300&&dr<12)||Math.hypot(x-AHC.px,z-AHC.pz)<72)continue;
+      if((x>-360&&x<-205&&Math.abs(z)<125)||sl>.7||h<3||(-196-x<300&&dr<12)||Math.hypot(x-AHC.px,z-AHC.pz)<72)continue;
       d.position.set(x,h+3.2,z);d.scale.setScalar(.8+rr(k)*.9);d.updateMatrix();mesh.setMatrixAt(c++,d.matrix);}
     mesh.count=c;mesh.castShadow=true;worldRoot.add(mesh);}
+  // ---- Westside skyline and streets, linking the city to the air bunker ----
+  {
+    const streetM=sm(0x303840),stripeM=new THREE.MeshBasicMaterial({color:0xf5c84c});
+    for(const x of[-330,-310,-290,-270,-250,-230]){
+      const floor=ahRy(x)+9,roadZ=ahRz(x);
+      for(const [z0,z1] of[[-94,roadZ-28],[roadZ+28,94]]){
+        if(z1-z0<8)continue;
+        const road=new THREE.Mesh(new THREE.BoxGeometry(6,.12,z1-z0),streetM);
+        road.position.set(x,floor+.04,(z0+z1)/2);road.receiveShadow=true;worldRoot.add(road);
+        addWorldBox(x-3,x+3,floor-.02,floor+.1,z0,z1,'westcity_road',true);
+        for(let z=z0+3;z<z1-1;z+=8){const dash=new THREE.Mesh(new THREE.BoxGeometry(.16,.025,2.4),stripeM);dash.position.set(x,floor+.112,z);worldRoot.add(dash);}
+      }
+    }
+    const facade=document.createElement('canvas');facade.width=64;facade.height=128;
+    const fc=facade.getContext('2d');fc.fillStyle='#182a3a';fc.fillRect(0,0,64,128);
+    for(let row=0;row<16;row++)for(let col=0;col<8;col++){fc.fillStyle=rr(row*13+col*7)<.38?'#ffe9a8':'#36566e';fc.fillRect(col*8+1,row*8+1,6,6);}
+    const windows=new THREE.CanvasTexture(facade);windows.colorSpace=THREE.SRGBColorSpace;windows.wrapS=windows.wrapT=THREE.RepeatWrapping;windows.repeat.set(2,7);
+    const towerM=[0x9ab5c5,0xb7c4cc,0x829eaf].map(color=>new THREE.MeshStandardMaterial({color,map:windows,emissiveMap:windows,emissive:0xffffff,emissiveIntensity:.18,roughness:.3,metalness:.35}));
+    const lowM=[0x5b6670,0x8c8172,0x65746f].map(color=>sm(color)),cityBox=new THREE.BoxGeometry(1,1,1),roofM=sm(0x29323a);
+    const addBuilding=(x,z,w,d,h,mat)=>{
+      const ground=hillsH(x,z),body=new THREE.Mesh(cityBox,mat);body.position.set(x,ground+h/2,z);body.scale.set(w,h,d);body.castShadow=true;body.receiveShadow=true;worldRoot.add(body);
+      const roof=new THREE.Mesh(cityBox,roofM);roof.position.set(x,ground+h+.24,z);roof.scale.set(w+.5,.48,d+.5);worldRoot.add(roof);
+      addWorldBox(x-w/2,x+w/2,ground,ground+h,z-d/2,z+d/2,'westcity_building',false);
+    };
+    for(let i=0;i<5;i++)for(const side of[-1,1]){
+      const x=-320+i*20,roadZ=ahRz(x),z=roadZ+side*43;
+      addBuilding(x,z,13+(i%3),15+(i%2)*2,28+(i*11+side*7+70)%31,towerM[(i+(side>0?1:0))%towerM.length]);
+    }
+    for(let i=0;i<4;i++)for(const side of[-1,1]){
+      const x=-320+i*20,z=ahRz(x)+side*66;
+      addBuilding(x,z,9+(i%2),10+(i%3),13+(i*7+side*3+30)%15,lowM[(i+(side>0?1:0))%lowM.length]);
+    }
+  }
 }
 // ============================================================================
 // DATA-DRIVEN WORLD ENTITIES (levelData.entities) + WORLD BOOT SEQUENCE
@@ -2612,6 +2738,7 @@ export function buildWorld(data = levelData, { register = true, afterStatic = nu
   buildSewer();
   buildAuraEstates();
   buildAuraSkylineAndHighway();
+  buildCriminalHideout();
 }
 
 // Register late-bound implementations for lower layers (see state.js).

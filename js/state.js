@@ -21,6 +21,13 @@ export const hooks = {
   closeSettingsModal: noop,
   openMapModal: noop,
   closeMapModal: noop,
+  syncMobileControls: noop,
+  persistMobilePreference: noop,
+  decorateNpc: noop,
+  drawMapOverlay: noop,
+  drawAircraftMapOverlay: noop,
+  setAircraftScreen: noop,
+  onVehicleEnter: noop,
   damageNpc: noop,
   knockOverLamppost: noop,
   getRightMountWorldPosition: noop,
@@ -71,7 +78,8 @@ export const gameState = {
   settings: {
     sensitivity: 1.0,
     graphics: 'medium',
-    sfx: true
+    sfx: true,
+    mobileControls: false
   }
 };
 
@@ -190,9 +198,11 @@ export const keys = {};
 
 export const inputState = { isDraggingLook: false, isPrimaryFireHeld: false, lastMouseX: 0, lastMouseY: 0 };
 
+export const WORLD_BOUNDS = Object.freeze({ minX: -556, maxX: 498, minZ: -585, maxZ: 208 });
+
 export function computeSupportFloor(x, z, footY, radius) {
   if (footY < -1.0) return sewerFloor(x, z);
-  let highest = (x >= 164) ? 0.02 : 0.18;
+  let highest = x >= 368 ? 0.18 : (x >= 164 ? 0.02 : 0.18);
   if (z < -170 || x < -196) highest = Math.max(highest, terrainH(x, z));
 
   for (let r = 0; r < driveableRamps.length; r++) {
@@ -220,7 +230,7 @@ export function computeSupportFloor(x, z, footY, radius) {
 }
 
 export function collidesHorizontally(nx, nz, footY, bodyH, radius) {
-  if (nx < -556 + radius || (nx < -196 && (nz < -170 + radius || nz > 170 - radius)) || nx > 370 - radius || nz < -585 + radius || nz > 208 - radius) return true;
+  if (nx < WORLD_BOUNDS.minX + radius || (nx < -196 && (nz < -170 + radius || nz > 170 - radius)) || nx > WORLD_BOUNDS.maxX - radius || nz < WORLD_BOUNDS.minZ + radius || nz > WORLD_BOUNDS.maxZ - radius) return true;
   if (footY < -1.0 && !sewerOK(nx, nz, radius)) return true;
   if (footY > -0.5) { const th = terrainH(nx, nz); if (th > -90 && th - footY > 1.0) return true; }
   for (let i = 0; i < worldBoxes.length; i++) {
@@ -284,10 +294,27 @@ export const CAR_PTS=[[2.2,0],[2.1,.9],[2.1,-.9],[0,.95],[0,-.95],[-2.1,.9],[-2.
 
 export const ahRz=x=>45*Math.sin(Math.min(-196-x,236)*.02), ahRzD=x=>(-196-x)<236?.9*Math.cos((-196-x)*.02):0, ahRy=x=>38*sstep(0,230,-196-x);
 
+export const AIRFIELD = Object.freeze({ y: 38, rx0: -355, rx1: -208, rz: -106, rh: 13, hx0: -407, hx1: -356, hz0: -129, hz1: -83, hangerX0: -406.5, hangerX1: -356.5, hangerZ0: -129, hangerZ1: -83 });
+
+function distanceToRect(x, z, x0, x1, z0, z1) {
+  return Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(z0 - z, 0, z - z1));
+}
+
+function airfieldMask(x, z) {
+  const runway = 1 - sstep(0, 11, distanceToRect(x, z, AIRFIELD.rx0, AIRFIELD.rx1, AIRFIELD.rz - AIRFIELD.rh, AIRFIELD.rz + AIRFIELD.rh));
+  const hangar = 1 - sstep(0, 6, distanceToRect(x, z, AIRFIELD.hx0, AIRFIELD.hx1, AIRFIELD.hz0, AIRFIELD.hz1));
+  return Math.max(runway, hangar);
+}
+
 export function hillsH(x,z){
   const env=sstep(0,110,-196-x), hm=env*(6+fbm(x*.007+20,z*.007,4)*85+fbm(x*.03,z*.03,3)*7);
   const pl=1-sstep(70,118,Math.hypot(x-AHC.px,z-AHC.pz));let h=hm*(1-pl)+38*pl;
   const s=-196-x;if(s>=0&&s<300){const w=sstep(7,28,Math.abs(z-ahRz(x))/Math.hypot(1,ahRzD(x)));h=ahRy(x)*(1-w)+h*w;}
+  const townEdge=Math.hypot(Math.max(Math.abs(x+285)-62,0),Math.max(Math.abs(z)-94,0));
+  const town=1-sstep(0,34,townEdge),townRoad=sstep(13,25,Math.abs(z-ahRz(x))/Math.hypot(1,ahRzD(x))),townBlend=town*townRoad;
+  if(townBlend>0)h=h*(1-townBlend)+(ahRy(x)+9)*townBlend;
+  const field=airfieldMask(x,z);
+  if(field>0)h=h*(1-field)+AIRFIELD.y*field;
   return h;
 }
 

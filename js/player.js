@@ -3,14 +3,21 @@
 // =============================================================================
 import * as THREE from 'three';
 import { levelData } from './levelData.js';
-import { MAX_HOTDOG_AMMO, SFY, aura, aviationBeacons, biomeAt, climb, collidesHorizontally, computeSupportFloor, enterableZones, flashEdge, gameState, hazardBarrels, hooks, inputState, isInWater, keys, lampPosts, manholeCovers, manholeOpen, manholes, meteorDrop, npcs, particleBursts, player, pushFeed, sausageRefillZones, sewerLights, skyscrapers, smashableCrates, surfaceGrip, terrainH, under, worldBoxes, worldPickups } from './state.js';
+import { MAX_HOTDOG_AMMO, SFY, WORLD_BOUNDS, aura, aviationBeacons, biomeAt, climb, collidesHorizontally, computeSupportFloor, enterableZones, flashEdge, gameState, hazardBarrels, hooks, inputState, isInWater, keys, lampPosts, manholeCovers, manholeOpen, manholes, meteorDrop, npcs, particleBursts, player, pushFeed, sausageRefillZones, sewerLights, skyscrapers, smashableCrates, surfaceGrip, terrainH, under, worldBoxes, worldPickups } from './state.js';
 import { AT, camera, hemiLight, makeMat, meteorCore, meteorGroup, meteorReticle, scene, skyGroup, sunLight, uLight, worldRoot } from './engine.js';
 import { applyModelPreset } from './assets.js';
 import { sfx } from './audio.js';
 import { LEFT_ITEMS, RIGHT_WEAPONS, addLeftItemToBag, buildLeftItemMesh, buildRightWeaponMesh, fireBallisticWiener, freeGeo, spawnParticles, spawnWorldPickup, updateProjectileWieners } from './items.js';
 import { GEAR_CAPS_MPH, exitCurrentCar, getNearestVehicle, stepVehicleDriving, suspFrame } from './vehicles.js';
 import { knockOverLamppost, updateBiomeAtmosphere, updateBuildingLods, updateLampposts, updateSkyscraperInteriors } from './world.js';
-import { copFrame, damageNpc, makeFace, pp, ratFrame, reviveRats, setFaceMood, updateNPCs, updatePickpocket } from './npcs.js';
+import { clearWantedLevel, copFrame, damageNpc, makeFace, pp, ratFrame, reviveRats, setFaceMood, updateNPCs, updatePickpocket } from './npcs.js';
+
+function clampMeteorPosition(x, z) {
+  return {
+    x: Math.max(WORLD_BOUNDS.minX + player.radius, Math.min(WORLD_BOUNDS.maxX - player.radius, x)),
+    z: Math.max(WORLD_BOUNDS.minZ + player.radius, Math.min(WORLD_BOUNDS.maxZ - player.radius, z))
+  };
+}
 
 export const fpRoot = new THREE.Group();
 
@@ -346,6 +353,7 @@ export function applyPlayerDamage(amount, sourceLabel) {
 
   if (gameState.hp <= 0) {
     if (gameState.inCar) exitCurrentCar(true);
+    clearWantedLevel();
     gameState.hp = gameState.maxHp;
     gameState.stamina = 100;
     gameState.cash = Math.max(0, gameState.cash - 50);
@@ -356,6 +364,14 @@ export function applyPlayerDamage(amount, sourceLabel) {
     player.vy = 0;
     player.grounded = true;
     player.peakAirY = 0.18;
+    const wasted = document.getElementById('wasted-screen');
+    if (wasted) {
+      const cause = document.getElementById('wasted-cause');
+      if (cause) cause.textContent = sourceLabel;
+      wasted.style.display = 'flex';
+      clearTimeout(wasted._t);
+      wasted._t = setTimeout(() => { wasted.style.display = 'none'; }, 2600);
+    }
     pushFeed(aura.hospitalSpawn ? 'REVIVED AT AURA GENERAL HOSPITAL (-$50 MEDICAL FEE)' : 'REVIVED AT CENTRAL PLAZA (-$50 MEDICAL FEE)', 'border-l-rose-500');
   }
   hooks.updateHUD();
@@ -514,8 +530,9 @@ export function stepSimulation(dt, elapsed) {
     meteorDrop.vz += (targetVz - meteorDrop.vz) * Math.min(1, dt * 6.5);
     meteorDrop.vy += (targetVy - meteorDrop.vy) * Math.min(1, dt * 6.5);
 
-    meteorDrop.x = Math.max(-135, Math.min(365, meteorDrop.x + meteorDrop.vx * dt));
-    meteorDrop.z = Math.max(-170, Math.min(205, meteorDrop.z + meteorDrop.vz * dt));
+    const meteorPosition = clampMeteorPosition(meteorDrop.x + meteorDrop.vx * dt, meteorDrop.z + meteorDrop.vz * dt);
+    meteorDrop.x = meteorPosition.x;
+    meteorDrop.z = meteorPosition.z;
     meteorDrop.y += meteorDrop.vy * dt;
 
     player.x = meteorDrop.x;
@@ -523,8 +540,12 @@ export function stepSimulation(dt, elapsed) {
     player.z = meteorDrop.z;
 
     const timeToImpact = Math.max(0.05, (meteorDrop.y - 0.18) / Math.max(12, Math.abs(meteorDrop.vy)));
-    const predX = Math.max(-135, Math.min(365, meteorDrop.x + meteorDrop.vx * timeToImpact * 0.55));
-    const predZ = Math.max(-170, Math.min(205, meteorDrop.z + meteorDrop.vz * timeToImpact * 0.55));
+    const predictedPosition = clampMeteorPosition(
+      meteorDrop.x + meteorDrop.vx * timeToImpact * 0.55,
+      meteorDrop.z + meteorDrop.vz * timeToImpact * 0.55
+    );
+    const predX = predictedPosition.x;
+    const predZ = predictedPosition.z;
     const predSurfaceY = computeSupportFloor(predX, predZ, 90, 0.5);
 
     meteorReticle.visible = true;
@@ -757,12 +778,13 @@ export function stepSimulation(dt, elapsed) {
       if (!collidesHorizontally(nextX, player.z, player.y, bodyH, player.radius)) player.x = nextX; else player.pvx = 0;
       if (!collidesHorizontally(player.x, nextZ, player.y, bodyH, player.radius)) player.z = nextZ; else player.pvz = 0;
 
+      const previousY = player.y;
       player.vy -= 19.5 * dt * (player.vy < 0 ? 1.28 : (keys['Space'] ? 1 : 1.9));
       player.y += player.vy * dt;
       if (!player.grounded && player.y > player.peakAirY) player.peakAirY = player.y;
 
-      const supportY = computeSupportFloor(player.x, player.z, player.y, player.radius);
-      if (player.y <= supportY && player.vy <= 0) {
+      const supportY = computeSupportFloor(player.x, player.z, previousY - 0.46, player.radius);
+      if (player.y <= supportY && previousY >= supportY && player.vy <= 0) {
         if (!player.grounded) {
           const fallDist = player.peakAirY - supportY;
           if (fallDist > 3.6) {

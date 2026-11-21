@@ -216,10 +216,10 @@ export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
   ctx.fillStyle = '#365e33';
   ctx.fillRect(0, 0, W, H);
 
-  const scale = centerOnPlayer ? 0.65 : 0.44;
+  const scale = centerOnPlayer ? 0.65 : 0.38;
   const cx = W / 2;
   const cy = H / 2;
-  const refX = centerOnPlayer ? player.x : -68;
+  const refX = centerOnPlayer ? player.x : -29;
   const refZ = centerOnPlayer ? player.z : -190;
 
   const toCanvasX = (wx) => cx + (wx - refX) * scale;
@@ -314,6 +314,9 @@ export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
 
 export function setScreen(nextScreen) {
   gameState.screen = nextScreen;
+  document.body.classList.toggle('menu-active', nextScreen === 'start');
+  hooks.setAircraftScreen(nextScreen);
+  hooks.syncMobileControls(true);
   document.getElementById('start-menu').style.display = nextScreen === 'start' ? 'flex' : 'none';
   document.getElementById('hud').style.display = nextScreen === 'playing' ? 'block' : 'none';
   document.getElementById('pause-menu').style.display = nextScreen === 'paused' ? 'flex' : 'none';
@@ -348,11 +351,13 @@ export function openInventoryModal() {
   if (document.pointerLockElement === canvas) document.exitPointerLock();
   renderInventoryModal();
   document.getElementById('inventory-menu').style.display = 'flex';
+  hooks.syncMobileControls(true);
 }
 
 export function closeInventoryModal() {
   gameState.inventoryOpen = false;
   document.getElementById('inventory-menu').style.display = 'none';
+  hooks.syncMobileControls(true);
 }
 
 export function renderInventoryModal() {
@@ -439,6 +444,7 @@ export function renderInventoryModal() {
 
 export function openSettingsModal() {
   gameState.settingsOpen = true;
+  hooks.syncMobileControls(true);
   const sensSlider = document.getElementById('setting-sens');
   sensSlider.value = gameState.settings.sensitivity;
   document.getElementById('setting-sens-val').textContent = `${gameState.settings.sensitivity.toFixed(2)}x`;
@@ -449,6 +455,7 @@ export function openSettingsModal() {
 export function closeSettingsModal() {
   gameState.settingsOpen = false;
   document.getElementById('settings-menu').style.display = 'none';
+  hooks.syncMobileControls(true);
 }
 
 export function syncSettingsButtons() {
@@ -472,11 +479,20 @@ export function syncSettingsButtons() {
   sfxBtn.className = gameState.settings.sfx
     ? 'menu-btn px-4 py-2 font-display text-xs uppercase text-emerald-400 border-emerald-500/40 cursor-pointer'
     : 'menu-btn px-4 py-2 font-display text-xs uppercase text-rose-400 border-rose-500/40 cursor-pointer';
+
+  const mobileBtn = document.getElementById('btn-setting-mobile');
+  if (mobileBtn) {
+    mobileBtn.textContent = gameState.settings.mobileControls ? 'ENABLED' : 'DISABLED';
+    mobileBtn.className = gameState.settings.mobileControls
+      ? 'menu-btn px-4 py-2 font-display text-xs uppercase text-emerald-400 border-emerald-500/40 cursor-pointer'
+      : 'menu-btn px-4 py-2 font-display text-xs uppercase text-rose-400 border-rose-500/40 cursor-pointer';
+  }
 }
 
 export function openMapModal() {
   if (gameState.screen !== 'playing' || meteorDrop.active) return;
   closeSubModals();
+  hooks.syncMobileControls(true);
   gameState.mapOpen = true;
   if (document.pointerLockElement === canvas) document.exitPointerLock();
   renderMapCanvas(document.getElementById('fullmap-canvas'), false);
@@ -486,6 +502,7 @@ export function openMapModal() {
 export function closeMapModal() {
   gameState.mapOpen = false;
   document.getElementById('map-modal').style.display = 'none';
+  hooks.syncMobileControls(true);
 }
 
 export function exportSaveFile() {
@@ -590,7 +607,7 @@ export function buildAuraUI(){
 }
 
 export function renderMapCanvas(cv,center){renderMapCanvasBase(cv,center);
-  const ctx=cv.getContext('2d'),sc=center?.65:.44,rx=center?player.x:-68,rz=center?player.z:-190,X=w=>cv.width/2+(w-rx)*sc,Y=w=>cv.height/2+(w-rz)*sc;
+  const ctx=cv.getContext('2d'),sc=center?.65:.38,rx=center?player.x:-29,rz=center?player.z:-190,X=w=>cv.width/2+(w-rx)*sc,Y=w=>cv.height/2+(w-rz)*sc;
   ctx.fillStyle='rgba(120,130,120,.55)';ctx.fillRect(X(-138),Y(-170)-420*sc,508*sc,420*sc);
   ctx.fillStyle='rgba(139,125,86,.6)';ctx.fillRect(X(-560),Y(-172),364*sc,344*sc);
   ctx.fillStyle='rgba(79,138,63,.85)';ctx.beginPath();ctx.arc(X(-480),Y(-45),70*sc,0,6.3);ctx.fill();
@@ -601,6 +618,8 @@ export function renderMapCanvas(cv,center){renderMapCanvasBase(cv,center);
   ctx.strokeStyle='#e9c33a';ctx.lineWidth=2;ctx.beginPath();for(let z=-170;z>-584;z-=8){const px=X(roadC(z)),py=Y(z);z===-170?ctx.moveTo(px,py):ctx.lineTo(px,py);}ctx.stroke();
   const f=(x,z,col,r)=>{ctx.fillStyle=col;ctx.beginPath();ctx.arc(X(x),Y(z),r,0,6.3);ctx.fill();};
   if(!under()){AO.cops.forEach(c=>f(c.x,c.z,'#3b82f6',3));AO.cars.forEach(c=>f(c.x,c.z,Math.sin(performance.now()/120)>0?'#ef4444':'#3b82f6',4.5));manholes.forEach(m=>f(m[0],m[1],'#34d399',2));}
+  hooks.drawMapOverlay(ctx,cv,center);
+  hooks.drawAircraftMapOverlay(cv,center);
 }
 /** Attach all DOM / window listeners. Call once from main.js (never from Studio). */
 export function initUI() {
@@ -613,8 +632,10 @@ document.getElementById('btn-start-play').onclick = () => {
   triggerMeteorLanding();
   if (canvas.requestPointerLock) {
     try {
-      const p = canvas.requestPointerLock();
-      if (p && p.catch) p.catch(() => {});
+      if (!gameState.settings.mobileControls || navigator.maxTouchPoints === 0) {
+        const p = canvas.requestPointerLock();
+        if (p && p.catch) p.catch(() => {});
+      }
     } catch (_) {}
   }
 };
@@ -667,11 +688,18 @@ document.querySelectorAll('.gfx-choice').forEach((btn) => {
   };
 });
 
-document.getElementById('btn-setting-sfx').onclick = () => {
+  document.getElementById('btn-setting-sfx').onclick = () => {
   gameState.settings.sfx = !gameState.settings.sfx;
   sfx.enabled = gameState.settings.sfx;
   sfx.uiClick();
   syncSettingsButtons();
+};
+
+document.getElementById('btn-setting-mobile').onclick = () => {
+  gameState.settings.mobileControls = !gameState.settings.mobileControls;
+  sfx.uiClick();
+  syncSettingsButtons();
+  hooks.persistMobilePreference();
 };
 
 document.getElementById('btn-inv-close').onclick = () => { sfx.uiClick(); closeInventoryModal(); };
