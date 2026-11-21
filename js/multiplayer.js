@@ -50,11 +50,12 @@ function ensureRemoteRig(id) {
   let remote = multiplayer.remotePlayers.get(id);
   if (!remote) { remote = { x: 0, y: 0.18, z: 0, yaw: 0, targetTime: 0 }; multiplayer.remotePlayers.set(id, remote); }
   if (!remote.rig) {
-	const rig = buildPlayerRigMesh({ bodyColor: '#64748b', accentColor: '#1e293b' }).tpRig;
-	rig.visible = true;
-	scene.add(rig);
-	remote.rig = rig;
-  }
+const built = buildPlayerRigMesh({ bodyColor: '#64748b', accentColor: '#1e293b' });
+built.tpRig.visible = true;
+scene.add(built.tpRig);
+remote.rig = built.tpRig;
+remote.limbs = built;
+}
   return remote;
 }
 
@@ -247,37 +248,71 @@ function guestData(data) {
   else if (data.type === 'car_enter_granted') {
 	import('./vehicles.js').then(({ enterVehicle }) => enterVehicle(Number(data.carIdx)));
   } else if (data.type === 'car_enter_denied') pushFeed('VEHICLE LOCKED BY ANOTHER PLAYER', 'border-l-rose-500');
-  else if (data.type === 'car_transform') {
-	const v = vehicles[Number(data.carIdx)];
-	if (v && data.transform) Object.assign(v, data.transform);
-  } else if (data.type === 'hit_player') hooks.applyPlayerDamage(Number(data.amount) || 0, String(data.source || 'REMOTE PLAYER'));
+   else if (data.type === 'car_transform') {
+const v = vehicles[Number(data.carIdx)];
+if (v && data.transform) {
+Object.assign(v, data.transform);
+v.root.position.set(v.x, v.y, v.z);
+v.root.rotation.y = v.yaw;
+if (v.wheelPivots && v.steerAngle !== undefined) { v.wheelPivots[0].rotation.y = v.steerAngle; v.wheelPivots[1].rotation.y = v.steerAngle; }
 }
-
+}
+}
 export function sendMultiplayerState(now) {
-  if (multiplayer.mode === 'host') {
-	if (now - multiplayer.lastNpcSend > 250) { multiplayer.lastNpcSend = now; broadcast({ type: 'npc_snapshot', npcs: npcSnapshot(false) }); }
-  } else if (multiplayer.mode === 'guest' && multiplayer.hostConnection?.open) {
-	if (now - multiplayer.lastPlayerSend > 50) {
-	  multiplayer.lastPlayerSend = now;
-	  multiplayer.hostConnection.send({ type: 'player_state', state: currentState() });
-	}
-  }
+if (multiplayer.mode === 'single') return;
+if (multiplayer.mode === 'host') {
+if (now - multiplayer.lastPlayerSend > 50) {
+multiplayer.lastPlayerSend = now;
+broadcast({ type: 'player_state_relay', playerId: '1', state: currentState() });
+}
+if (now - multiplayer.lastNpcSend > 250) {
+multiplayer.lastNpcSend = now;
+broadcast({ type: 'npc_snapshot', npcs: npcSnapshot(false) });
+}
+} else if (multiplayer.mode === 'guest' && multiplayer.hostConnection?.open) {
+if (now - multiplayer.lastPlayerSend > 50) {
+multiplayer.lastPlayerSend = now;
+multiplayer.hostConnection.send({ type: 'player_state', state: currentState() });
+}
+}
+if (gameState.inCar && now - multiplayer.lastVehicleSend > 80) {
+multiplayer.lastVehicleSend = now;
+const v = vehicles[gameState.activeCarIndex];
+if (v) {
+const transform = { x: v.x, y: v.y, z: v.z, yaw: v.yaw, speed: v.speed, steerAngle: v.steerAngle, gearIndex: v.gearIndex, rpm: v.rpm };
+const msg = { type: 'car_transform', carIdx: gameState.activeCarIndex, transform };
+if (multiplayer.mode === 'host') broadcast(msg);
+else if (multiplayer.hostConnection?.open) multiplayer.hostConnection.send(msg);
+}
+}
 }
 
 export function updateRemotePlayers(dt) {
-  for (const [id, remote] of multiplayer.remotePlayers) {
-	if (!remote.rig) continue;
-	const rig = remote.rig;
-	rig.position.set(remote.x || rig.position.x, remote.y || 0.18, remote.z || rig.position.z);
-	rig.rotation.y = remote.yaw || 0;
-	rig.visible = multiplayer.mode !== 'single';
-	if (remote.moving) {
-	  const a = performance.now() * 0.012;
-	  for (const key of ['tpLegL', 'tpLegR']) {
-		if (rig[key]) rig[key].rotation.x = Math.sin(a) * 0.55;
-	  }
-	}
-  }
+for (const [id, remote] of multiplayer.remotePlayers) {
+if (!remote.rig) continue;
+const rig = remote.rig;
+rig.position.set(remote.x ?? rig.position.x, remote.y ?? 0.18, remote.z ?? rig.position.z);
+rig.rotation.y = remote.yaw || 0;
+rig.visible = multiplayer.mode !== 'single';
+const limbs = remote.limbs;
+if (!limbs) continue;
+if (remote.moving) {
+remote.walkPhase = (remote.walkPhase || 0) + dt * (remote.sprinting ? 15 : 9);
+const s = Math.sin(remote.walkPhase);
+limbs.tpLegL.rotation.x = s * 0.55;
+limbs.tpLegR.rotation.x = -s * 0.55;
+limbs.tpKneeL.rotation.x = Math.max(0, -s * 0.3);
+limbs.tpKneeR.rotation.x = Math.max(0, s * 0.3);
+limbs.tpArmL.rotation.x = -s * 0.45;
+limbs.tpArmR.rotation.x = s * 0.45;
+} else {
+limbs.tpLegL.rotation.x = 0; limbs.tpLegR.rotation.x = 0;
+limbs.tpKneeL.rotation.x = 0; limbs.tpKneeR.rotation.x = 0;
+limbs.tpArmL.rotation.x = 0; limbs.tpArmR.rotation.x = 0;
+}
+limbs.tpHip.scale.y = remote.crouching ? 0.72 : 1;
+limbs.tpHip.position.y = remote.crouching ? 0.65 : 0.90;
+}
 }
 
 export function initMultiplayer() {

@@ -199,12 +199,13 @@ export const keys = {};
 
 export const inputState = { isDraggingLook: false, isPrimaryFireHeld: false, lastMouseX: 0, lastMouseY: 0 };
 
-export const WORLD_BOUNDS = Object.freeze({ minX: -556, maxX: 498, minZ: -585, maxZ: 208 });
+export const WORLD_BOUNDS = Object.freeze({ minX: -710, maxX: 540, minZ: -590, maxZ: 325 });
 
 export function computeSupportFloor(x, z, footY, radius) {
   if (footY < -1.0) return sewerFloor(x, z);
-  let highest = (x >= 368 ? 0.18 : (x >= 164 ? 0.02 : 0.18)) + terrainHeightOffset(x, z);
-  if (z < -170 || x < -196) highest = Math.max(highest, terrainH(x, z));
+  const inJungle = x >= 368 && x <= 533 && z >= -180 && z <= 240;
+let highest = (inJungle ? 1.5 : (x >= 164 ? 0.02 : 0.18)) + terrainHeightOffset(x, z);
+  if (z < -170 || x < -196 || (x >= -700 && x <= -50 && z >= 108 && z <= 320)) highest = Math.max(highest, terrainH(x, z));
 
   for (let r = 0; r < driveableRamps.length; r++) {
     const rm = driveableRamps[r];
@@ -231,7 +232,8 @@ export function computeSupportFloor(x, z, footY, radius) {
 }
 
 export function collidesHorizontally(nx, nz, footY, bodyH, radius) {
-  if (nx < WORLD_BOUNDS.minX + radius || (nx < -196 && (nz < -170 + radius || nz > 170 - radius)) || nx > WORLD_BOUNDS.maxX - radius || nz < WORLD_BOUNDS.minZ + radius || nz > WORLD_BOUNDS.maxZ - radius) return true;
+  if (nx < WORLD_BOUNDS.minX + radius || nx > WORLD_BOUNDS.maxX - radius || nz < WORLD_BOUNDS.minZ + radius || nz > WORLD_BOUNDS.maxZ - radius) return true;
+if (nx < -196 && nx > -560 && (nz < -170 + radius || nz > 170 - radius) && !(nx >= -700 && nx <= -50 && nz >= 108 && nz <= 320)) return true;
   if (footY < -1.0 && !sewerOK(nx, nz, radius)) return true;
   if (footY > -0.5) { const th = terrainH(nx, nz); if (th > -90 && th - footY > 1.0) return true; }
   for (let i = 0; i < worldBoxes.length; i++) {
@@ -321,9 +323,13 @@ export function hillsH(x,z){
 
 export function riverX(z){return roadC(z)-72+14*Math.sin(z*.04);}
 
+export function alpineH(x, z) {
+return 0.02 + Math.max(0, 8 + Math.sin(x * 0.02) * 3 + Math.cos(z * 0.03) * 2);
+}
 export function terrainBaseH(x,z){
-  if(x<-196&&x>-560&&z>-172&&z<172) return hillsH(x,z);
-  if(z>-170) return -99;
+if(x<-196&&x>-560&&z>-172&&z<172) return hillsH(x,z);
+if(x>=-700&&x<=-50&&z>=108&&z<=320) return alpineH(x,z);
+if(z>-170) return -99;
   const t=-170-z, env=sstep(0,120,t);
   const wx=x+(fbm(x*.006+9,z*.006)-.5)*90, wz=z+(fbm(x*.006,z*.006+4)-.5)*90;
   const rise=.3+.7*sstep(30,320,t);

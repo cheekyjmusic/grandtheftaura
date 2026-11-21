@@ -137,19 +137,36 @@ export function buildRoadsFreewayAndDesert() {
   const yellowMat = makeMat(0xfacc15, { roughness: 0.55 });
   const whiteMat = makeMat(0xf1f5f9, { roughness: 0.55 });
 
-  nsRoads.forEach((rx) => {
-    const r = new THREE.Mesh(new THREE.BoxGeometry(12, 0.08, 252), asphaltNS);
-    r.position.set(rx, 0.04, -48);
-    r.receiveShadow = true;
-    worldRoot.add(r);
-    for (let z = -170; z <= 74; z += 6) {
-      if (!ewRoads.some((iz) => Math.abs(z - iz) < 7.5)) {
-        const dash = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.09, 2.5), yellowMat);
-        dash.position.set(rx, 0.05, z);
-        worldRoot.add(dash);
-      }
-    }
-  });
+  const nsDashTransforms = [];
+nsRoads.forEach((rx) => {
+const r = new THREE.Mesh(new THREE.BoxGeometry(12, 0.08, 252), asphaltNS);
+r.position.set(rx, 0.04, -48);
+r.receiveShadow = true;
+worldRoot.add(r);
+for (let z = -170; z <= 74; z += 6) {
+if (!ewRoads.some((iz) => Math.abs(z - iz) < 7.5)) nsDashTransforms.push([rx, 0.05, z]);
+}
+});
+const ewDashTransforms = [];
+ewRoads.forEach((rz) => {
+const r = new THREE.Mesh(new THREE.BoxGeometry(252, 0.08, 12), asphaltEW);
+r.position.set(0, 0.04, rz);
+r.receiveShadow = true;
+worldRoot.add(r);
+for (let x = -122; x <= 122; x += 6) {
+if (!nsRoads.some((ix) => Math.abs(x - ix) < 7.5)) ewDashTransforms.push([x, 0.05, rz]);
+}
+});
+{
+const dm = new THREE.Object3D();
+const nsDashes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.26, 0.09, 2.5), yellowMat, nsDashTransforms.length);
+nsDashTransforms.forEach(([x, y, z], i) => { dm.position.set(x, y, z); dm.updateMatrix(); nsDashes.setMatrixAt(i, dm.matrix); });
+nsDashes.instanceMatrix.needsUpdate = true;
+const ewDashes = new THREE.InstancedMesh(new THREE.BoxGeometry(2.5, 0.09, 0.26), yellowMat, ewDashTransforms.length);
+ewDashTransforms.forEach(([x, y, z], i) => { dm.position.set(x, y, z); dm.updateMatrix(); ewDashes.setMatrixAt(i, dm.matrix); });
+ewDashes.instanceMatrix.needsUpdate = true;
+worldRoot.add(nsDashes, ewDashes);
+}
 
   ewRoads.forEach((rz) => {
     const r = new THREE.Mesh(new THREE.BoxGeometry(252, 0.08, 12), asphaltEW);
@@ -166,21 +183,26 @@ export function buildRoadsFreewayAndDesert() {
   });
 
   // Crosswalks at Intersections
-  nsRoads.forEach((ix) => {
-    ewRoads.forEach((iz) => {
-      for (let s = -4; s <= 4; s += 2) {
-        const cwN = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.095, 2.1), whiteMat);
-        cwN.position.set(ix + s, 0.052, iz - 7.3);
-        const cwS = cwN.clone();
-        cwS.position.z = iz + 7.3;
-        const cwW = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.095, 0.85), whiteMat);
-        cwW.position.set(ix - 7.3, 0.052, iz + s);
-        const cwE = cwW.clone();
-        cwE.position.x = ix + 7.3;
-        worldRoot.add(cwN, cwS, cwW, cwE);
-      }
-    });
-  });
+  {
+const dm = new THREE.Object3D();
+const count = nsRoads.length * ewRoads.length * 5;
+const cwNS = new THREE.InstancedMesh(new THREE.BoxGeometry(0.85, 0.095, 2.1), whiteMat, count * 2);
+const cwEW = new THREE.InstancedMesh(new THREE.BoxGeometry(2.1, 0.095, 0.85), whiteMat, count * 2);
+let iNS = 0, iEW = 0;
+nsRoads.forEach((ix) => {
+ewRoads.forEach((iz) => {
+for (let s = -4; s <= 4; s += 2) {
+dm.position.set(ix + s, 0.052, iz - 7.3); dm.updateMatrix(); cwNS.setMatrixAt(iNS++, dm.matrix);
+dm.position.set(ix + s, 0.052, iz + 7.3); dm.updateMatrix(); cwNS.setMatrixAt(iNS++, dm.matrix);
+dm.position.set(ix - 7.3, 0.052, iz + s); dm.updateMatrix(); cwEW.setMatrixAt(iEW++, dm.matrix);
+dm.position.set(ix + 7.3, 0.052, iz + s); dm.updateMatrix(); cwEW.setMatrixAt(iEW++, dm.matrix);
+}
+});
+});
+cwNS.instanceMatrix.needsUpdate = true;
+cwEW.instanceMatrix.needsUpdate = true;
+worldRoot.add(cwNS, cwEW);
+}
 
   // 25 City Blocks (5x5 Grid)
   const curbMat = makeMat(0x94a3b8, { texType: 'concrete', repeatX: 16, repeatY: 1, roughness: 0.9 });
@@ -230,13 +252,15 @@ export function buildRoadsFreewayAndDesert() {
   fwyCenterR.position.x = 152.3;
   worldRoot.add(fwyCenterL, fwyCenterR);
 
-  for (let z = -184; z <= 204; z += 8) {
-    const dL = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.14, 3.4), whiteMat);
-    dL.position.set(146.5, 0.07, z);
-    const dR = dL.clone();
-    dR.position.x = 157.5;
-    worldRoot.add(dL, dR);
-  }
+  {
+const positions = [];
+for (let z = -184; z <= 204; z += 8) { positions.push([146.5, 0.07, z], [157.5, 0.07, z]); }
+const fwyDashes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.24, 0.14, 3.4), whiteMat, positions.length);
+const dm = new THREE.Object3D();
+positions.forEach(([x, y, z], i) => { dm.position.set(x, y, z); dm.updateMatrix(); fwyDashes.setMatrixAt(i, dm.matrix); });
+fwyDashes.instanceMatrix.needsUpdate = true;
+worldRoot.add(fwyDashes);
+}
 
   // West & East Freeway Barriers (with connector openings at z = -24, z = 72, and Desert Exit z = 40)
   [
@@ -326,11 +350,15 @@ export function buildRoadsFreewayAndDesert() {
   desertHwy.position.set(261, 0.055, 40);
   desertHwy.receiveShadow = true;
   worldRoot.add(desertHwy);
-  for (let x = 168; x <= 354; x += 7) {
-    const dash = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.10, 0.26), yellowMat);
-    dash.position.set(x, 0.065, 40);
-    worldRoot.add(dash);
-  }
+  {
+const positions = [];
+for (let x = 168; x <= 354; x += 7) positions.push([x, 0.065, 40]);
+const hwyDashes = new THREE.InstancedMesh(new THREE.BoxGeometry(3.2, 0.10, 0.26), yellowMat, positions.length);
+const dm = new THREE.Object3D();
+positions.forEach(([x, y, z], i) => { dm.position.set(x, y, z); dm.updateMatrix(); hwyDashes.setMatrixAt(i, dm.matrix); });
+hwyDashes.instanceMatrix.needsUpdate = true;
+worldRoot.add(hwyDashes);
+}
 
   // Map Visuals for I-88 Freeway & Redrock Desert
   mapShapes.push({ x: 152, z: 10, w: 22, d: 396, color: '#334155', border: '#f59e0b', enterable: false });
@@ -1867,25 +1895,7 @@ mountainColors[i * 3 + 2] = mc.b;
 }
 mg.attributes.position.needsUpdate = true;
 mg.setAttribute('color', new THREE.BufferAttribute(mountainColors, 3));
-mg.computeVertexNormals();for (let i = 0; i < mg.attributes.position.count; i++) {
-    const x = mg.attributes.position.getX(i) + (-375);  // center x at -375
-    const z = mg.attributes.position.getZ(i) + 214;    // center z at 214
-    const height = 0.02 + Math.max(0, 8 + Math.sin(x * 0.02) * 3 + Math.cos(z * 0.03) * 2 + rnd() * 2);
-    const snowLine = 4 + rnd() * 3;
-    mc.set(0x6b7a5c);
-    mc.lerp(new THREE.Color(0x8a9a6b), sstep(30, 50, height));
-    mc.lerp(new THREE.Color(0xb3b380), sstep(snowLine - 5, snowLine + 5, height));
-    mc.lerp(new THREE.Color(0xffffff), sstep(snowLine, snowLine + 8, height));
-    mountainHeights[i] = height;
-    mountainColors[i * 3] = mc.r;
-    mountainColors[i * 3 + 1] = mc.g;
-    mountainColors[i * 3 + 2] = mc.b;
-  }
-  
-  mg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(mg.attributes.position.array), 3));
-  mg.setAttribute('offsetY', new THREE.BufferAttribute(mountainHeights, 1));
-  mg.setAttribute('color', new THREE.BufferAttribute(mountainColors, 3));
-  mg.computeVertexNormals();
+mg.computeVertexNormals();
   
   const mountainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
   const mountainMesh = new THREE.Mesh(mg, mountainMat);
@@ -1899,10 +1909,9 @@ mg.computeVertexNormals();for (let i = 0; i < mg.attributes.position.count; i++)
   // Add snow zones - areas permanently covered in snow
   for (let sz = 108; sz <= 320; sz += 40) {
     for (let sx = -700; sx <= -50; sx += 100) {
-      const snowDepth = 2 + rnd() * 3;
       const snowMat = new THREE.MeshStandardMaterial({ color: 0xf0f8ff, transparent: true, opacity: 0.6 + rnd() * 0.2, side: THREE.DoubleSide });
-      const snowCover = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), snowMat);
-      snowCover.position.set(sx + 40, snowDepth, sz);
+const snowCover = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), snowMat);
+snowCover.position.set(sx + 40, 0.08 + Math.max(0, 8 + Math.sin((sx + 40) * 0.02) * 3 + Math.cos(sz * 0.03) * 2), sz);
       snowCover.rotation.x = -Math.PI / 2;
       snowCover.receiveShadow = true;
       worldRoot.add(snowCover);
@@ -1916,36 +1925,49 @@ mg.computeVertexNormals();for (let i = 0; i < mg.attributes.position.count; i++)
   const trunkM = treeBarkMaterial;
   const snowM = makeMat(0xffffff, { roughness: 0.9 });
   
-  const placePineTree = (x, z, size = 1) => {
-    const h = 8 * size;
-    // Main trunk
-    mesh(trunkG, trunkM, x, 0.17 + h / 2, z).scale.setScalar(size);
-    // Snow on top
-    mesh(new THREE.SphereGeometry(0.5 * size, 12, 12), snowM, x, 0.17 + h + 0.2 * size, z).scale.setScalar(size);
-    // Three layers of branches
-    [[0, 2.2], [1, 3.4], [2, 4.5]].forEach(([i, y]) => {
-      mesh(pineG[i], treeLeafMaterial, x, 0.17 + y * size, z).scale.setScalar(size);
-      if (Math.random() > 0.5) {
-        mesh(pineG[i], snowM, x, 0.17 + (y + 0.22) * size, z).scale.setScalar(size * 0.86);
-      }
-    });
-    // Add some rocks at base
-    for (let r = 0; r < 2; r++) {
-      const rx = (rnd() - 0.5) * 1.5 * size;
-      const rz = (rnd() - 0.5) * 1.5 * size;
-      mesh(new THREE.DodecahedronGeometry(0.4 * size, 0), rockMat, x + rx, 0.17 + 0.3 * size, z + rz);
-    }
-    addWorldBox(x - 0.6 * size, x + 0.6 * size, 0.17, 0.17 + h * 0.6, z - 0.6 * size, z + 0.6 * size, 'pine_tree', false);
-  };
-  
-  // Place 120 pine trees across the alpine region
-  for (let i = 0; i < 500 && i < 120; i++) {
-    const x = -700 + rnd() * 650;
-    const z = 108 + rnd() * 212;
-    if (!free(x, z, -96)) continue;
-    placePineTree(x, z, 0.7 + rnd() * 0.6);
-    keep.push({ x, z, r: 1.2 });
-  }
+  const pineInstances = { trunk: [], snowCap: [], layers: [[], [], []], snowLayers: [[], [], []], rocks: [] };
+const pineDummy = new THREE.Object3D();
+const pushPine = (list, x, y, z, s) => { pineDummy.position.set(x, y, z); pineDummy.scale.setScalar(s); pineDummy.rotation.set(0, 0, 0); pineDummy.updateMatrix(); list.push(pineDummy.matrix.clone()); };
+const placePineTree = (x, z, size = 1) => {
+const h = 8 * size;
+pushPine(pineInstances.trunk, x, 0.17 + h / 2, z, size);
+pushPine(pineInstances.snowCap, x, 0.17 + h + 0.2 * size, z, size * size);
+[[0, 2.2], [1, 3.4], [2, 4.5]].forEach(([i, y]) => {
+pushPine(pineInstances.layers[i], x, 0.17 + y * size, z, size);
+if (Math.random() > 0.5) pushPine(pineInstances.snowLayers[i], x, 0.17 + (y + 0.22) * size, z, size * 0.86);
+});
+for (let r = 0; r < 2; r++) {
+const rx = (rnd() - 0.5) * 1.5 * size;
+const rz = (rnd() - 0.5) * 1.5 * size;
+pushPine(pineInstances.rocks, x + rx, 0.17 + 0.3 * size, z + rz, size);
+}
+addWorldBox(x - 0.6 * size, x + 0.6 * size, 0.17, 0.17 + h * 0.6, z - 0.6 * size, z + 0.6 * size, 'pine_tree', false);
+};
+const snowCapG = new THREE.SphereGeometry(0.5, 12, 12);
+const pineRockG = new THREE.DodecahedronGeometry(0.4, 0);
+const flushInstancedPines = () => {
+const add = (geo, mat, list) => {
+if (!list.length) return;
+const im = new THREE.InstancedMesh(geo, mat, list.length);
+list.forEach((m, i) => im.setMatrixAt(i, m));
+im.instanceMatrix.needsUpdate = true;
+im.castShadow = true;
+im.receiveShadow = true;
+grp.add(im);
+};
+add(trunkG, trunkM, pineInstances.trunk);
+add(snowCapG, snowM, pineInstances.snowCap);
+pineG.forEach((g, i) => { add(g, treeLeafMaterial, pineInstances.layers[i]); add(g, snowM, pineInstances.snowLayers[i]); });
+add(pineRockG, rockMat, pineInstances.rocks);
+};
+// Place 120 pine trees across the alpine region
+for (let i = 0; i < 120; i++) {
+const x = -700 + rnd() * 650;
+const z = 108 + rnd() * 212;
+if (!free(x, z, -96)) continue;
+placePineTree(x, z, 0.7 + rnd() * 0.6);
+keep.push({ x, z, r: 1.2 });
+}
   
   // Rocky outcrops and mountain peaks
   const snowRockMat = new THREE.MeshStandardMaterial({ color: 0x5a554d, roughness: 1, flatShading: true });
@@ -2103,6 +2125,7 @@ mg.computeVertexNormals();for (let i = 0; i < mg.attributes.position.count; i++)
     grp.add(bt);
   });
   buildWalkInHouse({ x: 118, z: 138, w: 10.4, d: 8.6, wallColor: 0x67e8f9, roofColor: 0xea580c, label: 'SUNSET COVE SURF SHACK' });
+flushInstancedPines();
 }
 
 // ---------- VERDANT JUNGLE BIOME (East of Redrock Desert, x = 368..498) ----------
@@ -2150,8 +2173,8 @@ export function buildJungleBiome() {
 
   // Dirt/asphalt jungle trail (split around the river bridge at x = 412..424)
   const trailMat = makeMat(0x5c4033, { texType: 'sand', repeatX: 10, repeatY: 2, roughness: 0.95 });
-  plane(368, 412, 35, 45, 0.18, trailMat);
-  plane(424, 474, 35, 45, 0.18, trailMat);
+  plane(368, 412, 35, 45, 1.52, trailMat);
+plane(424, 474, 35, 45, 1.52, trailMat);
   mapShapes.push({ x: 421, z: 40, w: 106, d: 10, color: '#78350f', border: '#451a03', enterable: false });
 
   // 3. Winding Jungle River (x = 412..424, z = -140..200) + Wooden Plank Bridge at z = 40
@@ -2164,7 +2187,7 @@ export function buildJungleBiome() {
     transparent: true,
     opacity: 0.86
   });
-  plane(412, 424, -140, 200, 0.19, riverMat);
+  plane(412, 424, -140, 200, 1.53, riverMat);
   waterZones.push({ minX: 412, maxX: 424, minZ: -140, maxZ: 200 });
   mapShapes.push({ x: 418, z: 30, w: 12, d: 340, color: '#14b8a6', border: '#0f766e', enterable: false });
 
@@ -2188,11 +2211,11 @@ plane(-138, 368, 208, 320, 0.2, riverMat);
 
   // Driveable Wooden Bridge over the Jungle River (x = 411..425, z = 34..46)
   const woodBridgeMat = makeMat(0x78350f, { texType: 'wood', repeatX: 4, repeatY: 2 });
-  mesh(new THREE.BoxGeometry(14, 0.22, 11.5), woodBridgeMat, 418, 0.28, 40);
-  [-5.5, 5.5].forEach((rz) => {
-    mesh(new THREE.BoxGeometry(14, 0.85, 0.24), woodBridgeMat, 418, 0.72, 40 + rz);
-  });
-  addWorldBox(411, 425, 0.17, 0.39, 34.2, 45.8, 'jungle_bridge', true);
+  mesh(new THREE.BoxGeometry(14, 0.22, 11.5), woodBridgeMat, 418, 1.6, 40);
+[-5.5, 5.5].forEach((rz) => {
+mesh(new THREE.BoxGeometry(14, 0.85, 0.24), woodBridgeMat, 418, 2.04, 40 + rz);
+});
+addWorldBox(411, 425, 1.5, 1.71, 34.2, 45.8, 'jungle_bridge', true);
 
   // North Waterfall Cliff at head of the river (x = 418, z = -136)
   const cliffMat = makeMat(0x475569, { texType: 'redrock', repeatX: 4, repeatY: 3, roughness: 0.92 });
@@ -2303,51 +2326,58 @@ plane(-138, 368, 208, 320, 0.2, riverMat);
   const canopyMats = [treeLeafMaterial, treeLeafMaterial, treeLeafMaterial, treeLeafMaterial];
   const vineMat = makeMat(0x4d7c0f, { roughness: 0.9 });
 
-  const spawnElevatedKapokTree = (x, z, s = 1) => {
-    const h = 14 * s;  // taller trees on elevated ground
-    // Main trunk
-    mesh(new THREE.CylinderGeometry(0.5 * s, 0.8 * s, h, 8), barkMat, x, teBaseY + h / 2, z);
-    // Buttress roots
-    for (let r = 0; r < 4; r++) {
-      const ang = (r * Math.PI) / 2 + 0.4;
-      const root = mesh(new THREE.BoxGeometry(0.4 * s, 3 * s, 2 * s), barkMat, x + Math.cos(ang) * 0.8 * s, teBaseY + 1.5 * s, z + Math.sin(ang) * 0.8 * s);
-      root.rotation.y = -ang;
-    }
-    // Wide layered umbrella canopy
-    const mainLeaf = canopyMats[(Math.abs(Math.floor(x + z)) % canopyMats.length)];
-    const c1 = mesh(new THREE.DodecahedronGeometry(4.5 * s, 1), mainLeaf, x, teBaseY + h, z);
-    c1.scale.set(1.3, 0.5, 1.3);
-    const c2 = mesh(new THREE.DodecahedronGeometry(3.2 * s, 1), canopyMats[2], x + 1.8 * s, teBaseY + h + 1.5 * s, z - 1.2 * s);
-    c2.scale.set(1.3, 0.48, 1.3);
-    const c3 = mesh(new THREE.DodecahedronGeometry(3.0 * s, 1), canopyMats[3], x - 1.5 * s, teBaseY + h + 0.8 * s, z + 1.4 * s);
-    c3.scale.set(1.3, 0.48, 1.3);
-
-    // Hanging vines
-    for (let v = 0; v < 4; v++) {
-      const va = v * 1.8 + x;
-      const vLen = (3.2 + (v % 2) * 1.6) * s;
-      mesh(
-        new THREE.CylinderGeometry(0.05, 0.05, vLen, 5),
-        vineMat,
-        x + Math.cos(va) * 2.8 * s,
-        teBaseY + h - vLen / 2 - 0.4,
-        z + Math.sin(va) * 2.8 * s,
-        false
-      );
-    }
-
-    addWorldBox(x - 1.5 * s, x + 1.5 * s, teBaseY, teBaseY + h * 0.7, z - 1.5 * s, z + 1.5 * s, 'jungle_tree', false);
-  };
-
-  // Place 80 giant canopy trees across the elevated jungle
-  for (let i = 0, placed = 0; i < 300 && placed < 80; i++) {
-    const x = 380 + rnd() * 140;
-    const z = -100 + rnd() * 420;
-    if (x < 412 && x > 408) continue; // avoid river
-    if (Math.abs(z - 30) < 20 && x > 420 && x < 460) continue; // avoid temple area
-    spawnElevatedKapokTree(x, z, 0.9 + rnd() * 0.7);
-    placed++;
-  }
+  const kapokParts = { trunk: [], root: [], c1: [], c2: [], c3: [], vine: [] };
+const kapokDummy = new THREE.Object3D();
+const pushKapok = (list, x, y, z, sx, sy, sz, ry = 0) => {
+kapokDummy.position.set(x, y, z);
+kapokDummy.scale.set(sx, sy, sz);
+kapokDummy.rotation.set(0, ry, 0);
+kapokDummy.updateMatrix();
+list.push(kapokDummy.matrix.clone());
+};
+const spawnElevatedKapokTree = (x, z, s = 1) => {
+const h = 14 * s;
+pushKapok(kapokParts.trunk, x, teBaseY + h / 2, z, s, s, s);
+for (let r = 0; r < 4; r++) {
+const ang = (r * Math.PI) / 2 + 0.4;
+pushKapok(kapokParts.root, x + Math.cos(ang) * 0.8 * s, teBaseY + 1.5 * s, z + Math.sin(ang) * 0.8 * s, s, s, s, -ang);
+}
+pushKapok(kapokParts.c1, x, teBaseY + h, z, 1.3 * s, 0.5 * s, 1.3 * s);
+pushKapok(kapokParts.c2, x + 1.8 * s, teBaseY + h + 1.5 * s, z - 1.2 * s, 1.3 * s, 0.48 * s, 1.3 * s);
+pushKapok(kapokParts.c3, x - 1.5 * s, teBaseY + h + 0.8 * s, z + 1.4 * s, 1.3 * s, 0.48 * s, 1.3 * s);
+for (let v = 0; v < 4; v++) {
+const va = v * 1.8 + x;
+const vLen = (3.2 + (v % 2) * 1.6) * s;
+pushKapok(kapokParts.vine, x + Math.cos(va) * 2.8 * s, teBaseY + h - vLen / 2 - 0.4, z + Math.sin(va) * 2.8 * s, 1, vLen, 1);
+}
+addWorldBox(x - 1.5 * s, x + 1.5 * s, teBaseY, teBaseY + h * 0.7, z - 1.5 * s, z + 1.5 * s, 'jungle_tree', false);
+};
+// Place 80 giant canopy trees across the elevated jungle
+for (let i = 0, placed = 0; i < 300 && placed < 80; i++) {
+const x = 380 + rnd() * 140;
+const z = -100 + rnd() * 420;
+if (x < 412 && x > 408) continue; // avoid river
+if (Math.abs(z - 30) < 20 && x > 420 && x < 460) continue; // avoid temple area
+spawnElevatedKapokTree(x, z, 0.9 + rnd() * 0.7);
+placed++;
+}
+{
+const addKapok = (geo, mat, list, cast = true) => {
+if (!list.length) return;
+const im = new THREE.InstancedMesh(geo, mat, list.length);
+list.forEach((m, i) => im.setMatrixAt(i, m));
+im.instanceMatrix.needsUpdate = true;
+im.castShadow = cast;
+im.receiveShadow = true;
+grp.add(im);
+};
+addKapok(new THREE.CylinderGeometry(0.5, 0.8, 14, 8), barkMat, kapokParts.trunk);
+addKapok(new THREE.BoxGeometry(0.4, 3, 2), barkMat, kapokParts.root);
+addKapok(new THREE.DodecahedronGeometry(4.5, 1), treeLeafMaterial, kapokParts.c1);
+addKapok(new THREE.DodecahedronGeometry(3.2, 1), treeLeafMaterial, kapokParts.c2);
+addKapok(new THREE.DodecahedronGeometry(3.0, 1), treeLeafMaterial, kapokParts.c3);
+addKapok(new THREE.CylinderGeometry(0.05, 0.05, 1, 5), vineMat, kapokParts.vine, false);
+}
 
   // Ferns, boulders & glowing blooms on elevated terrain
   const fernMat = makeMat(0x16a34a, { roughness: 0.85 });
@@ -2564,7 +2594,7 @@ export function buildMountains(){
     for(let z=-176;z>=-584;z-=3){const cx=riverX(z),y=Math.max(terrainH(cx,z),.3)+1.1;rp.push(cx-RW,y,z,cx+RW,y,z);if(k>0){const a=(k-1)*2;ri.push(a,a+2,a+1,a+1,a+2,a+3);}k++;}
     const rg=new THREE.BufferGeometry();rg.setAttribute('position',new THREE.Float32BufferAttribute(rp,3));rg.setIndex(ri);rg.computeVertexNormals();
     worldRoot.add(new THREE.Mesh(rg,new THREE.MeshStandardMaterial({color:0x3c8aa6,roughness:.12,metalness:.25,transparent:true,opacity:.8,side:THREE.DoubleSide})));}
-  camera.far=1200;camera.updateProjectionMatrix();
+  camera.far=620;camera.updateProjectionMatrix();
 }
 
 export function buildSewer(){

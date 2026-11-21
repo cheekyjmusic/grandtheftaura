@@ -536,6 +536,17 @@ export function makeMat(hex, opts = {}) {
   return mat;
 }
 
+const sharedMatCache = new Map();
+export function makeSharedMat(hex, opts = {}) {
+const key = hex + '|' + JSON.stringify(opts);
+let mat = sharedMatCache.get(key);
+if (!mat) {
+mat = makeMat(hex, opts);
+mat.userData.shared = true;
+sharedMatCache.set(key, mat);
+}
+return mat;
+}
 // Shared Real Transparent Glass Material for All Windows
 export const realWindowGlassMat = new THREE.MeshPhysicalMaterial({
   color: 0xbae6fd,
@@ -555,66 +566,55 @@ export function regHigh(obj) {
   return obj;
 }
 
+const tierTexCache = new Map();
+function tierTexture(texType, repeatX, repeatY) {
+const key = texType + '|' + repeatX + '|' + repeatY;
+let tex = tierTexCache.get(key);
+if (!tex) {
+tex = procTextures[texType].clone();
+tex.needsUpdate = true;
+tex.repeat.set(repeatX, repeatY);
+tierTexCache.set(key, tex);
+}
+return tex;
+}
 export function applyGraphicsTier(tier) {
-  gameState.settings.graphics = tier;
-  const useTextures = tier === 'medium' || tier === 'high';
-  const isHigh = tier === 'high';
-
-  for (const entry of registeredMaterials) {
-    if (useTextures && procTextures[entry.texType]) {
-      if (entry.mat.map && entry.mat.map !== procTextures[entry.texType]) entry.mat.map.dispose();
-      const cloned = procTextures[entry.texType].clone();
-      cloned.needsUpdate = true;
-      cloned.repeat.set(entry.repeatX, entry.repeatY);
-      entry.mat.map = cloned;
-      if (entry.texType === 'water') animatedWaterTex = cloned;
-      if (isHigh && entry.bumpScale > 0) {
-        entry.mat.bumpMap = cloned;
-        entry.mat.bumpScale = entry.bumpScale;
-      } else {
-        entry.mat.bumpMap = null;
-      }
-      entry.mat.flatShading = entry.keepSmooth ? false : !isHigh;
-    } else {
-      entry.mat.map = null;
-      entry.mat.bumpMap = null;
-      entry.mat.flatShading = entry.keepSmooth ? false : true;
-    }
-    entry.mat.needsUpdate = true;
-  }
-
-  for (const obj of highDetailObjects) {
-    obj.visible = isHigh;
-  }
-
-  skyGroup.visible = true;
-  rimLight.intensity = isHigh ? 0.55 : 0;
-  sunLight.intensity = isHigh ? 1.65 : 1.45;
-  hemiLight.intensity = isHigh ? 0.96 : 0.88;
-
-  if (tier === 'low') {
-    renderer.shadowMap.enabled = false;
-  } else {
-    renderer.shadowMap.enabled = true;
-    const targetSize = isHigh ? 2048 : 1024;
-    if (sunLight.shadow.mapSize.width !== targetSize) {
-      sunLight.shadow.mapSize.width = targetSize;
-      sunLight.shadow.mapSize.height = targetSize;
-      if (sunLight.shadow.map) {
-        sunLight.shadow.map.dispose();
-        sunLight.shadow.map = null;
-      }
-    }
-  }
-  scene.traverse((child) => {
-    if (child.isMesh && child.material) child.material.needsUpdate = true;
-  });
-
-  const maxDpr = tier === 'low' ? 1.0 : tier === 'medium' ? 1.35 : 1.85;
-  if (renderer) {
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr) * PIXEL_RENDER_SCALE);
-    resizeRenderer();
-  }
+gameState.settings.graphics = tier;
+const useTextures = tier === 'medium' || tier === 'high';
+const isHigh = tier === 'high';
+for (const entry of registeredMaterials) {
+const wantMap = useTextures && procTextures[entry.texType] ? tierTexture(entry.texType, entry.repeatX, entry.repeatY) : null;
+const wantBump = isHigh && entry.bumpScale > 0 ? wantMap : null;
+const wantFlat = entry.keepSmooth ? false : true;
+let changed = false;
+if (entry.mat.map !== wantMap) { entry.mat.map = wantMap; changed = true; }
+if (entry.mat.bumpMap !== wantBump) { entry.mat.bumpMap = wantBump; entry.mat.bumpScale = wantBump ? entry.bumpScale : 0; changed = true; }
+if (entry.mat.flatShading !== wantFlat) { entry.mat.flatShading = wantFlat; changed = true; }
+if (wantMap && entry.texType === 'water') animatedWaterTex = wantMap;
+if (changed) entry.mat.needsUpdate = true;
+}
+for (const obj of highDetailObjects) obj.visible = isHigh;
+skyGroup.visible = true;
+rimLight.intensity = isHigh ? 0.55 : 0;
+sunLight.intensity = isHigh ? 1.65 : 1.45;
+hemiLight.intensity = isHigh ? 0.96 : 0.88;
+if (tier === 'low') {
+renderer.shadowMap.enabled = false;
+} else {
+renderer.shadowMap.enabled = true;
+const targetSize = isHigh ? 2048 : 1024;
+if (sunLight.shadow.mapSize.width !== targetSize) {
+sunLight.shadow.mapSize.width = targetSize;
+sunLight.shadow.mapSize.height = targetSize;
+if (sunLight.shadow.map) { sunLight.shadow.map.dispose(); sunLight.shadow.map = null; }
+}
+renderer.shadowMap.needsUpdate = true;
+}
+const maxDpr = tier === 'low' ? 1.0 : tier === 'medium' ? 1.35 : 1.85;
+if (renderer) {
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr) * PIXEL_RENDER_SCALE);
+resizeRenderer();
+}
 }
 
 // ---- Underground atmosphere, UI, minimap ----
@@ -669,9 +669,11 @@ document.body.appendChild(el);
   renderer = new THREE.WebGLRenderer({ canvas: el, antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.35) * PIXEL_RENDER_SCALE);
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.08;
+  renderer.toneMappingExposure = 1.16;
   viewport.container = providedCanvas ? (providedCanvas.parentElement || null) : null;
   resizeRenderer();
   if (viewport.container && typeof ResizeObserver !== 'undefined') {

@@ -103,12 +103,26 @@ export const LEFT_ITEMS = {
 };
 
 export const crateMat = makeMat(0xc2853e, { texType: 'wood', repeatX: 1, repeatY: 1, bumpScale: 0.02 });
-
 export const barrelMat = makeMat(0xb91c1c, { texType: 'corrugated', repeatX: 3, repeatY: 1, metalness: 0.80, roughness: 0.32 });
+crateMat.userData.shared = true;
+barrelMat.userData.shared = true;
 
 export const partGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16), partMats = {};
 
-export function freeGeo(o) { if (o) o.traverse((c) => { if (c.geometry) c.geometry.dispose(); }); }
+export function freeGeo(o) {
+if (!o) return;
+const seenGeo = new Set(), seenMat = new Set();
+o.traverse((c) => {
+if (c.geometry && !c.geometry.userData.shared && !seenGeo.has(c.geometry)) {
+seenGeo.add(c.geometry);
+c.geometry.dispose();
+}
+const mats = Array.isArray(c.material) ? c.material : (c.material ? [c.material] : []);
+for (const m of mats) {
+if (m && !m.userData.shared && !seenMat.has(m)) { seenMat.add(m); m.dispose(); }
+}
+});
+}
 
 export function spawnParticles(x, y, z, colorHex, count = 10, speed = 5.5) {
   const mat = partMats[colorHex] || (partMats[colorHex] = new THREE.MeshBasicMaterial({ color: colorHex }));
@@ -391,8 +405,8 @@ export function updateProjectileWieners(dt) {
     let impacted = false;
 
     for (let n = 0; n < npcs.length; n++) {
-      const npc = npcs[n];
-      if (npc.asleep) continue;
+const npc = npcs[n];
+if (!npc.spawned || npc.asleep) continue;
       if (Math.hypot(w.x - npc.x, w.z - npc.z) < 0.72 && w.y >= 0.18 && w.y <= 1.95) {
         hooks.damageNpc(npc, 48, Math.atan2(w.vx, w.vz));
         sfx.wienerSplat();

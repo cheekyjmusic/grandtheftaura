@@ -40,9 +40,10 @@ const effects = [];
 const beaconMeshes = [];
 
 function groundHeight(x, z) {
-  if (x < -196 && x > -560 && z > -172 && z < 172) return hillsH(x, z);
-  if (z < -170 && z > -590 && x > -138 && x < 370) return Math.max(0.18, terrainH(x, z));
-  return x >= 164 ? 0.02 : 0.18;
+if (x < -196 && x > -560 && z > -172 && z < 172) return hillsH(x, z);
+if (z < -170 && z > -590 && x > -138 && x < 370) return Math.max(0.18, terrainH(x, z));
+if (x >= 368 && x <= 533 && z >= -180 && z <= 240) return 1.5;
+return x >= 164 ? 0.02 : 0.18;
 }
 
 function material(color, options = {}) {

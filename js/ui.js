@@ -10,155 +10,147 @@ import { CLAN_DEFS, activeClanAlertText } from './npcs.js';
 import { syncEquippedMeshes, triggerMeteorLanding } from './player.js';
 
 export let hudClock = 0;
-
+const _txt = new WeakMap(), _html = new WeakMap(), _cls = new WeakMap(), _disp = new WeakMap(), _attr = new WeakMap();
+function setText(el, v) { if (el && _txt.get(el) !== v) { _txt.set(el, v); el.textContent = v; } }
+function setHTML(el, v) { if (el && _html.get(el) !== v) { _html.set(el, v); el.innerHTML = v; } }
+function setClass(el, v) { if (el && _cls.get(el) !== v) { _cls.set(el, v); el.className = v; } }
+function setDisp(el, v) { if (el && _disp.get(el) !== v) { _disp.set(el, v); el.style.display = v; } }
+function setAttr(el, k, v) { const m = _attr.get(el) || {}; if (m[k] !== v) { m[k] = v; _attr.set(el, m); el.setAttribute(k, v); } }
+function setWidth(el, v) { if (el && el.__w !== v) { el.__w = v; el.style.width = v; } }
+let hotbarEls = null;
+function buildHotbar() {
+const hb = document.getElementById('hotbar-container');
+hb.innerHTML = '';
+hotbarEls = [];
+for (let i = 0; i < 5; i++) {
+const div = document.createElement('div');
+div.className = 'hotbar-slot w-14 h-14 p-1.5 flex flex-col justify-between cursor-pointer';
+div.innerHTML = `
+<div class="flex justify-between items-center text-[9px] font-tactical font-bold leading-none">
+<span data-num class="text-slate-400">${i + 1}</span>
+<span data-count class="text-slate-300"></span>
+</div>
+<div data-icon class="flex items-center justify-center my-auto"></div>
+<div data-name class="text-[8px] font-tactical uppercase text-center truncate text-slate-200 leading-none"></div>
+`;
+div.onclick = () => { gameState.activeLeftSlot = i; syncEquippedMeshes(); updateHUD(true); };
+hb.appendChild(div);
+hotbarEls.push({ root: div, num: div.querySelector('[data-num]'), count: div.querySelector('[data-count]'), icon: div.querySelector('[data-icon]'), name: div.querySelector('[data-name]') });
+}
+}
+function updateHotbar() {
+if (!hotbarEls) buildHotbar();
+for (let i = 0; i < 5; i++) {
+const slot = gameState.leftHotbar[i];
+const item = slot ? LEFT_ITEMS[slot.id] : null;
+const active = i === gameState.activeLeftSlot;
+const el = hotbarEls[i];
+el.root.classList.toggle('active', active);
+setClass(el.num, active ? 'text-sky-300' : 'text-slate-400');
+setText(el.count, slot && slot.count > 1 ? 'x' + slot.count : '');
+setHTML(el.icon, item ? item.svg : '<span class="text-[10px]">-</span>');
+const color = item ? item.color : '#475569';
+if (el.icon.__c !== color) { el.icon.__c = color; el.icon.style.color = color; }
+setText(el.name, item ? item.name.split(' ')[0] : 'EMPTY');
+}
+}
 export function updateHUD(force) {
-  const hn = performance.now();
-  if (!force && hn - hudClock < 50) return;
-  hudClock = hn;
-  document.getElementById('hud-cash').textContent = Math.floor(gameState.cash).toLocaleString();
-  document.getElementById('hud-zone').textContent = gameState.zoneName;
-  document.getElementById('hud-pov').textContent = gameState.inCar
-    ? (gameState.thirdPerson ? 'AERIAL 3RD' : 'DRIVER CAB')
-    : (gameState.thirdPerson ? '3RD PERSON' : '1ST PERSON');
-
-  const clanBadge = document.getElementById('clan-alert-badge');
-  if (activeClanAlertText && !meteorDrop.active) {
-    clanBadge.classList.remove('hidden');
-    clanBadge.textContent = activeClanAlertText;
-    clanBadge.className = activeClanAlertText.startsWith('⚠')
-      ? 'glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-rose-500 text-rose-300 animate-pulse'
-      : 'glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-amber-400 text-amber-300';
-  } else {
-    clanBadge.classList.add('hidden');
-  }
-
-  const hpPct = Math.max(0, Math.min(100, (gameState.hp / gameState.maxHp) * 100));
-  const stPct = Math.max(0, Math.min(100, gameState.stamina));
-
-  const hpRing = document.getElementById('hud-hp-ring');
-  const stamRing = document.getElementById('hud-stam-ring');
-  if (hpRing) {
-    const hpCirc = 333.01;
-    hpRing.style.strokeDashoffset = (hpCirc * (1 - hpPct / 100)).toFixed(2);
-    hpRing.style.stroke = hpPct > 50 ? '#10b981' : hpPct > 25 ? '#f59e0b' : '#ef4444';
-  }
-  if (stamRing) {
-    const stamCirc = 257.61;
-    stamRing.style.strokeDashoffset = (stamCirc * (1 - stPct / 100)).toFixed(2);
-  }
-  document.getElementById('hud-hp-val').textContent = Math.ceil(gameState.hp);
-  document.getElementById('hud-stam-val').textContent = `${Math.round(stPct)}%`;
-
-  const rw = RIGHT_WEAPONS[gameState.activeRightWeapon] || RIGHT_WEAPONS.fists;
-  document.getElementById('hud-rhand-icon').innerHTML = rw.svg;
-  document.getElementById('hud-rhand-name').textContent = rw.name;
-
-  const lSlot = gameState.leftHotbar[gameState.activeLeftSlot];
-  const lItem = lSlot ? LEFT_ITEMS[lSlot.id] : null;
-  document.getElementById('hud-lhand-icon').innerHTML = lItem
-    ? lItem.svg
-    : `<span class="text-[10px] text-slate-500">&mdash;</span>`;
-  document.getElementById('hud-lhand-name').textContent = lItem
-    ? `${lItem.name}${lSlot.count > 1 ? ' x' + lSlot.count : ''}`
-    : 'EMPTY';
-
-  // Ballistic Hotdog Shooter Compact Ammo Bar
-  const ammoCard = document.getElementById('ammo-hud-card');
-  if (gameState.activeRightWeapon === 'hotdog_shooter' && !gameState.inCar) {
-    ammoCard.style.display = 'flex';
-    const countEl = document.getElementById('hud-ammo-count');
-    const hintEl = document.getElementById('hud-ammo-hint');
-    const barEl = document.getElementById('hud-sausage-bar');
-    countEl.textContent = `${gameState.hotdogAmmo} / ${MAX_HOTDOG_AMMO}`;
-    countEl.className = gameState.hotdogAmmo === 0
-      ? 'font-display text-sm text-rose-400 animate-pulse'
-      : gameState.hotdogAmmo <= 12
-        ? 'font-display text-sm text-amber-400'
-        : 'font-display text-sm text-white';
-    if (barEl) {
-      barEl.style.width = `${Math.round((gameState.hotdogAmmo / MAX_HOTDOG_AMMO) * 100)}%`;
-    }
-    hintEl.innerHTML = gameState.hotdogAmmo === 0
-      ? `<span class="text-rose-400 font-bold">EMPTY! REFILL AT HOTDOG CART/STORE</span>`
-      : `<span>[RMB] AIM</span><span class="text-amber-400">[LMB] FIRE</span>`;
-  } else {
-    ammoCard.style.display = 'none';
-  }
-
-  document.getElementById('vehicle-hud').style.display = gameState.inCar ? 'flex' : 'none';
-  document.getElementById('onfoot-hotbar').style.display = gameState.inCar ? 'none' : 'block';
-
-  const isScoped = gameState.isAiming && gameState.activeRightWeapon === 'hotdog_shooter' && !gameState.inCar;
-  document.getElementById('sniper-scope').style.display = isScoped ? 'flex' : 'none';
-  document.getElementById('crosshair').style.display = isScoped ? 'none' : 'flex';
-
-  if (gameState.inCar) {
-    const v = vehicles[gameState.activeCarIndex];
-    if (v) {
-      document.getElementById('veh-name').textContent = v.name;
-      const gLabel = GEAR_LABELS[v.gearIndex];
-      const gearCap = GEAR_CAPS_MPH[v.gearIndex];
-      document.getElementById('veh-gear').textContent = gLabel;
-      document.getElementById('veh-gear-cap').textContent = v.gearIndex === 1
-        ? 'NEUTRAL'
-        : `MAX ${gearCap}`;
-
-      const mph = Math.round(Math.abs(v.speed) * 2.237);
-      document.getElementById('veh-mph-text').textContent = mph;
-      document.getElementById('veh-rpm-text').textContent = Math.round(v.rpm);
-
-      const rpmDeg = -125 + Math.min(1, v.rpm / 8000) * 250;
-      const mphDeg = -125 + Math.min(1, mph / 200) * 250;
-      document.getElementById('veh-rpm-needle').setAttribute('transform', `rotate(${rpmDeg.toFixed(1)} 60 60)`);
-      document.getElementById('veh-mph-needle').setAttribute('transform', `rotate(${mphDeg.toFixed(1)} 60 60)`);
-
-      const normRpm = v.rpm / 8000;
-      const torqueEff = v.gearIndex === 1 ? 0 : Math.max(0.28, 1 - Math.pow((normRpm - 0.62) / 0.65, 2));
-      document.getElementById('veh-torque-bar').style.width = `${Math.round(torqueEff * 100)}%`;
-
-      const shiftLight = document.getElementById('veh-shift-light');
-      if (v.rpm >= 7150 && v.gearIndex >= 2 && v.gearIndex < 7) {
-        shiftLight.textContent = 'SHIFT UP [I]';
-        shiftLight.className = 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-rose-500 text-white animate-pulse';
-      } else if (v.gearIndex > 2 && mph < GEAR_CAPS_MPH[v.gearIndex - 1] * 0.58) {
-        shiftLight.textContent = 'DOWNSHIFT [K]';
-        shiftLight.className = 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-amber-500/30 text-amber-300';
-      } else {
-        shiftLight.textContent = v.isSupercar ? 'SUPERCHARGED' : 'MANUAL';
-        shiftLight.className = v.isSupercar
-          ? 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-amber-500/20 text-amber-300'
-          : 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-slate-800 text-slate-300';
-      }
-    }
-  }
-
-  const hb = document.getElementById('hotbar-container');
-  hb.innerHTML = '';
-  for (let i = 0; i < 5; i++) {
-    const slot = gameState.leftHotbar[i];
-    const item = slot ? LEFT_ITEMS[slot.id] : null;
-    const active = i === gameState.activeLeftSlot;
-    const div = document.createElement('div');
-    div.className = `hotbar-slot w-14 h-14 p-1.5 flex flex-col justify-between cursor-pointer ${active ? 'active' : ''}`;
-    div.innerHTML = `
-      <div class="flex justify-between items-center text-[9px] font-tactical font-bold leading-none">
-        <span class="${active ? 'text-sky-300' : 'text-slate-400'}">${i + 1}</span>
-        <span class="text-slate-300">${slot && slot.count > 1 ? 'x' + slot.count : ''}</span>
-      </div>
-      <div class="flex items-center justify-center my-auto" style="color:${item ? item.color : '#475569'}">
-        ${item ? item.svg : '<span class="text-[10px]">-</span>'}
-      </div>
-      <div class="text-[8px] font-tactical uppercase text-center truncate text-slate-200 leading-none">
-        ${item ? item.name.split(' ')[0] : 'EMPTY'}
-      </div>
-    `;
-    div.onclick = () => {
-      gameState.activeLeftSlot = i;
-      syncEquippedMeshes();
-      updateHUD();
-    };
-    hb.appendChild(div);
-  }
+const hn = performance.now();
+if (!force && hn - hudClock < 50) return;
+hudClock = hn;
+setText(document.getElementById('hud-cash'), Math.floor(gameState.cash).toLocaleString());
+setText(document.getElementById('hud-zone'), gameState.zoneName);
+setText(document.getElementById('hud-pov'), gameState.inCar
+? (gameState.thirdPerson ? 'AERIAL 3RD' : 'DRIVER CAB')
+: (gameState.thirdPerson ? '3RD PERSON' : '1ST PERSON'));
+const clanBadge = document.getElementById('clan-alert-badge');
+if (activeClanAlertText && !meteorDrop.active) {
+setText(clanBadge, activeClanAlertText);
+setClass(clanBadge, activeClanAlertText.startsWith('⚠')
+? 'glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-rose-500 text-rose-300 animate-pulse'
+: 'glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-amber-400 text-amber-300');
+} else {
+setClass(clanBadge, 'hidden');
+}
+const hpPct = Math.max(0, Math.min(100, (gameState.hp / gameState.maxHp) * 100));
+const stPct = Math.max(0, Math.min(100, gameState.stamina));
+const hpRing = document.getElementById('hud-hp-ring');
+const stamRing = document.getElementById('hud-stam-ring');
+if (hpRing) {
+const off = (333.01 * (1 - hpPct / 100)).toFixed(2);
+if (hpRing.__off !== off) { hpRing.__off = off; hpRing.style.strokeDashoffset = off; }
+const col = hpPct > 50 ? '#10b981' : hpPct > 25 ? '#f59e0b' : '#ef4444';
+if (hpRing.__col !== col) { hpRing.__col = col; hpRing.style.stroke = col; }
+}
+if (stamRing) {
+const off = (257.61 * (1 - stPct / 100)).toFixed(2);
+if (stamRing.__off !== off) { stamRing.__off = off; stamRing.style.strokeDashoffset = off; }
+}
+setText(document.getElementById('hud-hp-val'), String(Math.ceil(gameState.hp)));
+setText(document.getElementById('hud-stam-val'), `${Math.round(stPct)}%`);
+const rw = RIGHT_WEAPONS[gameState.activeRightWeapon] || RIGHT_WEAPONS.fists;
+setHTML(document.getElementById('hud-rhand-icon'), rw.svg);
+setText(document.getElementById('hud-rhand-name'), rw.name);
+const lSlot = gameState.leftHotbar[gameState.activeLeftSlot];
+const lItem = lSlot ? LEFT_ITEMS[lSlot.id] : null;
+setHTML(document.getElementById('hud-lhand-icon'), lItem ? lItem.svg : '<span class="text-[10px] text-slate-500">&mdash;</span>');
+setText(document.getElementById('hud-lhand-name'), lItem ? `${lItem.name}${lSlot.count > 1 ? ' x' + lSlot.count : ''}` : 'EMPTY');
+const ammoCard = document.getElementById('ammo-hud-card');
+if (gameState.activeRightWeapon === 'hotdog_shooter' && !gameState.inCar) {
+setDisp(ammoCard, 'flex');
+const countEl = document.getElementById('hud-ammo-count');
+const hintEl = document.getElementById('hud-ammo-hint');
+const barEl = document.getElementById('hud-sausage-bar');
+setText(countEl, `${gameState.hotdogAmmo} / ${MAX_HOTDOG_AMMO}`);
+setClass(countEl, gameState.hotdogAmmo === 0
+? 'font-display text-sm text-rose-400 animate-pulse'
+: gameState.hotdogAmmo <= 12 ? 'font-display text-sm text-amber-400' : 'font-display text-sm text-white');
+setWidth(barEl, `${Math.round((gameState.hotdogAmmo / MAX_HOTDOG_AMMO) * 100)}%`);
+setHTML(hintEl, gameState.hotdogAmmo === 0
+? '<span class="text-rose-400 font-bold">EMPTY! REFILL AT HOTDOG CART/STORE</span>'
+: '<span>[RMB] AIM</span><span class="text-amber-400">[LMB] FIRE</span>');
+} else {
+setDisp(ammoCard, 'none');
+}
+setDisp(document.getElementById('vehicle-hud'), gameState.inCar ? 'flex' : 'none');
+setDisp(document.getElementById('onfoot-hotbar'), gameState.inCar ? 'none' : 'block');
+const isScoped = gameState.isAiming && gameState.activeRightWeapon === 'hotdog_shooter' && !gameState.inCar;
+setDisp(document.getElementById('sniper-scope'), isScoped ? 'flex' : 'none');
+setDisp(document.getElementById('crosshair'), isScoped ? 'none' : 'flex');
+if (gameState.inCar) {
+const v = vehicles[gameState.activeCarIndex];
+if (v) {
+setText(document.getElementById('veh-name'), v.name);
+const gLabel = GEAR_LABELS[v.gearIndex];
+const gearCap = GEAR_CAPS_MPH[v.gearIndex];
+setText(document.getElementById('veh-gear'), gLabel);
+setText(document.getElementById('veh-gear-cap'), v.gearIndex === 1 ? 'NEUTRAL' : `MAX ${gearCap}`);
+const mph = Math.round(Math.abs(v.speed) * 2.237);
+setText(document.getElementById('veh-mph-text'), String(mph));
+setText(document.getElementById('veh-rpm-text'), String(Math.round(v.rpm)));
+const rpmDeg = -125 + Math.min(1, v.rpm / 8000) * 250;
+const mphDeg = -125 + Math.min(1, mph / 200) * 250;
+setAttr(document.getElementById('veh-rpm-needle'), 'transform', `rotate(${rpmDeg.toFixed(1)} 60 60)`);
+setAttr(document.getElementById('veh-mph-needle'), 'transform', `rotate(${mphDeg.toFixed(1)} 60 60)`);
+const normRpm = v.rpm / 8000;
+const torqueEff = v.gearIndex === 1 ? 0 : Math.max(0.28, 1 - Math.pow((normRpm - 0.62) / 0.65, 2));
+setWidth(document.getElementById('veh-torque-bar'), `${Math.round(torqueEff * 100)}%`);
+const shiftLight = document.getElementById('veh-shift-light');
+if (v.rpm >= 7150 && v.gearIndex >= 2 && v.gearIndex < 7) {
+setText(shiftLight, 'SHIFT UP [I]');
+setClass(shiftLight, 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-rose-500 text-white animate-pulse');
+} else if (v.gearIndex > 2 && mph < GEAR_CAPS_MPH[v.gearIndex - 1] * 0.58) {
+setText(shiftLight, 'DOWNSHIFT [K]');
+setClass(shiftLight, 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-amber-500/30 text-amber-300');
+} else {
+setText(shiftLight, v.isSupercar ? 'SUPERCHARGED' : 'MANUAL');
+setClass(shiftLight, v.isSupercar
+? 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-amber-500/20 text-amber-300'
+: 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-slate-800 text-slate-300');
+}
+}
+}
+updateHotbar();
 }
 
 export function showWeaponWheel() {
@@ -207,6 +199,49 @@ export function cycleRightWeapon(dir = 1) {
   showWeaponWheel();
 }
 
+const mapStaticCache = new Map();
+const MAP_WORLD = { minX: -720, maxX: 560, minZ: -600, maxZ: 340 };
+function buildStaticMap(scale) {
+const w = Math.ceil((MAP_WORLD.maxX - MAP_WORLD.minX) * scale);
+const h = Math.ceil((MAP_WORLD.maxZ - MAP_WORLD.minZ) * scale);
+const cv = document.createElement('canvas');
+cv.width = w; cv.height = h;
+const ctx = cv.getContext('2d');
+const X = wx => (wx - MAP_WORLD.minX) * scale;
+const Y = wz => (wz - MAP_WORLD.minZ) * scale;
+ctx.fillStyle = '#365e33'; ctx.fillRect(0, 0, w, h);
+mapShapes.forEach(s => { if (s.w > 200 && s.color === '#d97706') { ctx.fillStyle = s.color; ctx.fillRect(X(s.x - s.w / 2), Y(s.z - s.d / 2), s.w * scale, s.d * scale); } });
+ctx.fillStyle = '#1f2937';
+[-120, -72, -24, 24, 72, 120].forEach(rx => ctx.fillRect(X(rx - 6), Y(-174), 12 * scale, 252 * scale));
+[-168, -120, -72, -24, 24, 72].forEach(rz => ctx.fillRect(X(-126), Y(rz - 6), 252 * scale, 12 * scale));
+mapShapes.forEach(s => {
+if (s.w > 200 && s.color === '#d97706') return;
+ctx.fillStyle = s.color;
+ctx.fillRect(X(s.x - s.w / 2), Y(s.z - s.d / 2), s.w * scale, s.d * scale);
+if (s.border) { ctx.strokeStyle = s.border; ctx.lineWidth = s.enterable ? 1.5 : 1; ctx.strokeRect(X(s.x - s.w / 2), Y(s.z - s.d / 2), s.w * scale, s.d * scale); }
+});
+sausageRefillZones.forEach(rz => { ctx.fillStyle = '#facc15'; ctx.beginPath(); ctx.arc(X(rz.x), Y(rz.z), 3.2, 0, Math.PI * 2); ctx.fill(); });
+ctx.fillStyle = 'rgba(120,130,120,.55)'; ctx.fillRect(X(-138), Y(-590), 508 * scale, 420 * scale);
+ctx.fillStyle = 'rgba(139,125,86,.6)'; ctx.fillRect(X(-560), Y(-172), 364 * scale, 344 * scale);
+ctx.fillStyle = 'rgba(79,138,63,.85)'; ctx.beginPath(); ctx.arc(X(-480), Y(-45), 70 * scale, 0, 6.3); ctx.fill();
+ctx.strokeStyle = '#e9c33a'; ctx.lineWidth = 2; ctx.beginPath();
+for (let q = 0; q <= 274; q += 6) { const x = -196 - q; q ? ctx.lineTo(X(x), Y(ahRz(x))) : ctx.moveTo(X(x), Y(ahRz(x))); }
+ctx.stroke();
+ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2; ctx.beginPath();
+for (let z = -176; z > -584; z -= 8) { z === -176 ? ctx.moveTo(X(riverX(z)), Y(z)) : ctx.lineTo(X(riverX(z)), Y(z)); }
+ctx.stroke();
+ctx.strokeStyle = '#e9c33a'; ctx.lineWidth = 2; ctx.beginPath();
+for (let z = -170; z > -584; z -= 8) { const px = X(roadC(z)), py = Y(z); z === -170 ? ctx.moveTo(px, py) : ctx.lineTo(px, py); }
+ctx.stroke();
+if (aura.hospitalSpawn) {
+const hx = aura.hospitalSpawn.x + 14, hz = aura.hospitalSpawn.z + 7.4;
+ctx.fillStyle = '#fff'; ctx.fillRect(X(hx) - 5, Y(hz) - 5, 10, 10);
+ctx.fillStyle = '#dc2626'; ctx.fillRect(X(hx) - 4, Y(hz) - 1, 8, 2); ctx.fillRect(X(hx) - 1, Y(hz) - 4, 2, 8);
+}
+ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif';
+ctx.fillText('AURA HILLS', X(-470), Y(-150)); ctx.fillText('MOUNTAINS', X(60), Y(-400));
+return cv;
+}
 export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
   const ctx = canvasEl.getContext('2d');
   const W = canvasEl.width;
@@ -593,7 +628,6 @@ export function importSaveFromFile(file) {
 
 export function buildAuraUI(){
   const st=document.createElement('style');st.textContent=`
-  #game-canvas{filter:contrast(1.07) saturate(1.1)}
   .glass-panel{background:linear-gradient(160deg,rgba(18,24,34,.88),rgba(8,11,17,.9))!important;border:1px solid rgba(255,255,255,.1)!important;border-top:1px solid rgba(245,158,11,.5)!important;box-shadow:0 12px 32px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.06)!important}
   #ao-stars{position:fixed;top:14px;left:50%;transform:translateX(-50%);display:none;gap:4px;font-size:30px;padding:4px 16px;border-radius:999px;background:rgba(8,11,17,.7);border:1px solid rgba(255,255,255,.15);text-shadow:0 0 12px currentColor;z-index:25}
   #ao-compass{position:fixed;top:14px;right:208px;padding:6px 14px;font:700 12px Rajdhani,sans-serif;letter-spacing:.15em;color:#e2e8f0;border-radius:8px;background:rgba(8,11,17,.72);border:1px solid rgba(255,255,255,.12);z-index:25}

@@ -213,30 +213,40 @@ window.addEventListener('keydown', (e) => {
   } else if (code === 'KeyK' && gameState.inCar) {
     shiftVehicleGear(-1);
   } else if (code === 'KeyF') {
-    if (gameState.inCar) {
-      exitCurrentCar();
-    } else {
-      const elev = getNearestElevatorPad();
-      if (elev) {
-        player.x = elev.dest.x;
-        player.y = elev.dest.y;
-        player.z = elev.dest.z;
-        player.vy = 0;
-        player.grounded = true;
-        player.peakAirY = elev.dest.y;
-        sfx.elevatorDing();
-        flashEdge('rgba(56, 189, 248, 0.35)');
-        pushFeed(
-          elev.toRoof ? `ROOFTOP HELIPAD — ${elev.sk.name}` : `GROUND LOBBY — ${elev.sk.name}`,
-          'border-l-sky-400'
-        );
-        hooks.updateHUD();
-        return;
-      }
-      const near = getNearestVehicle(4.2);
-      if (near) enterVehicle(near.idx);
-    }
-  } else if (['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'].includes(code)) {
+if (gameState.inCar) {
+exitCurrentCar();
+} else if (!climb.on) {
+const u = under();
+const mi = nearestManhole(u ? 3.2 : 2.4);
+if (mi >= 0) {
+if (u) { startClimb(1, mi); }
+else if (!manholeOpen[mi]) { manholeOpen[mi] = true; sfx.mantle(); pushFeed('MANHOLE COVER OPENED — [F] TO CLIMB DOWN', 'border-l-amber-400'); }
+else startClimb(-1, mi);
+} else if (aura.ahF && aura.ahHint && aura.ahHint()) {
+aura.ahF();
+} else {
+const elev = getNearestElevatorPad();
+if (elev) {
+player.x = elev.dest.x;
+player.y = elev.dest.y;
+player.z = elev.dest.z;
+player.vy = 0;
+player.grounded = true;
+player.peakAirY = elev.dest.y;
+sfx.elevatorDing();
+flashEdge('rgba(56, 189, 248, 0.35)');
+pushFeed(
+elev.toRoof ? `ROOFTOP HELIPAD — ${elev.sk.name}` : `GROUND LOBBY — ${elev.sk.name}`,
+'border-l-sky-400'
+);
+hooks.updateHUD();
+} else {
+const near = getNearestVehicle(4.2);
+if (near) enterVehicle(near.idx);
+}
+}
+}
+} else if (['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'].includes(code)) {
     gameState.activeLeftSlot = Number(code.replace('Digit', '')) - 1;
     syncEquippedMeshes();
     hooks.updateHUD();
@@ -251,16 +261,5 @@ window.addEventListener('blur', () => {
   for (const code of Object.keys(keys)) keys[code] = false;
   inputState.isDraggingLook = false;
   inputState.isPrimaryFireHeld = false;
-});
-
-window.addEventListener('keydown',e=>{
-  if(e.code!=='KeyF'||gameState.screen!=='playing'||gameState.inCar||climb.on)return;
-  const u=under(),i=nearestManhole(u?3.2:2.4);
-  if(i>=0){
-    if(u){startClimb(1,i);return;}
-    if(!manholeOpen[i]){manholeOpen[i]=true;sfx.mantle();pushFeed('MANHOLE COVER OPENED — [F] TO CLIMB DOWN','border-l-amber-400');}
-    else startClimb(-1,i);
-    return;}
-  if(aura.ahF)aura.ahF();
 });
 }

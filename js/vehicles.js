@@ -550,7 +550,7 @@ export function stepVehicleDriving(dt, elapsed) {
     }
 
     for (const npc of npcs) {
-      if (!npc.asleep && Math.hypot(nextX - npc.x, nextZ - npc.z) < 1.85 && Math.abs(v.speed) > 2.2 && Math.abs(v.y - 0.18) < 2.0) {
+if (npc.spawned && !npc.asleep && Math.hypot(nextX - npc.x, nextZ - npc.z) < 1.85 && Math.abs(v.speed) > 2.2 && Math.abs(v.y - 0.18) < 2.0) {
         hooks.damageNpc(npc, Math.abs(v.speed) * 4.5, v.yaw);
         sfx.hit();
         spawnParticles(npc.x, 1.1, npc.z, 0xfacc15, 7, 5.0);
@@ -639,23 +639,31 @@ export function stepVehicleDriving(dt, elapsed) {
 }
 
 // ---- Car suspension & terrain physics ----
-export function suspFrame(dt,t){
-  for(const v of vehicles){
-    const ch=v.chassis;if(!ch)continue;
-    const S=v.sus||(v.sus={hy:0,hv:0,p:0,pv:0,r:0,rv:0,pa:0,ps:v.speed||0,lat:0});
-    const acc=(v.speed-S.ps)/Math.max(dt,.001);S.ps=v.speed;
-    const lat=-(v.steerAngle||0)*v.speed*Math.abs(v.speed)*.03;
-    const bump=(Math.sin(v.x*1.7+v.z*1.3)*.5+Math.sin(v.x*.37)*.5)*Math.min(1,Math.abs(v.speed)/12)*(v.z<-170?.9:.35);
-    const k=70,c=9;
-    S.hv+=(-k*S.hy-c*S.hv+bump*30)*dt;S.hy+=S.hv*dt;
-    S.pv+=(-k*.9*S.p-c*.8*S.pv-Math.max(-14,Math.min(14,acc))*.07*k*.25)*dt;S.p+=S.pv*dt;
-    S.rv+=(-k*.9*S.r-c*.8*S.rv+Math.max(-14,Math.min(14,lat))*.02*k)*dt;S.r+=S.rv*dt;
-    const sx=Math.sin(v.yaw),cz=Math.cos(v.yaw);
-    const slope=Math.atan2(terrainH(v.x+sx*2,v.z+cz*2)-terrainH(v.x-sx*2,v.z-cz*2),4);
-    S.pa+=((v.z<-170?slope:0)-S.pa)*Math.min(1,dt*8);
-    ch.position.y=S.hy*.35;ch.rotation.x=S.p*.5-S.pa*0;ch.rotation.z=S.r*.5;
-    v.root.rotation.order='YXZ';v.root.rotation.x=-S.pa;
-    if(v.z<-170&&v.speed>0)v.speed=Math.max(0,v.speed-9.8*Math.sin(Math.max(0,S.pa))*dt*.9);
-    if(v.wheelPivots)v.wheelPivots.forEach((w,i)=>{if(w&&w.position)w.position.y+=Math.sin(S.hy*8+i)*0;});
-  }
+export function suspFrame(dt, t) {
+for (const v of vehicles) {
+const ch = v.chassis; if (!ch) continue;
+const S = v.sus || (v.sus = { hy: 0, hv: 0, p: 0, pv: 0, r: 0, rv: 0, pa: 0, ps: v.speed || 0, lat: 0 });
+const driven = gameState.inCar && vehicles[gameState.activeCarIndex] === v;
+const acc = (v.speed - S.ps) / Math.max(dt, .001); S.ps = v.speed;
+const lat = -(v.steerAngle || 0) * v.speed * Math.abs(v.speed) * .03;
+const bump = (Math.sin(v.x * 1.7 + v.z * 1.3) * .5 + Math.sin(v.x * .37) * .5) * Math.min(1, Math.abs(v.speed) / 12) * (v.z < -170 ? .9 : .35);
+const k = 70, c = 9;
+S.hv += (-k * S.hy - c * S.hv + bump * 30) * dt; S.hy += S.hv * dt;
+S.pv += (-k * .9 * S.p - c * .8 * S.pv - Math.max(-14, Math.min(14, acc)) * .07 * k * .25) * dt; S.p += S.pv * dt;
+S.rv += (-k * .9 * S.r - c * .8 * S.rv + Math.max(-14, Math.min(14, lat)) * .02 * k) * dt; S.r += S.rv * dt;
+const sx = Math.sin(v.yaw), cz = Math.cos(v.yaw);
+const slope = Math.atan2(terrainH(v.x + sx * 2, v.z + cz * 2) - terrainH(v.x - sx * 2, v.z - cz * 2), 4);
+S.pa += ((v.z < -170 ? slope : 0) - S.pa) * Math.min(1, dt * 8);
+ch.position.y = S.hy * .35;
+if (driven) {
+ch.rotation.x = (v.pitchAngle || 0) - (v.terrPitch || 0) + S.p * .5 - S.pa;
+ch.rotation.z = (v.rollAngle || 0) + S.r * .5;
+} else {
+ch.rotation.x = S.p * .5 - S.pa;
+ch.rotation.z = S.r * .5;
+}
+v.root.rotation.order = 'YXZ';
+v.root.rotation.x = -S.pa;
+if (v.z < -170 && v.speed > 0) v.speed = Math.max(0, v.speed - 9.8 * Math.sin(Math.max(0, S.pa)) * dt * .9);
+}
 }

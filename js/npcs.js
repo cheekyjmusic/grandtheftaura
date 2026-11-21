@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { colorToHex, levelData } from './levelData.js';
 import { AO, SFY, climb, collidesHorizontally, computeSupportFloor, crime, flashEdge, gameState, hooks, keys, meteorDrop, npcs, pick, player, projectileWieners, pushFeed, rnd, sewerOK, stars, terrainH, under, worldBoxes } from './state.js';
-import { camera, makeMat, scene, worldRoot } from './engine.js';
+import { camera, makeMat, makeSharedMat, scene, worldRoot } from './engine.js';
 import { applyModelPreset } from './assets.js';
 import { sfx } from './audio.js';
 import { RIGHT_WEAPONS, addLeftItemToBag, freeGeo, spawnParticles } from './items.js';
@@ -212,10 +212,10 @@ export function damageNpcBase(npc, amount, knockYaw) {
 }
 
 export let activeClanAlertText = '';
-
+const npcSpawnQueue = [];
 export function updateNPCs(dt, elapsed) {
-  const SPAWN_DIST = 82;
-  const DESPAWN_DIST = 98;
+const SPAWN_DIST = 82;
+const DESPAWN_DIST = 130;
   let currentClanAlert = '';
 
   for (const clan of Object.values(CLAN_DEFS)) {
@@ -230,29 +230,20 @@ export function updateNPCs(dt, elapsed) {
     const distToPlayer = Math.hypot(npc.x - player.x, npc.z - player.z);
 
     if (!npc.spawned && distToPlayer < SPAWN_DIST) {
-      npc.mesh = buildNpcMeshRaw(npc.shirt, npc.pants, npc.bandana, npc);
-      npc.mesh.position.set(npc.x, 0.18, npc.z);
-      npc.mesh.rotation.y = npc.yaw;
-      worldRoot.add(npc.mesh);
-      npc.spawned = true;
-      if (npc.asleep && !npc.sleepZGroup) {
-        const zzz = buildSleepZzzGroup();
-        zzz.position.set(npc.x, 0.85, npc.z);
-        worldRoot.add(zzz);
-        npc.sleepZGroup = zzz;
-      }
-    } else if (npc.spawned && distToPlayer > DESPAWN_DIST) {
-      worldRoot.remove(npc.mesh);
-      freeGeo(npc.mesh);
-      npc.mesh = null;
-      if (npc.sleepZGroup) {
-        worldRoot.remove(npc.sleepZGroup);
-        npc.sleepZGroup = null;
-      }
-      npc.spawned = false;
-      continue;
-    }
-
+if (!npc.queued) { npc.queued = true; npcSpawnQueue.push(npc); }
+continue;
+} else if (npc.spawned && distToPlayer > DESPAWN_DIST) {
+worldRoot.remove(npc.mesh);
+freeGeo(npc.mesh);
+npc.mesh = null;
+if (npc.sleepZGroup) {
+worldRoot.remove(npc.sleepZGroup);
+freeGeo(npc.sleepZGroup);
+npc.sleepZGroup = null;
+}
+npc.spawned = false;
+continue;
+}
     if (!npc.spawned || !npc.mesh) continue;
 
     if (Math.abs(npc.kvx) + Math.abs(npc.kvz) > 0.05) {
@@ -462,7 +453,24 @@ export function updateNPCs(dt, elapsed) {
     npc.mesh.rotation.y = npc.yaw;
   }
 
-  activeClanAlertText = currentClanAlert;
+  for (let k = 0; k < 2 && npcSpawnQueue.length; k++) {
+const npc = npcSpawnQueue.shift();
+npc.queued = false;
+if (npc.spawned) continue;
+if (Math.hypot(npc.x - player.x, npc.z - player.z) > DESPAWN_DIST) continue;
+npc.mesh = buildNpcMeshRaw(npc.shirt, npc.pants, npc.bandana, npc);
+npc.mesh.position.set(npc.x, 0.18, npc.z);
+npc.mesh.rotation.y = npc.yaw;
+worldRoot.add(npc.mesh);
+npc.spawned = true;
+if (npc.asleep && !npc.sleepZGroup) {
+const zzz = buildSleepZzzGroup();
+zzz.position.set(npc.x, 0.85, npc.z);
+worldRoot.add(zzz);
+npc.sleepZGroup = zzz;
+}
+}
+activeClanAlertText = currentClanAlert;
 }
 
 export const SKINS = [0xf1c8a5, 0xe2a87e, 0xd99b72, 0xb97a57, 0x8d5a3c, 0x6b4129];
@@ -485,44 +493,55 @@ export function npcBlocked(nx, nz) {
 }
 
 // ---------- FACES ----------
+const faceBasicCache = new Map();
+function faceBasic(hex, transparent = false, opacity = 1) {
+const key = hex + '|' + transparent + '|' + opacity;
+let m = faceBasicCache.get(key);
+if (!m) { m = new THREE.MeshBasicMaterial({ color: hex, transparent, opacity }); m.userData.shared = true; faceBasicCache.set(key, m); }
+return m;
+}
 export function makeFace(w, h, d, dir, o = {}) {
-  const C = makeFace.c || (makeFace.c = {
-    white: new THREE.MeshBasicMaterial({ color: 0xffffff }),
-    mouth: new THREE.MeshBasicMaterial({ color: 0x7f1d1d }),
-    lens: new THREE.MeshBasicMaterial({ color: 0x1e293b, transparent: true, opacity: 0.45 }),
-    rim: new THREE.MeshBasicMaterial({ color: 0x111827 })
-  });
-  const g = new THREE.Group();
-  g.position.z = dir * (d / 2 + 0.004);
-  const B = (sx, sy, sz, m, x, y, z = 0) => {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m);
-    b.position.set(x, y, z * dir);
-    g.add(b);
-    return b;
-  };
-  const ex = w * 0.22, ey = h * 0.06, es = w * 0.2, by = ey + h * 0.17, my = -h * 0.27;
-  const irisM = new THREE.MeshBasicMaterial({ color: o.iris || 0x3b2a1a });
-  const browM = new THREE.MeshBasicMaterial({ color: o.brow || 0x1c1917 });
-  const eyeL = B(es, es * 0.8, 0.008, C.white, -ex, ey), eyeR = B(es, es * 0.8, 0.008, C.white, ex, ey);
-  const pupL = B(es * 0.5, es * 0.62, 0.01, irisM, -ex, ey, 0.004), pupR = B(es * 0.5, es * 0.62, 0.01, irisM, ex, ey, 0.004);
-  const browL = B(w * 0.27, h * 0.055, 0.01, browM, -ex, by), browR = B(w * 0.27, h * 0.055, 0.01, browM, ex, by);
-  const skinHex = new THREE.Color(o.skin || 0xd99b72).multiplyScalar(0.82).getHex();
-  B(w * 0.1, h * 0.17, 0.035, makeMat(skinHex), 0, -h * 0.05, 0.012);
-  const mouth = B(w * 0.3, h * 0.055, 0.01, C.mouth, 0, my);
-  const smileL = B(w * 0.06, h * 0.05, 0.01, C.mouth, -w * 0.17, my + h * 0.04);
-  const smileR = B(w * 0.06, h * 0.05, 0.01, C.mouth, w * 0.17, my + h * 0.04);
-  smileL.visible = smileR.visible = false;
-  if (o.age === 'elder') {
-    B(w * 0.5, h * 0.025, 0.006, new THREE.MeshBasicMaterial({ color: skinHex }), 0, h * 0.34, 0);
-    B(w * 0.4, h * 0.025, 0.006, new THREE.MeshBasicMaterial({ color: skinHex }), 0, h * 0.30, 0);
-  }
-  if (o.glasses) {
-    B(es * 1.5, es * 1.25, 0.006, C.lens, -ex, ey, 0.008);
-    B(es * 1.5, es * 1.25, 0.006, C.lens, ex, ey, 0.008);
-    B(w * 0.1, h * 0.03, 0.006, C.rim, 0, ey + 0.004, 0.008);
-  }
-  g.userData = { eyeL, eyeR, pupL, pupR, browL, browR, mouth, smileL, smileR, by, my, h, mood: '', blink: null };
-  return g;
+const C = makeFace.c || (makeFace.c = (() => {
+const cache = {
+white: new THREE.MeshBasicMaterial({ color: 0xffffff }),
+mouth: new THREE.MeshBasicMaterial({ color: 0x7f1d1d }),
+lens: new THREE.MeshBasicMaterial({ color: 0x1e293b, transparent: true, opacity: 0.45 }),
+rim: new THREE.MeshBasicMaterial({ color: 0x111827 })
+};
+Object.values(cache).forEach(m => { m.userData.shared = true; });
+return cache;
+})());
+const g = new THREE.Group();
+g.position.z = dir * (d / 2 + 0.004);
+const B = (sx, sy, sz, m, x, y, z = 0) => {
+const b = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m);
+b.position.set(x, y, z * dir);
+g.add(b);
+return b;
+};
+const ex = w * 0.22, ey = h * 0.06, es = w * 0.2, by = ey + h * 0.17, my = -h * 0.27;
+const irisM = faceBasic(o.iris || 0x3b2a1a);
+const browM = faceBasic(o.brow || 0x1c1917);
+const eyeL = B(es, es * 0.8, 0.008, C.white, -ex, ey), eyeR = B(es, es * 0.8, 0.008, C.white, ex, ey);
+const pupL = B(es * 0.5, es * 0.62, 0.01, irisM, -ex, ey, 0.004), pupR = B(es * 0.5, es * 0.62, 0.01, irisM, ex, ey, 0.004);
+const browL = B(w * 0.27, h * 0.055, 0.01, browM, -ex, by), browR = B(w * 0.27, h * 0.055, 0.01, browM, ex, by);
+const skinHex = new THREE.Color(o.skin || 0xd99b72).multiplyScalar(0.82).getHex();
+B(w * 0.1, h * 0.17, 0.035, makeSharedMat(skinHex), 0, -h * 0.05, 0.012);
+const mouth = B(w * 0.3, h * 0.055, 0.01, C.mouth, 0, my);
+const smileL = B(w * 0.06, h * 0.05, 0.01, C.mouth, -w * 0.17, my + h * 0.04);
+const smileR = B(w * 0.06, h * 0.05, 0.01, C.mouth, w * 0.17, my + h * 0.04);
+smileL.visible = smileR.visible = false;
+if (o.age === 'elder') {
+B(w * 0.5, h * 0.025, 0.006, faceBasic(skinHex), 0, h * 0.34, 0);
+B(w * 0.4, h * 0.025, 0.006, faceBasic(skinHex), 0, h * 0.30, 0);
+}
+if (o.glasses) {
+B(es * 1.5, es * 1.25, 0.006, C.lens, -ex, ey, 0.008);
+B(es * 1.5, es * 1.25, 0.006, C.lens, ex, ey, 0.008);
+B(w * 0.1, h * 0.03, 0.006, C.rim, 0, ey + 0.004, 0.008);
+}
+g.userData = { eyeL, eyeR, pupL, pupR, browL, browR, mouth, smileL, smileR, by, my, h, mood: '', blink: null };
+return g;
 }
 
 export function setFaceMood(f, mood, blink) {
@@ -542,115 +561,114 @@ export function setFaceMood(f, mood, blink) {
 }
 
 export function addHair(head, w, h, d, dir, style, hex) {
-  const m = makeMat(hex);
-  const put = (sx, sy, sz, x, y, z) => {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m);
-    b.position.set(x, y, z);
-    head.add(b);
-  };
-  if (style === 'bald') {
-    put(w * 1.04, h * 0.12, d * 0.3, 0, h * 0.18, -dir * d * 0.42);
-    return;
-  }
-  put(w * 1.08, h * 0.3, d * 1.08, 0, h * 0.42, 0);
-  if (style === 'long' || style === 'pigtails') {
-    put(w * 1.08, h * 0.95, d * 0.28, 0, -h * 0.02, -dir * d * 0.46);
-    put(w * 0.14, h * 0.8, d * 0.9, -w * 0.52, 0, 0);
-    put(w * 0.14, h * 0.8, d * 0.9, w * 0.52, 0, 0);
-  }
-  if (style === 'pigtails') {
-    put(w * 0.2, h * 0.5, w * 0.2, -w * 0.62, -h * 0.3, 0);
-    put(w * 0.2, h * 0.5, w * 0.2, w * 0.62, -h * 0.3, 0);
-  }
-  if (style === 'mohawk') put(w * 0.18, h * 0.3, d * 1.1, 0, h * 0.68, 0);
-  if (style === 'cap') {
-    const cap = new THREE.Mesh(new THREE.BoxGeometry(w * 1.12, h * 0.22, d * 1.12), makeMat(0xdc2626));
-    cap.position.y = h * 0.5;
-    head.add(cap);
-    const brim = new THREE.Mesh(new THREE.BoxGeometry(w * 1.0, h * 0.06, d * 0.5), makeMat(0xb91c1c));
-    brim.position.set(0, h * 0.42, dir * d * 0.62);
-    head.add(brim);
-  }
+const m = makeSharedMat(hex);
+const put = (sx, sy, sz, x, y, z) => {
+const b = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m);
+b.position.set(x, y, z);
+head.add(b);
+};
+if (style === 'bald') {
+put(w * 1.04, h * 0.12, d * 0.3, 0, h * 0.18, -dir * d * 0.42);
+return;
+}
+put(w * 1.08, h * 0.3, d * 1.08, 0, h * 0.42, 0);
+if (style === 'long' || style === 'pigtails') {
+put(w * 1.08, h * 0.95, d * 0.28, 0, -h * 0.02, -dir * d * 0.46);
+put(w * 0.14, h * 0.8, d * 0.9, -w * 0.52, 0, 0);
+put(w * 0.14, h * 0.8, d * 0.9, w * 0.52, 0, 0);
+}
+if (style === 'pigtails') {
+put(w * 0.2, h * 0.5, w * 0.2, -w * 0.62, -h * 0.3, 0);
+put(w * 0.2, h * 0.5, w * 0.2, w * 0.62, -h * 0.3, 0);
+}
+if (style === 'mohawk') put(w * 0.18, h * 0.3, d * 1.1, 0, h * 0.68, 0);
+if (style === 'cap') {
+const cap = new THREE.Mesh(new THREE.BoxGeometry(w * 1.12, h * 0.22, d * 1.12), makeSharedMat(0xdc2626));
+cap.position.y = h * 0.5;
+head.add(cap);
+const brim = new THREE.Mesh(new THREE.BoxGeometry(w * 1.0, h * 0.06, d * 0.5), makeSharedMat(0xb91c1c));
+brim.position.set(0, h * 0.42, dir * d * 0.62);
+head.add(brim);
+}
 }
 
 export function buildNpcMeshRaw(shirtC, pantsC, bandC, o = {}) {
-  const age = o.age || 'adult';
-  const S = { child: 0.62, teen: 0.88, adult: 1, elder: 0.95 }[age] || 1;
-  const bigHead = age === 'child' ? 1.42 : age === 'teen' ? 1.1 : 1;
-  const id = o.id || 0;
-  const skin = o.skin || SKINS[id % SKINS.length];
-  const hairHex = age === 'elder' ? 0xd1d5db : (o.hair || HAIRS[(id * 3 + 1) % HAIRS.length]);
-  const root = new THREE.Group();
-  const hip = new THREE.Group();
-  hip.position.y = 0.90;
-  root.add(hip);
-  const skinM = makeMat(skin);
-  const bx = (sx, sy, sz, m) => { const b = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m); b.castShadow = true; return b; };
-
-  const torso = bx(0.44, 0.54, 0.22, makeMat(shirtC));
-  torso.position.y = 0.27;
-  const belt = bx(0.46, 0.06, 0.24, makeMat(0x1c1917));
-  belt.position.y = 0.03;
-  torso.add(belt);
-  belt.position.y = -0.24;
-  belt.position.y = -0.22;
-  const collar = bx(0.2, 0.05, 0.24, skinM);
-  collar.position.y = 0.28;
-  torso.add(collar);
-
-  const hw = 0.24, hh = 0.26, hd = 0.24;
-  const head = bx(hw, hh, hd, skinM);
-  head.scale.setScalar(bigHead);
-  head.position.y = 0.55 + (hh / 2) * bigHead;
-  const style = age === 'child' ? (id % 2 ? 'pigtails' : 'short') : age === 'elder' ? (id % 3 === 0 ? 'bald' : 'short')
-    : age === 'teen' ? pick(['cap', 'mohawk', 'long', 'short']) : pick(['short', 'short', 'long', 'bald']);
-  addHair(head, hw, hh, hd, 1, style, hairHex);
-  const face = makeFace(hw, hh, hd, 1, { age, skin, brow: hairHex, glasses: age === 'elder' && id % 2 === 0, iris: pick([0x3b2a1a, 0x1e40af, 0x166534, 0x44403c]) });
-  head.add(face);
-  if (bandC !== null && bandC !== undefined) {
-    const band = bx(hw * 1.1, hh * 0.2, hd * 1.1, makeMat(bandC));
-    band.position.y = hh * 0.22;
-    head.add(band);
-  }
-
-  const armGeo = new THREE.BoxGeometry(0.11, 0.50, 0.11);
-  const legGeo = new THREE.BoxGeometry(0.14, 0.72, 0.14);
-  const mkArm = (x) => {
-    const a = new THREE.Mesh(armGeo, makeMat(shirtC));
-    a.position.set(x, 0.26, 0);
-    a.castShadow = true;
-    const hand = bx(0.1, 0.1, 0.1, skinM);
-    hand.position.y = -0.28;
-    a.add(hand);
-    return a;
-  };
-  const mkLeg = (x) => {
-    const l = new THREE.Mesh(legGeo, makeMat(pantsC));
-    l.position.set(x, -0.36, 0);
-    l.castShadow = true;
-    const shoe = bx(0.16, 0.08, 0.26, makeMat(0x111827));
-    shoe.position.set(0, -0.34, 0.05);
-    l.add(shoe);
-    return l;
-  };
-  const armL = mkArm(-0.29), armR = mkArm(0.29), legL = mkLeg(-0.12), legR = mkLeg(0.12);
-
-  if (age === 'elder') {
-    hip.rotation.x = 0.16;
-    const cane = bx(0.035, 0.85, 0.035, makeMat(0x78350f));
-    cane.position.set(0, -0.42, 0.12);
-    armR.add(cane);
-  }
-  if (age === 'child' || age === 'teen') {
-    const pack = bx(0.3, 0.34, 0.12, makeMat(pick([0x16a34a, 0xf59e0b, 0x2563eb, 0xdb2777])));
-    pack.position.set(0, 0.3, -0.17);
-    hip.add(pack);
-  }
-  hip.add(torso, head, armL, armR, legL, legR);
-  root.scale.setScalar(S * (o.scale || 1));
-  root.userData = { hip, torso, armL, armR, legL, legR, face };
-  if (o.gtFestival) hooks.decorateNpc(root, o);
-  return root;
+const age = o.age || 'adult';
+const S = { child: 0.62, teen: 0.88, adult: 1, elder: 0.95 }[age] || 1;
+const bigHead = age === 'child' ? 1.42 : age === 'teen' ? 1.1 : 1;
+const id = o.id || 0;
+const skin = o.skin || SKINS[id % SKINS.length];
+const hairHex = age === 'elder' ? 0xd1d5db : (o.hair || HAIRS[(id * 3 + 1) % HAIRS.length]);
+const root = new THREE.Group();
+const hip = new THREE.Group();
+hip.position.y = 0.90;
+root.add(hip);
+const skinM = makeSharedMat(skin);
+const shirtM = makeSharedMat(shirtC);
+const pantsM = makeSharedMat(pantsC);
+const shoeM = makeSharedMat(0x111827);
+const bx = (sx, sy, sz, m) => new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m);
+const torso = bx(0.44, 0.54, 0.22, shirtM);
+torso.position.y = 0.27;
+torso.castShadow = true;
+const belt = bx(0.46, 0.06, 0.24, makeSharedMat(0x1c1917));
+torso.add(belt);
+belt.position.y = -0.22;
+const collar = bx(0.2, 0.05, 0.24, skinM);
+collar.position.y = 0.28;
+torso.add(collar);
+const hw = 0.24, hh = 0.26, hd = 0.24;
+const head = bx(hw, hh, hd, skinM);
+head.castShadow = true;
+head.scale.setScalar(bigHead);
+head.position.y = 0.55 + (hh / 2) * bigHead;
+const style = age === 'child' ? (id % 2 ? 'pigtails' : 'short') : age === 'elder' ? (id % 3 === 0 ? 'bald' : 'short')
+: age === 'teen' ? pick(['cap', 'mohawk', 'long', 'short']) : pick(['short', 'short', 'long', 'bald']);
+addHair(head, hw, hh, hd, 1, style, hairHex);
+const face = makeFace(hw, hh, hd, 1, { age, skin, brow: hairHex, glasses: age === 'elder' && id % 2 === 0, iris: pick([0x3b2a1a, 0x1e40af, 0x166534, 0x44403c]) });
+head.add(face);
+if (bandC !== null && bandC !== undefined) {
+const band = bx(hw * 1.1, hh * 0.2, hd * 1.1, makeSharedMat(bandC));
+band.position.y = hh * 0.22;
+head.add(band);
+}
+const armGeo = new THREE.BoxGeometry(0.11, 0.50, 0.11);
+const legGeo = new THREE.BoxGeometry(0.14, 0.72, 0.14);
+const mkArm = (x) => {
+const a = new THREE.Mesh(armGeo, shirtM);
+a.position.set(x, 0.26, 0);
+a.castShadow = true;
+const hand = bx(0.1, 0.1, 0.1, skinM);
+hand.position.y = -0.28;
+a.add(hand);
+return a;
+};
+const mkLeg = (x) => {
+const l = new THREE.Mesh(legGeo, pantsM);
+l.position.set(x, -0.36, 0);
+l.castShadow = true;
+const shoe = bx(0.16, 0.08, 0.26, shoeM);
+shoe.position.set(0, -0.34, 0.05);
+l.add(shoe);
+return l;
+};
+const armL = mkArm(-0.29), armR = mkArm(0.29), legL = mkLeg(-0.12), legR = mkLeg(0.12);
+if (age === 'elder') {
+hip.rotation.x = 0.16;
+const cane = bx(0.035, 0.85, 0.035, makeSharedMat(0x78350f));
+cane.position.set(0, -0.42, 0.12);
+armR.add(cane);
+}
+if (age === 'child' || age === 'teen') {
+const pack = bx(0.3, 0.34, 0.12, makeSharedMat(pick([0x16a34a, 0xf59e0b, 0x2563eb, 0xdb2777])));
+pack.position.set(0, 0.3, -0.17);
+hip.add(pack);
+}
+hip.add(torso, head, armL, armR, legL, legR);
+root.scale.setScalar(S * (o.scale || 1));
+root.userData = { hip, torso, armL, armR, legL, legR, face };
+if (o.gtFestival) hooks.decorateNpc(root, o);
+return root;
 }
 
 export function buildNpcMesh(config = {}) {
@@ -805,7 +823,7 @@ export function makeCar(x,z){
   for(const sx of[-1,1])for(const sz of[-1.4,1.4]){const w=new THREE.Mesh(new THREE.CylinderGeometry(.38,.38,.28,14),new THREE.MeshStandardMaterial({color:0x111}));w.rotation.z=Math.PI/2;w.position.set(sx*1.02,.38,sz);g.add(w);}
   g.rotation.order='YXZ';worldRoot.add(g);AO.cars.push({mesh:g,x,z,yaw:0,sp:0,hp:240,lr,lb,stuck:0});}
 
-export function removeCop(c){worldRoot.remove(c.mesh);c.mesh.traverse(o=>{if(o.geometry)o.geometry.dispose();});AO.cops.splice(AO.cops.indexOf(c),1);}
+export function removeCop(c){worldRoot.remove(c.mesh);freeGeo(c.mesh);AO.cops.splice(AO.cops.indexOf(c),1);}
 
 export function clearWantedLevel() {
   AO.heat = 0;
@@ -841,8 +859,7 @@ export function copFrame(dt,t){
   if(AO.calm>10&&nearest>38)AO.heat=Math.max(0,AO.heat-dt*(nearest>70?.18:.07));
   if(pu)AO.heat=Math.max(0,AO.heat-dt*.12);
   // melee & projectile damage
-  const atk=player.attackTimer>0&&!player.hitApplied?0:0;
-  if(player.attackTimer>0&&AO.lastAtk<=0){AO.lastAtk=.4;const fx=Math.sin(player.yaw+Math.PI),fz=Math.cos(player.yaw+Math.PI);
+  if(player.attackTimer>0&&!player._copHit&&(1-player.attackTimer/player.attackDuration)>=0.42){player._copHit=true;const fx=Math.sin(player.yaw+Math.PI),fz=Math.cos(player.yaw+Math.PI);
     for(const c of AO.cops.slice()){const dx=c.x-player.x,dz=c.z-player.z,d=Math.hypot(dx,dz);if(d<2.9&&Math.abs(player.y-c.mesh.position.y)<2.5&&(dx*fx+dz*fz)/Math.max(.1,d)>.2)hurtCop(c,(RIGHT_WEAPONS[gameState.activeRightWeapon]||{damage:18}).damage);}}
   AO.lastAtk-=dt;
   for(const w of projectileWieners)for(const c of AO.cops.slice())if(!w.copHit&&Math.hypot(w.x-c.x,w.z-c.z)<1&&w.y<c.mesh.position.y+2&&w.y>c.mesh.position.y-.2){w.copHit=1;hurtCop(c,RIGHT_WEAPONS.hotdog_shooter.damage);}

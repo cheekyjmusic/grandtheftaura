@@ -46,22 +46,24 @@
       font-family: 'Rajdhani', sans-serif;
       letter-spacing: 0.06em;
     }
-    .glass-panel {
-      background: rgba(10, 13, 18, 0.84);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      border: 1px solid rgba(255, 255, 255, 0.13);
-      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
-      border-radius: 10px;
-    }
-    .glass-panel-amber {
-      background: rgba(11, 14, 20, 0.90);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border: 1px solid rgba(245, 158, 11, 0.45);
-      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.68);
-      border-radius: 12px;
-    }
+#minimap-north {
+    left: 50% !important;
+    top: 5% !important;
+}
+
+.glass-panel {
+    background: rgba(10, 13, 18, 0.93);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+    border-radius: 10px;
+}
+
+.glass-panel-amber {
+    background: rgba(11, 14, 20, 0.95);
+    border: 1px solid rgba(245, 158, 11, 0.45);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.68);
+    border-radius: 12px;
+}
     .menu-btn {
       background: rgba(20, 25, 34, 0.9);
       border: 1px solid rgba(255, 255, 255, 0.15);
@@ -136,10 +138,16 @@
     }
     html, body, #game-canvas { touch-action: none; }
     #orientation-lock { display: none; }
-    @media (orientation: portrait) {
-      body > :not(#orientation-lock) { visibility: hidden !important; }
-      #orientation-lock { visibility: visible !important; display: flex !important; }
+@media (orientation: portrait) and (pointer: coarse) {
+    body > :not(#orientation-lock) {
+        visibility: hidden !important;
     }
+
+    #orientation-lock {
+        visibility: visible !important;
+        display: flex !important;
+    }
+}
     #orientation-lock {
       position: fixed; inset: 0; z-index: 10000; align-items: center; justify-content: center;
       padding: 28px; background: radial-gradient(ellipse at 50% 40%, #182335 0%, #090b0f 72%);
@@ -154,7 +162,20 @@
     #mobile-look.active .mobile-look-hint { opacity: 0; }
     .mobile-tools, .mobile-stick-wrap, .mobile-actions, .mobile-car-controls, .mobile-jet-controls { position: absolute; z-index: 3; pointer-events: auto; }
     .mobile-tools { top: max(8px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; gap: 6px; }
-    .mobile-btn { min-width: 42px; height: 38px; padding: 0 9px; border: 1px solid rgba(255,255,255,.25); border-radius: 14px; color: #f8fafc; background: rgba(8,13,22,.78); box-shadow: 0 4px 14px rgba(0,0,0,.38); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font: 700 11px 'Rajdhani',sans-serif; letter-spacing: .06em; touch-action: none; -webkit-tap-highlight-color: transparent; }
+.mobile-btn {
+    min-width: 42px;
+    height: 38px;
+    padding: 0 9px;
+    border: 1px solid rgba(255,255,255,.25);
+    border-radius: 14px;
+    color: #f8fafc;
+    background: rgba(8,13,22,.9);
+    box-shadow: 0 4px 14px rgba(0,0,0,.38);
+    font: 700 11px 'Rajdhani',sans-serif;
+    letter-spacing: .06em;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+}
     .mobile-btn:active, .mobile-btn.pressed { transform: scale(.94); background: rgba(245,158,11,.88); color: #111827; }
     .mobile-btn:disabled { opacity: .42; filter: saturate(.5); }
     .mobile-btn.primary { border-color: rgba(251,191,36,.75); background: rgba(146,64,14,.82); }

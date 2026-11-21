@@ -38,10 +38,22 @@ const materialCache = new Map();
 const random = (min, max) => min + Math.random() * (max - min);
 const choose = (items) => items[Math.floor(Math.random() * items.length)];
 const material = (color, options = {}) => {
-  const key = `${color}:${options.emissive || 0}`;
-  if (!materialCache.has(key)) materialCache.set(key, new THREE.MeshStandardMaterial({ color, roughness: 0.8, ...options }));
-  return materialCache.get(key);
+const key = `${color}:${options.emissive || 0}`;
+if (!materialCache.has(key)) {
+const m = new THREE.MeshStandardMaterial({ color, roughness: 0.8, ...options });
+m.userData.shared = true;
+materialCache.set(key, m);
+}
+return materialCache.get(key);
 };
+const flagTexture = new THREE.TextureLoader().load('assets/textures/chapinflag.png');
+flagTexture.colorSpace = THREE.SRGBColorSpace;
+const flagMaterial = new THREE.MeshStandardMaterial({
+  map: flagTexture,
+  roughness: 0.75,
+  side: THREE.DoubleSide
+});
+
 
 function box(parent, width, height, depth, mat, x, y, z, shadow = false) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), mat);
@@ -67,14 +79,16 @@ function sphere(parent, radius, mat, x, y, z, sx = 1, sy = 1, sz = 1) {
   return mesh;
 }
 
-function makeFlag(width = 0.75, height = 0.48) {
+function makeFlag(width = 0.75, height = width * (267 / 400)) {
   const flag = new THREE.Group();
-  const stripeWidth = width / 3;
-  [BLUE, WHITE, BLUE].forEach((color, i) => box(flag, stripeWidth, height, 0.02, material(color), (i - 1) * stripeWidth, 0, 0));
-  box(flag, height * 0.26, height * 0.26, 0.03, material(0x16a34a), 0, 0, 0);
-  box(flag, height * 0.12, height * 0.12, 0.036, material(0xfacc15), 0, 0, 0);
+  const cloth = new THREE.Mesh(
+    new THREE.BoxGeometry(width, height, 0.02),
+    flagMaterial
+  );
+  flag.add(cloth);
   return flag;
 }
+
 
 function decorateFestivalNpc(mesh, npc) {
   const data = mesh.userData;

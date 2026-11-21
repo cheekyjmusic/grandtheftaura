@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { levelData } from './levelData.js';
 import { MAX_HOTDOG_AMMO, SFY, WORLD_BOUNDS, aura, aviationBeacons, biomeAt, climb, collidesHorizontally, computeSupportFloor, enterableZones, flashEdge, gameState, hazardBarrels, hooks, inputState, isInWater, keys, lampPosts, manholeCovers, manholeOpen, manholes, meteorDrop, npcs, particleBursts, player, pushFeed, sausageRefillZones, sewerLights, skyscrapers, smashableCrates, surfaceGrip, terrainH, under, worldBoxes, worldPickups } from './state.js';
-import { AT, camera, hemiLight, makeMat, meteorCore, meteorGroup, meteorReticle, scene, skyGroup, sunLight, uLight, worldRoot } from './engine.js';
+import { AT, camera, hemiLight, makeMat, meteorCore, meteorGroup, meteorReticle, renderer, scene, skyGroup, sunLight, uLight, worldRoot } from './engine.js';
 import { applyModelPreset } from './assets.js';
 import { sfx } from './audio.js';
 import { LEFT_ITEMS, RIGHT_WEAPONS, addLeftItemToBag, buildLeftItemMesh, buildRightWeaponMesh, fireBallisticWiener, freeGeo, spawnParticles, spawnWorldPickup, updateProjectileWieners } from './items.js';
@@ -230,8 +230,9 @@ export function triggerRightHandAttack() {
   if (gameState.inCar || player.attackTimer > 0 || meteorDrop.active) return;
   const w = RIGHT_WEAPONS[gameState.activeRightWeapon] || RIGHT_WEAPONS.fists;
   player.attackDuration = w.cooldown;
-  player.attackTimer = w.cooldown;
-  player.hitApplied = false;
+player.attackTimer = w.cooldown;
+player.hitApplied = false;
+player._copHit = false;
 
   if (w.isRanged && w.id === 'hotdog_shooter') {
     fireBallisticWiener();
@@ -323,9 +324,9 @@ export function evaluateMeleeHit() {
   }
 
   for (let i = 0; i < npcs.length; i++) {
-    const npc = npcs[i];
-    if (npc.asleep) continue;
-    const dx = npc.x - player.x;
+const npc = npcs[i];
+if (!npc.spawned || npc.asleep) continue;
+const dx = npc.x - player.x;
     const dz = npc.z - player.z;
     const dist = Math.hypot(dx, dz);
     if (dist <= reach && Math.abs(0.18 - player.y) < 1.6) {
@@ -418,93 +419,80 @@ export function triggerMeteorLanding() {
   pushFeed('AIM YOUR METEOR WITH MOUSE OR WASD!', 'border-l-amber-400');
 }
 
-export function updateZoneAndPrompts() {
-  let zone = 'SUNNYVALE CITY';
-  for (const ez of enterableZones) {
-    if (player.x >= ez.minX && player.x <= ez.maxX && player.z >= ez.minZ && player.z <= ez.maxZ && player.y < 5.0) {
-      zone = ez.name;
-      break;
-    }
-  }
-  if (zone === 'SUNNYVALE CITY') {
-    if (player.x >= 164) zone = 'REDROCK DESERT';
-    else if ((player.x >= 140 && player.x <= 164) || (player.z >= 87 && player.z <= 109 && player.y > 2.2)) zone = 'I-88 INTERSTATE FREEWAY';
-    else if (biomeAt(player.x, player.z) !== 'city') zone = { alpine: 'FROSTPINE ALPINE', woods: 'EMERALD WOODS', cove: 'SUNSET COVE' }[biomeAt(player.x, player.z)];
-    else if (Math.abs(player.x) < 17 && Math.abs(player.z) < 17) zone = 'CENTRAL PLAZA';
-    else if (player.z < -72) zone = 'DOWNTOWN SKYSCRAPER DISTRICT';
-    else if (player.x < -22 && player.z < -22) zone = 'COMMERCIAL DISTRICT';
-    else if (player.x > 22 && player.z < -22) zone = 'BRICKWOOD APARTMENTS';
-    else if (player.x > 22 && player.z > 22) zone = 'HARBOR CONTAINER YARD';
-    else zone = 'SUBURBAN NEIGHBORHOOD';
-  }
-  gameState.zoneName = zone;
-
-  const promptEl = document.getElementById('interact-prompt');
-  const mantleEl = document.getElementById('mantle-prompt');
-
-  if (meteorDrop.active) {
-    promptEl.classList.add('hidden');
-    mantleEl.classList.add('hidden');
-    return;
-  }
-
-  if (gameState.inCar) {
-    promptEl.classList.remove('hidden');
-    document.getElementById('interact-key').textContent = 'F';
-    document.getElementById('interact-text').textContent = 'EXIT VEHICLE';
-    mantleEl.classList.add('hidden');
-    return;
-  }
-
-  let nearRefill = null;
-  for (const zoneObj of sausageRefillZones) {
-    if (Math.hypot(player.x - zoneObj.x, player.z - zoneObj.z) < 3.1 && Math.abs(player.y - zoneObj.y) < 1.8) {
-      nearRefill = zoneObj;
-      break;
-    }
-  }
-
-  if (nearRefill) {
-    promptEl.classList.remove('hidden');
-    document.getElementById('interact-key').textContent = 'E';
-    document.getElementById('interact-text').textContent = `REFILL SAUSAGES (${gameState.hotdogAmmo}/${MAX_HOTDOG_AMMO})`;
-  } else {
-    const elev = getNearestElevatorPad();
-    if (elev) {
-      promptEl.classList.remove('hidden');
-      document.getElementById('interact-key').textContent = 'F';
-      document.getElementById('interact-text').textContent = elev.toRoof
-        ? `RIDE ELEVATOR TO ROOF (${elev.sk.name})`
-        : `RIDE ELEVATOR TO LOBBY`;
-    } else {
-      const nearCar = getNearestVehicle(4.2);
-      let nearNpc = null;
-      for (const npc of npcs) {
-        if (!npc.spawned || npc.asleep) continue;
-        if (Math.hypot(player.x - npc.x, player.z - npc.z) < 2.5 && Math.abs(player.y - 0.18) < 1.8) {
-          nearNpc = npc;
-          break;
-        }
-      }
-
-      if (nearCar) {
-        promptEl.classList.remove('hidden');
-        document.getElementById('interact-key').textContent = 'F';
-        document.getElementById('interact-text').textContent = `DRIVE ${nearCar.v.name}`;
-      } else if (nearNpc) {
-        promptEl.classList.remove('hidden');
-        document.getElementById('interact-key').textContent = 'E';
-        document.getElementById('interact-text').textContent = `TALK TO ${nearNpc.name}`;
-      } else {
-        promptEl.classList.add('hidden');
-      }
-    }
-  }
-
-  if (findMantleTarget()) mantleEl.classList.remove('hidden');
-  else mantleEl.classList.add('hidden');
+let _promptT = 0;
+const _pTxt = new WeakMap(), _pCls = new WeakMap();
+function pText(el, v) { if (el && _pTxt.get(el) !== v) { _pTxt.set(el, v); el.textContent = v; } }
+function pShow(el, on) { if (el && _pCls.get(el) !== on) { _pCls.set(el, on); el.classList.toggle('hidden', !on); } }
+export function updateZoneAndPrompts(force = false) {
+const now = performance.now();
+if (!force && now - _promptT < 100) return;
+_promptT = now;
+let zone = 'SUNNYVALE CITY';
+for (const ez of enterableZones) {
+if (player.x >= ez.minX && player.x <= ez.maxX && player.z >= ez.minZ && player.z <= ez.maxZ && player.y < 5.0) {
+zone = ez.name;
+break;
+}
+}
+if (zone === 'SUNNYVALE CITY') {
+if (player.x >= 164) zone = 'REDROCK DESERT';
+else if ((player.x >= 140 && player.x <= 164) || (player.z >= 87 && player.z <= 109 && player.y > 2.2)) zone = 'I-88 INTERSTATE FREEWAY';
+else if (biomeAt(player.x, player.z) !== 'city') zone = { alpine: 'FROSTPINE ALPINE', woods: 'EMERALD WOODS', cove: 'SUNSET COVE' }[biomeAt(player.x, player.z)];
+else if (Math.abs(player.x) < 17 && Math.abs(player.z) < 17) zone = 'CENTRAL PLAZA';
+else if (player.z < -72) zone = 'DOWNTOWN SKYSCRAPER DISTRICT';
+else if (player.x < -22 && player.z < -22) zone = 'COMMERCIAL DISTRICT';
+else if (player.x > 22 && player.z < -22) zone = 'BRICKWOOD APARTMENTS';
+else if (player.x > 22 && player.z > 22) zone = 'HARBOR CONTAINER YARD';
+else zone = 'SUBURBAN NEIGHBORHOOD';
+}
+gameState.zoneName = zone;
+const promptEl = document.getElementById('interact-prompt');
+const mantleEl = document.getElementById('mantle-prompt');
+const keyEl = document.getElementById('interact-key');
+const textEl = document.getElementById('interact-text');
+if (meteorDrop.active) { pShow(promptEl, false); pShow(mantleEl, false); return; }
+if (gameState.inCar) { pShow(promptEl, true); pText(keyEl, 'F'); pText(textEl, 'EXIT VEHICLE'); pShow(mantleEl, false); return; }
+let nearRefill = null;
+for (const zoneObj of sausageRefillZones) {
+if (Math.hypot(player.x - zoneObj.x, player.z - zoneObj.z) < 3.1 && Math.abs(player.y - zoneObj.y) < 1.8) { nearRefill = zoneObj; break; }
+}
+if (nearRefill) {
+pShow(promptEl, true); pText(keyEl, 'E'); pText(textEl, `REFILL SAUSAGES (${gameState.hotdogAmmo}/${MAX_HOTDOG_AMMO})`);
+} else {
+const elev = getNearestElevatorPad();
+if (elev) {
+pShow(promptEl, true); pText(keyEl, 'F');
+pText(textEl, elev.toRoof ? `RIDE ELEVATOR TO ROOF (${elev.sk.name})` : 'RIDE ELEVATOR TO LOBBY');
+} else {
+const nearCar = getNearestVehicle(4.2);
+let nearNpc = null;
+for (const npc of npcs) {
+if (!npc.spawned || npc.asleep) continue;
+if (Math.hypot(player.x - npc.x, player.z - npc.z) < 2.5 && Math.abs(player.y - 0.18) < 1.8) { nearNpc = npc; break; }
+}
+if (nearCar) { pShow(promptEl, true); pText(keyEl, 'F'); pText(textEl, `DRIVE ${nearCar.v.name}`); }
+else if (nearNpc) { pShow(promptEl, true); pText(keyEl, 'E'); pText(textEl, `TALK TO ${nearNpc.name}`); }
+else { pShow(promptEl, false); }
+}
+}
+pShow(mantleEl, !!findMantleTarget());
 }
 
+function stepParticles(dt) {
+for (let i = particleBursts.length - 1; i >= 0; i--) {
+const pt = particleBursts[i];
+pt.life -= dt;
+pt.vy -= 14 * dt;
+pt.mesh.position.x += pt.vx * dt;
+pt.mesh.position.y += pt.vy * dt;
+pt.mesh.position.z += pt.vz * dt;
+pt.mesh.scale.setScalar(Math.max(0.01, pt.life));
+if (pt.life <= 0) {
+worldRoot.remove(pt.mesh);
+particleBursts.splice(i, 1);
+}
+}
+}
 export function stepSimulation(dt, elapsed) {
   if (gameState.damageCooldown > 0) gameState.damageCooldown -= dt;
   if (gameState.speedBoostTimer > 0) gameState.speedBoostTimer -= dt;
@@ -643,10 +631,11 @@ export function stepSimulation(dt, elapsed) {
       pushFeed('METEOR TOUCHDOWN — LANDED AT YOUR TARGET!', 'border-l-amber-400');
     }
 
-    updateZoneAndPrompts();
-    hooks.updateHUD();
-    return;
-  }
+    stepParticles(dt);
+updateZoneAndPrompts();
+hooks.updateHUD();
+return;
+}
 
   if (meteorDrop.shockwaveMesh) {
     meteorDrop.shockwaveLife -= dt;
@@ -1038,19 +1027,7 @@ export function stepSimulation(dt, elapsed) {
     }
   }
 
-  for (let i = particleBursts.length - 1; i >= 0; i--) {
-    const pt = particleBursts[i];
-    pt.life -= dt;
-    pt.vy -= 14 * dt;
-    pt.mesh.position.x += pt.vx * dt;
-    pt.mesh.position.y += pt.vy * dt;
-    pt.mesh.position.z += pt.vz * dt;
-    pt.mesh.scale.setScalar(Math.max(0.01, pt.life));
-    if (pt.life <= 0) {
-      worldRoot.remove(pt.mesh);
-      particleBursts.splice(i, 1);
-    }
-  }
+  stepParticles(dt);
 
   for (let i = 0; i < aviationBeacons.length; i++) {
     const pulse = Math.sin(elapsed * 4.5 + i * 1.4) > 0.25;
@@ -1063,10 +1040,19 @@ export function stepSimulation(dt, elapsed) {
   updateSkyscraperInteriors();
   updateNPCs(dt, elapsed);
 
-  const sunY = Math.max(0, player.y);
-  sunLight.position.set(player.x + 78, sunY + 130, player.z + 52);
-  sunLight.target.position.set(player.x, sunY, player.z);
-  sunLight.target.updateMatrixWorld();
+ const sunY = Math.max(0, player.y);
+const shadowMoved = !aura._shadowAt
+|| Math.hypot(player.x - aura._shadowAt.x, player.z - aura._shadowAt.z) > 8
+|| Math.abs(sunY - aura._shadowAt.y) > 6;
+const shadowStale = performance.now() - (aura._shadowT || 0) > 200;
+if (shadowMoved || shadowStale) {
+sunLight.position.set(player.x + 78, sunY + 130, player.z + 52);
+sunLight.target.position.set(player.x, sunY, player.z);
+sunLight.target.updateMatrixWorld();
+renderer.shadowMap.needsUpdate = true;
+aura._shadowAt = { x: player.x, y: sunY, z: player.z };
+aura._shadowT = performance.now();
+}
 
   updateZoneAndPrompts();
   hooks.updateHUD();

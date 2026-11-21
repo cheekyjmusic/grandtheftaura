@@ -2,7 +2,7 @@
 setlocal
 title Grand Theft Aura - local server
 cd /d "%~dp0"
-set PORT=8080
+set PORT=8090
 set PAGE=index.html
 if /I "%~1"=="studio" set PAGE=studio.html
 
@@ -12,6 +12,12 @@ echo  Aura Studio       -  http://localhost:%PORT%/studio.html
 echo  Close this window (or press Ctrl+C) to stop the server.
 echo.
 
+where npx >nul 2>nul
+if %errorlevel%==0 (
+  start "" "http://localhost:%PORT%/%PAGE%"
+  npx --yes http-server -p %PORT% -c-1
+  goto :eof
+)
 where py >nul 2>nul
 if %errorlevel%==0 (
   start "" "http://localhost:%PORT%/%PAGE%"
@@ -24,13 +30,5 @@ if %errorlevel%==0 (
   python -m http.server %PORT%
   goto :eof
 )
-where npx >nul 2>nul
-if %errorlevel%==0 (
-  start "" "http://localhost:%PORT%/%PAGE%"
-  npx --yes http-server -p %PORT% -c-1
-  goto :eof
-)
-echo  Could not find Python or Node.js.
-echo  Install Python from https://www.python.org/downloads/ (tick "Add to PATH") or Node.js from https://nodejs.org/
-echo  and run this file again.
+echo  Could not find Node.js or Python.
 pause
