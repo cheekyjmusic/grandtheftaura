@@ -94,6 +94,7 @@ const state = {
   tool: 'select',
   snap: 0,
   selection: null,            // {kind:'entity'|'model'|'audio'|'param', id|key}
+  selections: [],
   tabs: [],                   // viewport tabs
   activeTab: 'world',
   collapsed: new Set(),
@@ -108,6 +109,7 @@ const state = {
 };
 
 let cam, controls, transform, boxHelper, stage, raycaster, brushPreview;
+let multiGroup = null;
 let worldBackground = null, worldFog = null, skyWasVisible = false;
 
 // -----------------------------------------------------------------------------
@@ -166,6 +168,7 @@ function updateSaveState() {
 function entityOf(id) { return levelData.entities.find((e) => e.id === id); }
 
 function rebuildEntities() {
+    detachMultiGroup();
   for (const id of [...entityObjects.keys()]) removeEntityObject(id);
   for (const e of levelData.entities) createEntityObject(e, { register: false });
   attachGizmo();
@@ -351,6 +354,25 @@ function updateToolboxMode() {
 // -----------------------------------------------------------------------------
 // Selection + gizmo
 // -----------------------------------------------------------------------------
+function objectForSelection(s) {
+  if (!s) return null;
+  if (s.kind === 'entity') { const rec = entityObjects.get(s.id); return rec ? rec.object : null; }
+  if (s.kind === 'worldObject' || s.kind === 'worldPart') return s.object;
+  return null;
+}
+
+function getSelectedObjects() {
+  return state.selections.map(objectForSelection).filter(Boolean);
+}
+
+function detachMultiGroup() {
+  if (!multiGroup || !multiGroup.children.length) return;
+  for (const child of [...multiGroup.children]) {
+    worldRoot.attach(child);
+  }
+}
+
+
 function selectedObject() {
   const s = state.selection;
   if (!s) return null;
@@ -375,8 +397,25 @@ function saveWorldObjectTransform(key, object) {
   };
 }
 
-function select(sel, { silent = false } = {}) {
-  state.selection = sel;
+function select(sel, { silent = false, additive = false } = {}) {
+  detachMultiGroup();
+  if (!sel) {
+    state.selection = null;
+    state.selections = [];
+  } else if (additive && state.activeTab === 'world' && ['entity', 'worldObject', 'worldPart'].includes(sel.kind)) {
+    const key = selKey(sel);
+    const idx = state.selections.findIndex((item) => selKey(item) === key);
+    if (idx >= 0) {
+      state.selections.splice(idx, 1);
+      state.selection = state.selections[state.selections.length - 1] || null;
+    } else {
+      state.selections.push(sel);
+      state.selection = sel;
+    }
+  } else {
+    state.selection = sel;
+    state.selections = [sel];
+  }
   if (sel && (sel.kind === 'worldObject' || sel.kind === 'worldPart')) {
     const path = sel.key || sel.object?.userData.studioPath || '';
     if (path.startsWith('entity:')) state.expanded.add('f:ws');
@@ -394,16 +433,36 @@ function select(sel, { silent = false } = {}) {
 }
 
 function attachGizmo() {
-  const obj = selectedObject();
-  if (obj && ['translate', 'rotate', 'scale'].includes(state.tool)) {
-    transform.attach(obj);
+  detachMultiGroup();
+  const objs = state.activeTab === 'world' ? getSelectedObjects() : [];
+  let target = null;
+
+  if (objs.length > 1) {
+    const center = new THREE.Vector3();
+    for (const o of objs) {
+      o.updateMatrixWorld(true);
+      center.add(new THREE.Box3().setFromObject(o).getCenter(new THREE.Vector3()));
+    }
+    multiGroup.position.copy(center.divideScalar(objs.length));
+    multiGroup.rotation.set(0, 0, 0);
+    multiGroup.scale.set(1, 1, 1);
+    multiGroup.updateMatrixWorld(true);
+    for (const o of objs) multiGroup.attach(o);
+    target = multiGroup;
+  } else {
+    target = selectedObject();
+  }
+
+  if (target && ['translate', 'rotate', 'scale'].includes(state.tool)) {
+    transform.attach(target);
     transform.setMode(state.tool);
     transform.getHelper().visible = true;
   } else {
     transform.detach();
   }
-  if (obj) { boxHelper.setFromObject(obj); boxHelper.visible = true; } else boxHelper.visible = false;
+  if (target) { boxHelper.setFromObject(target); boxHelper.visible = true; } else boxHelper.visible = false;
 }
+
 
 function setTool(tool) {
   state.tool = tool;
@@ -452,28 +511,43 @@ function insertPrefab(prefab) {
 }
 
 function duplicateSelection() {
-  const s = state.selection;
-  if (!s || s.kind !== 'entity' || state.activeTab !== 'world') { toast('Select a world entity to duplicate.'); return; }
-  const src = entityOf(s.id);
-  const copy = structuredClone(src);
-  copy.id = nextEntityId(src.type);
-  copy.name = src.name.replace(/ copy( \d+)?$/, '') + ' copy';
-  copy.pos = [src.pos[0] + 2, src.pos[1], src.pos[2] + 2];
-  addEntity(copy);
+  const ents = state.selections.filter((s) => s.kind === 'entity');
+  if (!ents.length || state.activeTab !== 'world') { toast('Select a world entity to duplicate.'); return; }
+  detachMultiGroup();
+  const newSels = [];
+  for (const s of ents) {
+    const src = entityOf(s.id);
+    if (!src) continue;
+    const copy = structuredClone(src);
+    copy.id = nextEntityId(src.type);
+    copy.name = src.name.replace(/ copy( \d+)?$/, '') + ' copy';
+    copy.pos = [src.pos[0] + 2, src.pos[1], src.pos[2] + 2];
+    addEntity(copy, { select: false });
+    newSels.push({ kind: 'entity', id: copy.id });
+  }
+  state.selections = newSels;
+  state.selection = newSels[newSels.length - 1] || null;
+  attachGizmo();
+  refreshExplorer();
+  renderInspector();
 }
 
 function deleteSelection() {
-  const s = state.selection;
-  if (!s || s.kind !== 'entity' || state.activeTab !== 'world') return;
-  const i = levelData.entities.findIndex((e) => e.id === s.id);
-  if (i < 0) return;
-  levelData.entities.splice(i, 1);
-  removeEntityObject(s.id);
-  for (const t of [...state.tabs]) if (t.kind === 'entity' && t.entityId === s.id) closeTab(t.id);
+  const ents = state.selections.filter((s) => s.kind === 'entity');
+  if (!ents.length || state.activeTab !== 'world') return;
+  detachMultiGroup();
+  for (const s of ents) {
+    const i = levelData.entities.findIndex((e) => e.id === s.id);
+    if (i < 0) continue;
+    levelData.entities.splice(i, 1);
+    removeEntityObject(s.id);
+    for (const t of [...state.tabs]) if (t.kind === 'entity' && t.entityId === s.id) closeTab(t.id);
+  }
   select(null);
   commit();
   refreshExplorer();
 }
+
 
 // -----------------------------------------------------------------------------
 // Camera: orbit + fly + focus
@@ -564,14 +638,15 @@ function pick(ev, { part = false } = {}) {
       }
       if (blocked || !root || root === worldRoot) continue;
       const entityId = root.userData.entityId;
-      if (part && hit.object !== root) {
+            if (part && hit.object !== root) {
         const object = hit.object;
-        select({ kind: 'worldPart', object, key: object.userData.studioPath, name: object.userData.studioName || object.name || 'Model part' });
-      } else if (entityId) select({ kind: 'entity', id: entityId });
-      else select({ kind: 'worldObject', object: root, key: root.userData.studioPath, name: root.userData.studioName || root.name || 'Map object' });
+        select({ kind: 'worldPart', object, key: object.userData.studioPath, name: object.userData.studioName || object.name || 'Model part' }, { additive: ev.shiftKey });
+      } else if (entityId) select({ kind: 'entity', id: entityId }, { additive: ev.shiftKey });
+      else select({ kind: 'worldObject', object: root, key: root.userData.studioPath, name: root.userData.studioName || root.name || 'Map object' }, { additive: ev.shiftKey });
       return;
     }
-    select(null);
+    select(null, { additive: ev.shiftKey });
+
   } else {
     const hits = raycaster.intersectObject(tab.pivot, true);
     if (hits.length) select(tab.kind === 'model' ? { kind: 'model', id: tab.modelId } : { kind: 'entity', id: tab.entityId });
@@ -1001,9 +1076,9 @@ function refreshExplorer({ keepScroll = true } = {}) {
     return any;
   };
   visit(treeData(), 0);
-  const current = selKey(state.selection);
+    const selectedKeys = new Set(state.selections.map(selKey));
   tree.replaceChildren(...out.map(({ n, depth, open }) => {
-    const selected = n.sel && selKey(n.sel) === current;
+    const selected = n.sel && selectedKeys.has(selKey(n.sel));
     const toggle = () => {
       const expanded = isOpen(n);
       if (expanded) { state.expanded.delete(n.id); state.collapsed.add(n.id); }
@@ -1014,10 +1089,11 @@ function refreshExplorer({ keepScroll = true } = {}) {
       class: `tnode${n.folder ? ' folder' : ''}${selected ? ' selected' : ''}`,
       style: `padding-left:${6 + depth * 14}px`,
       role: 'treeitem',
-      onclick: () => { if (n.sel) select(n.sel); else if (n.folder) toggle(); },
+      onclick: (ev) => { if (n.sel) select(n.sel, { additive: ev.shiftKey }); else if (n.folder) toggle(); },
       ondblclick: () => { if (n.open) n.open(); }
     }, h('span', { class: 'twist', onclick: (event) => { event.stopPropagation(); if (n.folder) toggle(); } }, n.folder ? (open ? '▾' : '▸') : ''), h('span', { class: 'glyph' }, n.glyph || ''), h('span', { class: 'label', title: n.label }, n.label));
   }));
+
   if (keepScroll) tree.scrollTop = top;
 }
 
@@ -1254,7 +1330,36 @@ async function main() {
     controls.enabled = !e.value;
     if (!e.value) { commit(); syncInspectorTransform(); }
   });
-  transform.addEventListener('objectChange', () => {
+
+      transform.addEventListener('objectChange', () => {
+    if (state.selections.length > 1 && state.activeTab === 'world') {
+      const worldPos = new THREE.Vector3();
+      const worldQuat = new THREE.Quaternion();
+      const worldScale = new THREE.Vector3();
+      for (const s of state.selections) {
+        const obj = objectForSelection(s);
+        if (!obj) continue;
+        obj.updateMatrixWorld(true);
+        obj.matrixWorld.decompose(worldPos, worldQuat, worldScale);
+        if (s.kind === 'entity') {
+          const ent = entityOf(s.id);
+          if (!ent) continue;
+          const yOff = ent.type === 'pickup' ? 0.55 : 0;
+          const euler = new THREE.Euler().setFromQuaternion(worldQuat, 'YXZ');
+          ent.pos = [worldPos.x, worldPos.y - yOff, worldPos.z].map((v) => Math.round(v * 1000) / 1000);
+          ent.rot = [euler.x, euler.y, euler.z].map((v) => Math.round(v * 10000) / 10000);
+          ent.scale = [worldScale.x, worldScale.y, worldScale.z].map((v) => Math.round(v * 1000) / 1000);
+        } else if (s.kind === 'worldObject' || s.kind === 'worldPart') {
+          levelData.worldTransforms = levelData.worldTransforms || {};
+          levelData.worldTransforms[s.key || obj.userData.studioPath] = {
+            position: worldPos.toArray(),
+            rotation: new THREE.Euler().setFromQuaternion(worldQuat).toArray(),
+            scale: worldScale.toArray()
+          };
+        }
+      }
+      return;
+    }
     const s = state.selection;
     if (s && s.kind === 'entity' && state.activeTab === 'world') {
       const ent = entityOf(s.id);
@@ -1265,11 +1370,15 @@ async function main() {
     }
   });
 
+
   boxHelper = new THREE.BoxHelper(new THREE.Object3D(), 0xfacc15);
   boxHelper.visible = false;
   boxHelper.material.depthTest = false;
   boxHelper.renderOrder = 999;
   scene.add(boxHelper);
+  multiGroup = new THREE.Group();
+  scene.add(multiGroup);
+
   raycaster = new THREE.Raycaster();
   brushPreview = new THREE.Mesh(new THREE.RingGeometry(5.84, 6, 48), new THREE.MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.78, side: THREE.DoubleSide, depthWrite: false }));
   brushPreview.geometry.rotateX(-Math.PI / 2);
