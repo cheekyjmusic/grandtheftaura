@@ -4,6 +4,8 @@
 import * as THREE from 'three';
 import { gameState } from './state.js';
 
+const PIXEL_RENDER_SCALE = 0.75;
+
 export let canvas = null;
 
 export let renderer = null;
@@ -12,7 +14,9 @@ export const scene = new THREE.Scene();
 
 scene.background = new THREE.Color(0x88c9ea);
 
-scene.fog = new THREE.FogExp2(0x9bd2ee, 0.0024);
+scene.fog = new THREE.FogExp2(0x9bd2ee, 0.0032);
+
+const sunScreenPosition = new THREE.Vector3();
 
 export function buildStudioEnvMap() {
   const faces = ['px', 'nx', 'py', 'ny', 'pz', 'nz'].map((face) => {
@@ -164,9 +168,43 @@ for (let i = 0; i < 18; i++) {
   skyGroup.add(cGroup);
 }
 
-skyGroup.visible = false;
+skyGroup.visible = true;
 
 scene.add(skyGroup);
+
+export function updateSunLensFlare() {
+  const flare = document.getElementById('sun-lens-flare');
+  if (!flare) return;
+  if (!skyGroup.visible) {
+    flare.style.opacity = '0';
+    return;
+  }
+
+  camera.updateMatrixWorld();
+  sunDisc.getWorldPosition(sunScreenPosition).project(camera);
+  const edge = Math.max(Math.abs(sunScreenPosition.x), Math.abs(sunScreenPosition.y));
+  if (sunScreenPosition.z < -1 || sunScreenPosition.z > 1 || edge > 1.18) {
+    flare.style.opacity = '0';
+    return;
+  }
+
+  const sunX = (sunScreenPosition.x + 1) * 50;
+  const sunY = (1 - sunScreenPosition.y) * 50;
+  const edgeFade = Math.min(1, (1.18 - edge) / 0.2);
+  const centerFade = 0.65 + 0.35 * (1 - Math.min(1, Math.hypot(sunScreenPosition.x, sunScreenPosition.y) / 1.5));
+  flare.style.opacity = String(edgeFade * centerFade * 0.8);
+
+  const ghosts = flare.querySelectorAll('.flare-ghost');
+  const positions = [0.42, 0.78, 1.18];
+  ghosts.forEach((ghost, index) => {
+    const t = positions[index];
+    ghost.style.left = `${sunX + (50 - sunX) * t}%`;
+    ghost.style.top = `${sunY + (50 - sunY) * t}%`;
+  });
+  const source = flare.querySelector('.flare-source');
+  source.style.left = `${sunX}%`;
+  source.style.top = `${sunY}%`;
+}
 
 // Fiery Meteor Mesh for Start Menu Entrance
 export const meteorGroup = new THREE.Group();
@@ -549,7 +587,7 @@ export function applyGraphicsTier(tier) {
     obj.visible = isHigh;
   }
 
-  skyGroup.visible = isHigh;
+  skyGroup.visible = true;
   rimLight.intensity = isHigh ? 0.55 : 0;
   sunLight.intensity = isHigh ? 1.65 : 1.45;
   hemiLight.intensity = isHigh ? 0.96 : 0.88;
@@ -574,7 +612,7 @@ export function applyGraphicsTier(tier) {
 
   const maxDpr = tier === 'low' ? 1.0 : tier === 'medium' ? 1.35 : 1.85;
   if (renderer) {
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr) * PIXEL_RENDER_SCALE);
     resizeRenderer();
   }
 }
@@ -629,7 +667,7 @@ document.body.appendChild(el);
   }
   canvas = el;
   renderer = new THREE.WebGLRenderer({ canvas: el, antialias: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.35));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.35) * PIXEL_RENDER_SCALE);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;

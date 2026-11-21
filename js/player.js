@@ -784,7 +784,7 @@ export function stepSimulation(dt, elapsed) {
       if (!player.grounded && player.y > player.peakAirY) player.peakAirY = player.y;
 
       const supportY = computeSupportFloor(player.x, player.z, previousY - 0.46, player.radius);
-      if (player.y <= supportY && previousY >= supportY && player.vy <= 0) {
+      if (player.y <= supportY && player.vy <= 0) {
         if (!player.grounded) {
           const fallDist = player.peakAirY - supportY;
           if (fallDist > 3.6) {
@@ -1104,7 +1104,7 @@ export const hazeC=new THREE.Color(0xb8d4ea);
 export function auraFrame(dt,t){
   climbFrame(dt);ratFrame(dt,t);if(aura.ahCull)aura.ahCull(dt);
   const u=under();
-  if(u!==AT.on){AT.on=u;if(u){scene.background=new THREE.Color(0x070a09);skyGroup.visible=false;}else{scene.background=AT.bg;{const hi=gameState.settings.graphics==='high';skyGroup.visible=hi;sunLight.intensity=hi?1.65:1.45;hemiLight.intensity=hi?.96:.88;}}sewerLights.forEach(l=>l.visible=u);uLight.visible=u;}
+  if(u!==AT.on){AT.on=u;if(u){scene.background=new THREE.Color(0x070a09);skyGroup.visible=false;}else{scene.background=AT.bg;skyGroup.visible=true;{const hi=gameState.settings.graphics==='high';sunLight.intensity=hi?1.65:1.45;hemiLight.intensity=hi?.96:.88;}}sewerLights.forEach(l=>l.visible=u);uLight.visible=u;}
   if(u){scene.fog.color.set(0x0a100d);scene.fog.density=.016;sunLight.intensity=0;hemiLight.intensity=.22;uLight.position.set(player.x,player.y+2.2,player.z);
     sewerLights.forEach((l,i)=>{if(i<10&&Math.random()<.01)l.intensity=10+Math.random()*30;else if(i<10)l.intensity+=(30-l.intensity)*.1;});}
   else if(player.z<-175){scene.fog.color.lerp(hazeC,.02);}

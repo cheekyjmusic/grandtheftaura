@@ -5,7 +5,7 @@
 // Top of the import hierarchy: nothing imports this file.
 // =============================================================================
 import { levelData } from './levelData.js';
-import { initEngine, scene, camera, renderer, skyGroup, applyGraphicsTier, resizeRenderer, animatedWaterTex } from './engine.js';
+import { initEngine, scene, camera, renderer, skyGroup, applyGraphicsTier, resizeRenderer, animatedWaterTex, updateSunLensFlare } from './engine.js';
 import { preloadBoundAudio, preloadRegisteredTextures } from './assets.js';
 import { sfx } from './audio.js';
 import { gameState, hooks } from './state.js';
@@ -22,6 +22,7 @@ import { initAircraft, updateAircraft } from './aircraft.js';
 
 let lastTime = performance.now();
 let minimapTimer = 0;
+let windowFocused = true;
 
 function animate(now) {
   requestAnimationFrame(animate);
@@ -39,7 +40,7 @@ function animate(now) {
     const ang = elapsed * 0.16;
     camera.position.set(Math.cos(ang) * 76, 36 + Math.sin(elapsed * 0.4) * 3, Math.sin(ang) * 76 - 24);
     camera.lookAt(0, 6, -32);
-  } else if (gameState.screen === 'playing') {
+  } else if (gameState.screen === 'playing' && windowFocused && !document.hidden) {
     updateAircraft(dt, elapsed);
     updateCityTraffic(dt);
     updateGuatemalanFestival(dt, elapsed);
@@ -54,6 +55,12 @@ function animate(now) {
 
   sfx.updateMusic();
   skyGroup.position.copy(camera.position);
+  for (let i = 2; i < skyGroup.children.length; i++) {
+    const cloud = skyGroup.children[i];
+    cloud.position.x += dt * 0.3;
+    if (cloud.position.x > 260) cloud.position.x = -260;
+  }
+  updateSunLensFlare();
   renderer.render(scene, camera);
 }
 
@@ -98,6 +105,14 @@ async function boot() {
   initInput();
   updateHUD();
   await updateLoadingProgress(96, 'Finalizing');
+
+  window.addEventListener('blur', () => {
+    windowFocused = false;
+  });
+  window.addEventListener('focus', () => {
+    windowFocused = true;
+    lastTime = performance.now();
+  });
 
   document.addEventListener('visibilitychange', () => {
     lastTime = performance.now();

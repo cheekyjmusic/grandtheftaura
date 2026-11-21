@@ -26,6 +26,14 @@
     #loading-progress { transition: width .25s ease; }
     #ps3-filter { position:fixed; inset:0; z-index:4; pointer-events:none; opacity:.18; mix-blend-mode:soft-light;
       background:repeating-linear-gradient(0deg,rgba(255,255,255,.10) 0 1px,rgba(0,0,0,.16) 1px 3px),radial-gradient(ellipse at center,transparent 62%,rgba(5,8,14,.30) 100%); }
+    #sun-lens-flare { position:fixed; inset:0; z-index:6; pointer-events:none; overflow:hidden; opacity:0; mix-blend-mode:screen; transition:opacity .08s linear; }
+    #sun-lens-flare .flare { position:absolute; border-radius:50%; transform:translate(-50%,-50%); }
+    #sun-lens-flare .flare-source { width:180px; height:180px; background:radial-gradient(circle,rgba(255,249,210,.62) 0,rgba(255,214,130,.22) 23%,transparent 72%); }
+    #sun-lens-flare .flare-source::after { content:""; position:absolute; left:-50%; top:49%; width:200%; height:2px; background:linear-gradient(90deg,transparent,rgba(255,242,196,.28),transparent); }
+    #sun-lens-flare .flare-ghost { width:54px; height:54px; }
+    #sun-lens-flare .ghost-a { background:radial-gradient(circle,rgba(255,216,145,.48),rgba(255,180,90,.08) 42%,transparent 72%); }
+    #sun-lens-flare .ghost-b { width:30px; height:30px; background:radial-gradient(circle,rgba(178,224,255,.42),rgba(96,165,250,.08) 48%,transparent 75%); }
+    #sun-lens-flare .ghost-c { width:82px; height:82px; background:radial-gradient(circle,rgba(255,227,170,.26),rgba(255,169,102,.05) 52%,transparent 74%); }
     #wasted-screen { display:none; }
     #hud, #vehicle-hud, #ammo-hud-card, #sniper-scope, #npc-dialogue, #pause-menu, #settings-menu, #inventory-menu, #radial-menu, #map-modal, #error-banner { display:none; }
     .menu-btn, .menu-btn-primary, .glass-panel, .glass-panel-amber { font-variant-numeric:tabular-nums; }
@@ -44,6 +52,7 @@
   <!-- Fullscreen 3D WebGL Canvas -->
   <canvas id="game-canvas"></canvas>
   <div id="ps3-filter" aria-hidden="true"></div>
+  <div id="sun-lens-flare" aria-hidden="true"><i class="flare flare-source"></i><i class="flare flare-ghost ghost-a"></i><i class="flare flare-ghost ghost-b"></i><i class="flare flare-ghost ghost-c"></i></div>
 
   <!-- Hidden File Input for .JSON Save Import -->
   <input type="file" id="save-file-input" accept=".json,application/json" class="hidden" />

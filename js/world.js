@@ -5,10 +5,18 @@ import * as THREE from 'three';
 import { colorToHex, levelData, terrainHeightOffset } from './levelData.js';
 import { AHC, SFY, addDriveableRamp, addWorldBox, ahRy, ahRz, ahRzD, aura, aviationBeacons, biomeAt, buildingLods, collidesHorizontally, crime, enterableZones, fbm, gameState, hillsH, hooks, iceZones, isInWater, keys, lampPosts, manholeCovers, manholeHoles, manholeOpen, manholes, mapShapes, pick, player, pushFeed, registerBuildingLod, riverX, rnd, roadC, roadH, sRects, sausageRefillZones, skyscrapers, sstep, terrainBaseH, terrainH, under, waterZones, worldBoxes } from './state.js';
 import { camera, makeMat, realWindowGlassMat, regHigh, scene, worldRoot } from './engine.js';
-import { applyEntityColor, applyEntityTexture, applyModelPreset } from './assets.js';
+import { applyEntityColor, applyEntityTexture, applyModelPreset, loadTexture } from './assets.js';
 import { sfx } from './audio.js';
 import { buildBarrelMesh, buildCrateMesh, buildPickupMesh, spawnHazardBarrel, spawnParticles, spawnSmashCrate, spawnWorldPickup } from './items.js';
 import { buildSportsCar, buildSportsCarMesh, vehicles } from './vehicles.js';
+
+export const rockMat=new THREE.MeshStandardMaterial({color:0x5a554d,roughness:1,flatShading:true});
+
+export const pipeMat=new THREE.MeshStandardMaterial({color:0x6f7f77,roughness:.8,metalness:.35,side:THREE.BackSide});
+const treeBarkTexture = loadTexture('assets/textures/bark.png', { repeatX: 1, repeatY: 4 });
+const treeLeafTexture = loadTexture('assets/textures/lushfoliage.png', { repeatX: 2, repeatY: 2 });
+const treeBarkMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, map: treeBarkTexture, roughness: 0.92, flatShading: true });
+const treeLeafMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, map: treeLeafTexture, roughness: 0.88, flatShading: true, side: THREE.DoubleSide, alphaTest: 0.35 });
 
 // Helper: Builds a wall segment with a real rectangular window cutout & real glass pane!
 export function buildWallWithRealWindow(parent, width, height, thick, winW, winH, winCenterY, wallMat, addMullions = true) {
@@ -1348,20 +1356,20 @@ export function createTree(x, z, scale = 1) {
 
   const trunk = new THREE.Mesh(
     new THREE.CylinderGeometry(0.24, 0.35, 1.8, 6),
-    makeMat(0x78350f, { texType: 'wood', repeatX: 1, repeatY: 2 })
+    treeBarkMaterial
   );
   trunk.position.y = 0.9;
   trunk.castShadow = true;
 
-  const c1 = new THREE.Mesh(new THREE.ConeGeometry(1.6, 2.3, 6), makeMat(0x2d6a4f));
+  const c1 = new THREE.Mesh(new THREE.ConeGeometry(1.6, 2.3, 6), treeLeafMaterial);
   c1.position.y = 2.4;
   c1.castShadow = true;
 
-  const c2 = new THREE.Mesh(new THREE.ConeGeometry(1.2, 1.9, 6), makeMat(0x40916c));
+  const c2 = new THREE.Mesh(new THREE.ConeGeometry(1.2, 1.9, 6), treeLeafMaterial);
   c2.position.y = 3.65;
   c2.castShadow = true;
 
-  const c3 = regHigh(new THREE.Mesh(new THREE.ConeGeometry(0.8, 1.5, 6), makeMat(0x52b788)));
+  const c3 = regHigh(new THREE.Mesh(new THREE.ConeGeometry(0.8, 1.5, 6), treeLeafMaterial));
   c3.position.y = 4.7;
   c3.castShadow = true;
 
@@ -1828,52 +1836,141 @@ export function buildNewBiomes() {
     return true;
   };
 
-  // === FROSTPINE ALPINE (x -134..-52) ===
-  ground(-136, -52, 108, 208, 0.17, makeMat(0xf1f5f9, { roughness: 0.92 }));
-  road(-96, 'Alpine Pass');
-  mapShapes.unshift({ x: -94, z: 158, w: 84, d: 100, color: '#e2e8f0', border: '#94a3b8', enterable: false });
+  // === FROSTPINE ALPINE / SNOWY MOUNTAINS (expanded far north: x -700..-50, z 108..320) ===
+  // Massive snow-covered mountain range
+  const mountainBaseY = 0.02;
+  
+  // Large terrain grid for snow-capped mountains (X0=-700, X1=-50, Z0=320, Z1=108)
+  // Note: Z goes from high to low (320 down to 108) since we're in northern hemisphere
+  const MX = 650, MZ = 210;
+  const mg = new THREE.PlaneGeometry(MX, MZ, 50, 50);
+  mg.rotateX(-Math.PI / 2);
+  
+  // Generate snow-capped mountain heights
+  const mountainHeights = new Float32Array(mg.attributes.position.count);
+  const mountainColors = new Float32Array(mg.attributes.position.count * 3);
+  const mc = new THREE.Color(), mc2 = new THREE.Color();
+  
+  for (let i = 0; i < mg.attributes.position.count; i++) {
+const x = mg.attributes.position.getX(i) + (-375);  // center x at -375
+const z = mg.attributes.position.getZ(i) + 214;    // center z at 214
+const height = 0.02 + Math.max(0, 8 + Math.sin(x * 0.02) * 3 + Math.cos(z * 0.03) * 2 + rnd() * 2);
+const snowLine = 4 + rnd() * 3;
+mc.set(0x6b7a5c);
+mc.lerp(new THREE.Color(0x8a9a6b), sstep(30, 50, height));
+mc.lerp(new THREE.Color(0xb3b380), sstep(snowLine - 5, snowLine + 5, height));
+mc.lerp(new THREE.Color(0xffffff), sstep(snowLine, snowLine + 8, height));
+mg.attributes.position.setY(i, height);
+mountainColors[i * 3] = mc.r;
+mountainColors[i * 3 + 1] = mc.g;
+mountainColors[i * 3 + 2] = mc.b;
+}
+mg.attributes.position.needsUpdate = true;
+mg.setAttribute('color', new THREE.BufferAttribute(mountainColors, 3));
+mg.computeVertexNormals();for (let i = 0; i < mg.attributes.position.count; i++) {
+    const x = mg.attributes.position.getX(i) + (-375);  // center x at -375
+    const z = mg.attributes.position.getZ(i) + 214;    // center z at 214
+    const height = 0.02 + Math.max(0, 8 + Math.sin(x * 0.02) * 3 + Math.cos(z * 0.03) * 2 + rnd() * 2);
+    const snowLine = 4 + rnd() * 3;
+    mc.set(0x6b7a5c);
+    mc.lerp(new THREE.Color(0x8a9a6b), sstep(30, 50, height));
+    mc.lerp(new THREE.Color(0xb3b380), sstep(snowLine - 5, snowLine + 5, height));
+    mc.lerp(new THREE.Color(0xffffff), sstep(snowLine, snowLine + 8, height));
+    mountainHeights[i] = height;
+    mountainColors[i * 3] = mc.r;
+    mountainColors[i * 3 + 1] = mc.g;
+    mountainColors[i * 3 + 2] = mc.b;
+  }
+  
+  mg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(mg.attributes.position.array), 3));
+  mg.setAttribute('offsetY', new THREE.BufferAttribute(mountainHeights, 1));
+  mg.setAttribute('color', new THREE.BufferAttribute(mountainColors, 3));
+  mg.computeVertexNormals();
+  
+  const mountainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
+  const mountainMesh = new THREE.Mesh(mg, mountainMat);
+  mountainMesh.receiveShadow = true;
+  mountainMesh.castShadow = true;
+  // Position the mountain range
+  mountainMesh.position.set(-375, 0, 214);
+  worldRoot.add(mountainMesh);
+  registerSculptableTerrain(mountainMesh);
+  
+  // Add snow zones - areas permanently covered in snow
+  for (let sz = 108; sz <= 320; sz += 40) {
+    for (let sx = -700; sx <= -50; sx += 100) {
+      const snowDepth = 2 + rnd() * 3;
+      const snowMat = new THREE.MeshStandardMaterial({ color: 0xf0f8ff, transparent: true, opacity: 0.6 + rnd() * 0.2, side: THREE.DoubleSide });
+      const snowCover = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), snowMat);
+      snowCover.position.set(sx + 40, snowDepth, sz);
+      snowCover.rotation.x = -Math.PI / 2;
+      snowCover.receiveShadow = true;
+      worldRoot.add(snowCover);
+      iceZones.push({ x: sx + 40, z: sz, r: 30 });
+    }
+  }
+  
+  // Pine trees scattered across the alpine region
   const pineG = [new THREE.ConeGeometry(1.7, 2.2, 7), new THREE.ConeGeometry(1.3, 1.9, 7), new THREE.ConeGeometry(0.9, 1.6, 7)];
   const trunkG = new THREE.CylinderGeometry(0.2, 0.3, 1.6, 6);
-  const trunkM = makeMat(0x5b3a1a, { texType: 'wood' });
+  const trunkM = treeBarkMaterial;
   const snowM = makeMat(0xffffff, { roughness: 0.9 });
-  const pine = (x, z, s, hex, snowy) => {
-    const gm = makeMat(hex);
-    mesh(trunkG, trunkM, x, 0.17 + 0.8 * s, z).scale.setScalar(s);
+  
+  const placePineTree = (x, z, size = 1) => {
+    const h = 8 * size;
+    // Main trunk
+    mesh(trunkG, trunkM, x, 0.17 + h / 2, z).scale.setScalar(size);
+    // Snow on top
+    mesh(new THREE.SphereGeometry(0.5 * size, 12, 12), snowM, x, 0.17 + h + 0.2 * size, z).scale.setScalar(size);
+    // Three layers of branches
     [[0, 2.2], [1, 3.4], [2, 4.5]].forEach(([i, y]) => {
-      mesh(pineG[i], gm, x, 0.17 + y * s, z).scale.setScalar(s);
-      if (snowy) mesh(pineG[i], snowM, x, 0.17 + (y + 0.22) * s, z).scale.setScalar(s * 0.86);
+      mesh(pineG[i], treeLeafMaterial, x, 0.17 + y * size, z).scale.setScalar(size);
+      if (Math.random() > 0.5) {
+        mesh(pineG[i], snowM, x, 0.17 + (y + 0.22) * size, z).scale.setScalar(size * 0.86);
+      }
     });
-    collide(x, z, 0.4 * s, 2.4 * s);
+    // Add some rocks at base
+    for (let r = 0; r < 2; r++) {
+      const rx = (rnd() - 0.5) * 1.5 * size;
+      const rz = (rnd() - 0.5) * 1.5 * size;
+      mesh(new THREE.DodecahedronGeometry(0.4 * size, 0), rockMat, x + rx, 0.17 + 0.3 * size, z + rz);
+    }
+    addWorldBox(x - 0.6 * size, x + 0.6 * size, 0.17, 0.17 + h * 0.6, z - 0.6 * size, z + 0.6 * size, 'pine_tree', false);
   };
-  const pond = { x: -108, z: 150, r: 12 };
-  keep.push({ x: pond.x, z: pond.z, r: 14 }, { x: -70, z: 139, r: 10 }, { x: -84, z: 171, r: 4 });
-  const ice = mesh(new THREE.CylinderGeometry(pond.r, pond.r, 0.06, 28), makeMat(0x9bdcf5, { metalness: 0.5, roughness: 0.08 }), pond.x, 0.2, pond.z, false);
-  iceZones.push(pond);
-  mapShapes.push({ x: pond.x, z: pond.z, w: 24, d: 24, color: '#7dd3fc', border: '#38bdf8', enterable: false });
-  for (let i = 0, n = 0; i < 90 && n < 28; i++) {
-    const x = -132 + rnd() * 78, z = 116 + rnd() * 84;
+  
+  // Place 120 pine trees across the alpine region
+  for (let i = 0; i < 500 && i < 120; i++) {
+    const x = -700 + rnd() * 650;
+    const z = 108 + rnd() * 212;
     if (!free(x, z, -96)) continue;
-    pine(x, z, 0.8 + rnd() * 0.7, pick([0x1b4332, 0x2d6a4f, 0x14532d]), true);
-    keep.push({ x, z, r: 1.4 }); n++;
+    placePineTree(x, z, 0.7 + rnd() * 0.6);
+    keep.push({ x, z, r: 1.2 });
   }
-  for (let i = 0; i < 10; i++) {
-    const x = -130 + rnd() * 76, z = 114 + rnd() * 86;
-    if (!free(x, z, -96, 3)) continue;
-    const dr = mesh(new THREE.SphereGeometry(1.6, 10, 6), snowM, x, 0.17, z, false);
-    dr.scale.set(1.7 + rnd(), 0.4, 1.3 + rnd());
+  
+  // Rocky outcrops and mountain peaks
+  const snowRockMat = new THREE.MeshStandardMaterial({ color: 0x5a554d, roughness: 1, flatShading: true });
+  for (let i = 0; i < 80; i++) {
+    const rx = -600 + rnd() * 100;
+    const rz = 120 + rnd() * 100;
+    const rh = 3 + rnd() * 5;
+    const rock = mesh(new THREE.DodecahedronGeometry(rh, 0), snowRockMat, rx, 0.17 + rh / 2, rz);
+    rock.scale.set(1 + rnd(), 0.5 + rnd(), 1 + rnd());
+    addWorldBox(rx - rh, rx + rh, 0.17, 0.17 + rh * 1.5, rz - rh, rz + rh, 'rock_outcrop', true);
   }
-  [[-124, 200, 15], [-96, 203, 19], [-66, 200, 14]].forEach(([mx, mz, mh]) => {
-    mesh(new THREE.ConeGeometry(mh * 0.85, mh * 1.4, 7), makeMat(0x64748b, { roughness: 0.95 }), mx, mh * 0.7, mz);
-    mesh(new THREE.ConeGeometry(mh * 0.42, mh * 0.55, 7), snowM, mx, mh * 1.12, mz);
-    addWorldBox(mx - mh * 0.55, mx + mh * 0.55, 0.17, mh * 0.8, mz - 4, mz + 4, 'mountain', false);
-  });
-  // snowman
-  mesh(new THREE.SphereGeometry(0.75, 10, 8), snowM, -84, 0.9, 171);
-  mesh(new THREE.SphereGeometry(0.55, 10, 8), snowM, -84, 1.9, 171);
-  mesh(new THREE.SphereGeometry(0.38, 10, 8), snowM, -84, 2.65, 171);
-  mesh(new THREE.ConeGeometry(0.07, 0.4, 6), makeMat(0xea580c), -84, 2.62, 171.45).rotation.x = Math.PI / 2;
-  mesh(new THREE.BoxGeometry(0.4, 0.05, 0.4), makeMat(0x111827), -84, 2.98, 171);
-  collide(-84, 171, 0.8, 3);
+  
+  // Mountain lakes (frozen)
+  const frozenLakeMat = new THREE.MeshStandardMaterial({ color: 0x9bdcf5, metalness: 0.5, roughness: 0.08, transparent: true, opacity: 0.7 });
+  for (let i = 0; i < 12; i++) {
+    const lx = -650 + rnd() * 80;
+    const lz = 150 + rnd() * 80;
+    const lw = 8 + rnd() * 6;
+    const lh = 0.5;
+    const lake = mesh(new THREE.BoxGeometry(lw, lh, lw * 0.6), frozenLakeMat, lx, 0.17 + lh / 2, lz);
+    lake.scale.set(1, 0.3, 1);
+    addWorldBox(lx - lw / 2, lx + lw / 2, 0.17, 0.17 + lh, lz - lw * 0.3, lz + lw * 0.3, 'frozen_lake', true);
+  }
+  
+  // Ski lodge at -70, 139 (existing, keep it)
   buildWalkInHouse({ x: -70, z: 139, w: 11, d: 9, wallColor: 0x92400e, roofColor: 0xf8fafc, label: 'FROSTPINE SKI LODGE' });
 
   // === EMERALD WOODS (x -52..28) ===
@@ -1889,12 +1986,12 @@ export function buildNewBiomes() {
   });
   mapShapes.push({ x: -41, z: 150, w: 21, d: 5, color: '#38bdf8', border: '#0ea5e9', enterable: false }, { x: 5, z: 150, w: 45, d: 5, color: '#38bdf8', border: '#0ea5e9', enterable: false });
   const oakG = new THREE.IcosahedronGeometry(1.9, 0);
-  const bark = makeMat(0x6b4423, { texType: 'wood' });
-  const birchBark = makeMat(0xf1f5f9);
+  const bark = treeBarkMaterial;
+  const birchBark = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, map: treeBarkTexture, roughness: 0.92, flatShading: true });
   const oak = (x, z, s, birch) => {
     const tg = new THREE.CylinderGeometry(birch ? 0.16 : 0.28, birch ? 0.22 : 0.4, 3.2 * s, 7);
     mesh(tg, birch ? birchBark : bark, x, 0.17 + 1.6 * s, z);
-    const lm = makeMat(birch ? 0x84cc16 : pick([0x2f7d32, 0x3f9142, 0x276a2c]));
+    const lm = treeLeafMaterial;
     [[0, 3.8, 0, 1], [0.9, 3.3, 0.4, 0.75], [-0.8, 3.4, -0.5, 0.8]].forEach(([ox, oy, oz, sc]) => {
       mesh(oakG, lm, x + ox * s, 0.17 + oy * s, z + oz * s).scale.setScalar(sc * s * (birch ? 0.72 : 1));
     });
@@ -1906,7 +2003,7 @@ export function buildNewBiomes() {
     const r = rnd();
     if (r < 0.4) oak(x, z, 0.85 + rnd() * 0.5, false);
     else if (r < 0.65) oak(x, z, 0.8 + rnd() * 0.4, true);
-    else pine(x, z, 0.9 + rnd() * 0.6, 0x14532d, false);
+    else placePineTree(x, z, 0.9 + rnd() * 0.6);
     keep.push({ x, z, r: 1.5 }); n++;
   }
   for (let i = 0; i < 10; i++) {
@@ -1957,10 +2054,11 @@ export function buildNewBiomes() {
   addWorldBox(98, 102, 0.2, 0.55, 152, 192, 'pier', true);
   mesh(new THREE.BoxGeometry(1.4, 0.12, 0.5), makeMat(0x78350f), 100, 0.9, 186, false);
   // palms
-  const frondM = makeMat(0x16a34a, { roughness: 0.8 });
+  const frondM = treeLeafMaterial;
+  const palmBarkM = treeBarkMaterial;
   const palm = (x, z, s) => {
     const lean = (rnd() - 0.5) * 0.4;
-    const tr = mesh(new THREE.CylinderGeometry(0.16 * s, 0.24 * s, 5 * s, 7), makeMat(0x9a6b3a, { texType: 'wood' }), x, 0.17 + 2.5 * s, z);
+    const tr = mesh(new THREE.CylinderGeometry(0.16 * s, 0.24 * s, 5 * s, 7), palmBarkM, x, 0.17 + 2.5 * s, z);
     tr.rotation.z = lean;
     const tx = x - Math.sin(lean) * 2.5 * s, ty = 0.17 + 5 * s;
     for (let f = 0; f < 6; f++) {
@@ -2030,15 +2128,15 @@ export function buildJungleBiome() {
     return m;
   };
 
-  // 1. Lush Mossy Jungle Floor (y = 0.17, matching Alpine/Woods/Cove)
-  const groundGeometry = new THREE.PlaneGeometry(130, 340, 65, 170);
+  // 1. Lush Mossy Jungle Floor (ELEVATED to y=1.5)
+  const groundGeometry = new THREE.PlaneGeometry(200, 420, 100, 210);
   groundGeometry.rotateX(-Math.PI / 2);
   const jungleGround = new THREE.Mesh(groundGeometry, makeMat(0x2d5a27, { texType: 'grass', repeatX: 18, repeatY: 42, roughness: 0.96 }));
-  jungleGround.position.set(433, 0.17, 30);
+  jungleGround.position.set(433, 1.5, 30);
   jungleGround.receiveShadow = true;
   registerSculptableTerrain(jungleGround);
   grp.add(jungleGround);
-  mapShapes.unshift({ x: 433, z: 30, w: 130, d: 340, color: '#14532d', border: '#166534', enterable: false });
+  mapShapes.unshift({ x: 433, z: 30, w: 200, d: 420, color: '#14532d', border: '#166534', enterable: false });
 
   // 2. Smooth Entry Ramp + Jungle Road extending from Route 66 (z = 40, x = 360 -> 472)
   const entryRamp = new THREE.Mesh(
@@ -2069,6 +2167,24 @@ export function buildJungleBiome() {
   plane(412, 424, -140, 200, 0.19, riverMat);
   waterZones.push({ minX: 412, maxX: 424, minZ: -140, maxZ: 200 });
   mapShapes.push({ x: 418, z: 30, w: 12, d: 340, color: '#14b8a6', border: '#0f766e', enterable: false });
+
+  // =========== EXPANDED OCEAN / WATER ZONES ===========
+// Northern ocean connecting Cove and Alpine regions
+waterZones.push({ minX: -500, maxX: -28, minZ: 147.5, maxZ: 152.5 });       // West cove ocean
+waterZones.push({ minX: 28, maxX: 138, minZ: 147.5, maxZ: 152.5 });         // Original cove ocean
+waterZones.push({ minX: 138, maxX: 280, minZ: 152.5, maxZ: 168 });          // Central ocean stretch
+waterZones.push({ minX: 280, maxX: 420, minZ: 168, maxZ: 208 });            // East ocean to jungle
+waterZones.push({ minX: 412, maxX: 424, minZ: -180, maxZ: -140 });         // Jungle river expansion
+waterZones.push({ minX: -560, maxX: -138, minZ: 108, maxZ: 208 });          // Northern arctic ocean
+waterZones.push({ minX: -138, maxX: 368, minZ: 208, maxZ: 320 });           // Far north ocean
+// Visible ocean water meshes
+plane(-500, -28, 147.5, 152.5, 0.2, riverMat);
+plane(28, 138, 147.5, 152.5, 0.2, riverMat);
+plane(138, 280, 152.5, 168, 0.2, riverMat);
+plane(280, 420, 168, 208, 0.2, riverMat);
+plane(412, 424, -180, -140, 0.2, riverMat);
+plane(-560, -138, 108, 208, 0.2, riverMat);
+plane(-138, 368, 208, 320, 0.2, riverMat);
 
   // Driveable Wooden Bridge over the Jungle River (x = 411..425, z = 34..46)
   const woodBridgeMat = makeMat(0x78350f, { texType: 'wood', repeatX: 4, repeatY: 2 });
@@ -2127,98 +2243,134 @@ export function buildJungleBiome() {
     label: 'JUNGLE RESEARCH STATION'
   });
 
-  // 6. Keep-out zones so trees don't block the road, river, temple, or station
-  const keep = [
-    { x: templeX, z: templeZ, r: 16 },
-    { x: 454, z: 96, r: 10 },
-    { x: 418, z: -132, r: 12 }
-  ];
-  const isClear = (x, z, r = 2.2) => {
-    if (Math.abs(z - 40) < 8.5) return false;        // Jungle trail
-    if (x > 409 && x < 427) return false;            // Jungle river
-    for (const k of keep) {
-      if (Math.hypot(x - k.x, z - k.z) < k.r + r) return false;
-    }
-    return true;
-  };
+  // 6. Climbable Elevated Stone Temple Complex (x = 433, z = 30)
+  // Raised temple platform matching the elevated jungle ground
+  const teX = 433, teZ = 30;
+  const teBaseY = 1.5;
 
-  // 7. Giant Kapok Canopy Trees with Buttress Roots & Hanging Vines
-  const barkMat = makeMat(0x4a3525, { texType: 'wood', repeatX: 2, repeatY: 4 });
-  const canopyMats = [
-    makeMat(0x14532d, { roughness: 0.85 }),
-    makeMat(0x166534, { roughness: 0.85 }),
-    makeMat(0x15803d, { roughness: 0.82 }),
-    makeMat(0x22c55e, { roughness: 0.8 })
+  // Large temple platform - raised above jungle canopy
+  const tePlatform = new THREE.Mesh(
+    new THREE.BoxGeometry(100, 3, 100),
+    makeMat(0x57534e, { texType: 'cobblestone', repeatX: 10, repeatY: 10, roughness: 0.92 })
+  );
+  tePlatform.position.set(teX, teBaseY + 1.5, teZ);
+  tePlatform.castShadow = true;
+  tePlatform.receiveShadow = true;
+  worldRoot.add(tePlatform);
+  addWorldBox(teX - 50, teX + 50, teBaseY, teBaseY + 3, teZ - 50, teZ + 50, 'temple_platform', true);
+
+  // Main temple pyramid - 5 stepped tiers
+  const teStoneMat = makeMat(0x57534e, { texType: 'cobblestone', repeatX: 8, repeatY: 8, roughness: 0.92 });
+  const teMossStoneMat = makeMat(0x3f6212, { texType: 'cobblestone', repeatX: 6, repeatY: 6, roughness: 0.95 });
+  const teTiers = [
+    { w: 50, d: 50, h: 3, y: teBaseY + 1.5 },
+    { w: 38, d: 38, h: 3, y: teBaseY + 4.5 },
+    { w: 26, d: 26, h: 3, y: teBaseY + 7.5 },
+    { w: 14, d: 14, h: 3, y: teBaseY + 10.5 },
+    { w: 6, d: 6, h: 3, y: teBaseY + 13.5 }
   ];
+  teTiers.forEach((t, idx) => {
+    const mat = idx % 2 === 0 ? teStoneMat : teMossStoneMat;
+    const tm = new THREE.Mesh(new THREE.BoxGeometry(t.w, t.h, t.d), mat);
+    tm.position.set(teX, t.y + t.h / 2, teZ);
+    tm.castShadow = true;
+    tm.receiveShadow = true;
+    worldRoot.add(tm);
+    addWorldBox(
+      teX - t.w / 2, teX + t.w / 2,
+      t.y, t.y + t.h,
+      teZ - t.d / 2, teZ + t.d / 2,
+      'temple_tier', true
+    );
+  });
+
+  // Temple summit with golden relic and neon sign
+  const teGoldMat = makeMat(0xfacc15, { metalness: 0.9, roughness: 0.2 });
+  const teSummitMesh = new THREE.Mesh(new THREE.BoxGeometry(3, 3, 3), teStoneMat);
+  teSummitMesh.position.set(teX, teBaseY + 16.5, teZ);
+  teSummitMesh.castShadow = true;
+  teSummitMesh.receiveShadow = true;
+  worldRoot.add(teSummitMesh);
+  const teRelic = new THREE.Mesh(new THREE.OctahedronGeometry(1.5, 0), teGoldMat);
+  teRelic.position.set(teX, teBaseY + 18.5, teZ);
+  teRelic.castShadow = true;
+  worldRoot.add(teRelic);
+  createNeonSign(worldRoot, 'ANCIENT SUN TEMPLE', teX, 21, teZ + 4, '#14532d', '#fde047', 6.5, 1.0);
+  mapShapes.push({ x: teX, z: teZ, w: 50, d: 50, color: '#65a30d', border: '#facc15', enterable: false });
+
+  // 7. Giant Elevated Kapok Trees with Buttress Roots & Hanging Vines
+  const barkMat = treeBarkMaterial;
+  const canopyMats = [treeLeafMaterial, treeLeafMaterial, treeLeafMaterial, treeLeafMaterial];
   const vineMat = makeMat(0x4d7c0f, { roughness: 0.9 });
 
-  const spawnKapokTree = (x, z, s = 1) => {
-    const h = 9.5 * s;
+  const spawnElevatedKapokTree = (x, z, s = 1) => {
+    const h = 14 * s;  // taller trees on elevated ground
     // Main trunk
-    mesh(new THREE.CylinderGeometry(0.45 * s, 0.72 * s, h, 8), barkMat, x, 0.17 + h / 2, z);
-    // Flared buttress roots
+    mesh(new THREE.CylinderGeometry(0.5 * s, 0.8 * s, h, 8), barkMat, x, teBaseY + h / 2, z);
+    // Buttress roots
     for (let r = 0; r < 4; r++) {
       const ang = (r * Math.PI) / 2 + 0.4;
-      const root = mesh(new THREE.BoxGeometry(0.35 * s, 2.2 * s, 1.5 * s), barkMat, x + Math.cos(ang) * 0.65 * s, 0.17 + 1.0 * s, z + Math.sin(ang) * 0.65 * s);
+      const root = mesh(new THREE.BoxGeometry(0.4 * s, 3 * s, 2 * s), barkMat, x + Math.cos(ang) * 0.8 * s, teBaseY + 1.5 * s, z + Math.sin(ang) * 0.8 * s);
       root.rotation.y = -ang;
     }
     // Wide layered umbrella canopy
     const mainLeaf = canopyMats[(Math.abs(Math.floor(x + z)) % canopyMats.length)];
-    const c1 = mesh(new THREE.DodecahedronGeometry(3.6 * s, 1), mainLeaf, x, 0.17 + h, z);
-    c1.scale.set(1.25, 0.48, 1.25);
-    const c2 = mesh(new THREE.DodecahedronGeometry(2.6 * s, 1), canopyMats[2], x + 1.4 * s, 0.17 + h + 1.1 * s, z - 0.9 * s);
-    c2.scale.set(1.2, 0.45, 1.2);
-    const c3 = mesh(new THREE.DodecahedronGeometry(2.4 * s, 1), canopyMats[3], x - 1.3 * s, 0.17 + h + 0.9 * s, z + 1.1 * s);
-    c3.scale.set(1.2, 0.45, 1.2);
+    const c1 = mesh(new THREE.DodecahedronGeometry(4.5 * s, 1), mainLeaf, x, teBaseY + h, z);
+    c1.scale.set(1.3, 0.5, 1.3);
+    const c2 = mesh(new THREE.DodecahedronGeometry(3.2 * s, 1), canopyMats[2], x + 1.8 * s, teBaseY + h + 1.5 * s, z - 1.2 * s);
+    c2.scale.set(1.3, 0.48, 1.3);
+    const c3 = mesh(new THREE.DodecahedronGeometry(3.0 * s, 1), canopyMats[3], x - 1.5 * s, teBaseY + h + 0.8 * s, z + 1.4 * s);
+    c3.scale.set(1.3, 0.48, 1.3);
 
     // Hanging vines
-    for (let v = 0; v < 3; v++) {
-      const va = v * 2.1 + x;
-      const vLen = (2.8 + (v % 2) * 1.4) * s;
+    for (let v = 0; v < 4; v++) {
+      const va = v * 1.8 + x;
+      const vLen = (3.2 + (v % 2) * 1.6) * s;
       mesh(
-        new THREE.CylinderGeometry(0.04, 0.04, vLen, 5),
+        new THREE.CylinderGeometry(0.05, 0.05, vLen, 5),
         vineMat,
-        x + Math.cos(va) * 2.3 * s,
-        0.17 + h - vLen / 2 - 0.3,
-        z + Math.sin(va) * 2.3 * s,
+        x + Math.cos(va) * 2.8 * s,
+        teBaseY + h - vLen / 2 - 0.4,
+        z + Math.sin(va) * 2.8 * s,
         false
       );
     }
 
-    addWorldBox(x - 0.75 * s, x + 0.75 * s, 0.17, 0.17 + h * 0.6, z - 0.75 * s, z + 0.75 * s, 'jungle_tree', false);
+    addWorldBox(x - 1.5 * s, x + 1.5 * s, teBaseY, teBaseY + h * 0.7, z - 1.5 * s, z + 1.5 * s, 'jungle_tree', false);
   };
 
-  // Place 52 giant canopy trees across both sides of the river
-  for (let i = 0, placed = 0; i < 240 && placed < 52; i++) {
-    const x = 373 + rnd() * 120;
-    const z = -134 + rnd() * 328;
-    if (!isClear(x, z, 2.8)) continue;
-    spawnKapokTree(x, z, 0.85 + rnd() * 0.55);
-    keep.push({ x, z, r: 3.4 });
+  // Place 80 giant canopy trees across the elevated jungle
+  for (let i = 0, placed = 0; i < 300 && placed < 80; i++) {
+    const x = 380 + rnd() * 140;
+    const z = -100 + rnd() * 420;
+    if (x < 412 && x > 408) continue; // avoid river
+    if (Math.abs(z - 30) < 20 && x > 420 && x < 460) continue; // avoid temple area
+    spawnElevatedKapokTree(x, z, 0.9 + rnd() * 0.7);
     placed++;
   }
 
-  // 8. Dense Tropical Ferns, Mossy Boulders & Exotic Glowing Blooms
+  // Ferns, boulders & glowing blooms on elevated terrain
   const fernMat = makeMat(0x16a34a, { roughness: 0.85 });
   const boulderMat = makeMat(0x4b5563, { texType: 'cobblestone', repeatX: 2, repeatY: 2, roughness: 0.95 });
   const bloomColors = [0xf43f5e, 0xf59e0b, 0xa855f7, 0x38bdf8];
 
-  for (let i = 0; i < 75; i++) {
-    const x = 371 + rnd() * 123;
-    const z = -136 + rnd() * 332;
-    if (!isClear(x, z, 1.0)) continue;
+  for (let i = 0; i < 120; i++) {
+    const x = 380 + rnd() * 140;
+    const z = -80 + rnd() * 440;
+    if (x < 412 && x > 408) continue;
+    if (Math.abs(z - 30) < 30 && x > 420 && x < 460) continue;
 
     // Tropical fern cluster
-    const fern = mesh(new THREE.ConeGeometry(1.15, 0.95, 6), fernMat, x, 0.55, z, false);
-    fern.scale.set(1.3, 0.7, 1.3);
+    const fern = mesh(new THREE.ConeGeometry(1.4, 1.1, 8), fernMat, x, teBaseY + 0.7, z, false);
+    fern.scale.set(1.4, 0.8, 1.4);
 
     // Occasional mossy boulder or bright jungle flower
-    if (i % 5 === 0) {
-      const rock = mesh(new THREE.DodecahedronGeometry(1.1, 0), boulderMat, x + 1.2, 0.65, z + 0.8);
-      addWorldBox(x + 0.3, x + 2.1, 0.17, 1.5, z - 0.1, z + 1.7, 'jungle_boulder', true);
+    if (i % 4 === 0) {
+      const rock = mesh(new THREE.DodecahedronGeometry(1.5, 0), boulderMat, x + 1.5, teBaseY + 0.8, z + 0.8);
+      addWorldBox(x + 0.5, x + 2.5, teBaseY, teBaseY + 1.5, z - 0.3, z + 1.3, 'jungle_boulder', true);
     } else if (i % 3 === 0) {
       const flowerMat = makeMat(pick(bloomColors), { emissive: pick(bloomColors), emissiveIntensity: 0.35 });
-      mesh(new THREE.DodecahedronGeometry(0.28, 0), flowerMat, x, 1.05, z, false);
+      mesh(new THREE.DodecahedronGeometry(0.35, 0), flowerMat, x, teBaseY + 1.2, z, false);
     }
   }
 }
@@ -2231,13 +2383,13 @@ export const bioC = {};
 export function updateBiomeAtmosphere(dt, elapsed) {
   const b = biomeAt(player.x, player.z);
   if (!bio.base) bio.base = scene.fog.color.clone();
-  const tgt = { alpine: [0xdbe9f4, 0.0062], woods: [0x9ccaa6, 0.0040], cove: [0xaee2f4, 0.0018] }[b];
+  const tgt = { alpine: [0xdbe9f4, 0.007], woods: [0x9ccaa6, 0.0048], cove: [0xaee2f4, 0.0024], jungle: [0x2d5a27, 0.006] }[b];
   const k = Math.min(1, dt * 1.5);
   scene.fog.color.lerp(tgt ? (bioC[tgt[0]] || (bioC[tgt[0]] = new THREE.Color(tgt[0]))) : bio.base, k);
-  scene.fog.density += ((tgt ? tgt[1] : 0.0024) - scene.fog.density) * k;
+  scene.fog.density += ((tgt ? tgt[1] : 0.0032) - scene.fog.density) * k;
   if (b !== bio.last) {
     bio.last = b;
-    if (b !== 'city') pushFeed({ alpine: 'FROSTPINE ALPINE — ICY & SLIPPERY', woods: 'EMERALD WOODS — STREAMS SLOW YOU DOWN', cove: 'SUNSET COVE — WADING SLOWS YOU DOWN' }[b], 'border-l-sky-400');
+    if (b !== 'city') pushFeed({ alpine: 'FROSTPINE ALPINE — ICY & SLIPPERY', woods: 'EMERALD WOODS — STREAMS SLOW YOU DOWN', cove: 'SUNSET COVE — WADING SLOWS YOU DOWN', jungle: 'VERDANT JUNGLE — RICH VEGETATION' }[b], 'border-l-sky-400');
   }
   if (!bio.snow) {
     const N = 420, pos = new Float32Array(N * 3);
@@ -2266,9 +2418,7 @@ export function updateBiomeAtmosphere(dt, elapsed) {
   }
 }
 
-export const rockMat=new THREE.MeshStandardMaterial({color:0x5a554d,roughness:1,flatShading:true});
 
-export const pipeMat=new THREE.MeshStandardMaterial({color:0x6f7f77,roughness:.8,metalness:.35,side:THREE.BackSide});
 
 export const concMat=new THREE.MeshStandardMaterial({color:0x7d8280,roughness:.95});
 
@@ -2399,7 +2549,7 @@ export function buildMountains(){
   ribbon(5.2,0.05,0x23262b); ribbon(0.12,0.08,0xe9c33a);
   // pines + rocks
   const pineG=new THREE.ConeGeometry(2.1,8,7);pineG.translate(0,4.5,0);
-  const pines=new THREE.InstancedMesh(pineG,new THREE.MeshStandardMaterial({color:0x1f3d24,roughness:1,flatShading:true}),1500);
+  const pines=new THREE.InstancedMesh(pineG,treeLeafMaterial,1500);
   const rocks=new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1.6,0),rockMat,420);
   const dm=new THREE.Object3D();let np=0,nr=0;
   for(let k=0;k<16000&&(np<1500||nr<420);k++){
@@ -2565,7 +2715,7 @@ export function buildAuraSkylineAndHighway(){
       const b=new THREE.Mesh(new THREE.BoxGeometry(26,.5,.6),gm);b.position.set(152,7.2,gz);g.add(b);
       createNeonSign(g,txt,152,5.9,gz+.35,'#0b5d2a','#ffffff',10,1.6);});}
   // ---- Aura Hills trees ----
-  {const n=500,mesh=new THREE.InstancedMesh(new THREE.ConeGeometry(2,7,7),sm(0x2f5d34),n),d=new THREE.Object3D();let c=0;
+  {const n=500,mesh=new THREE.InstancedMesh(new THREE.ConeGeometry(2,7,7),treeLeafMaterial,n),d=new THREE.Object3D();let c=0;
     for(let k=1;k<5000&&c<n;k++){const x=-216-rr(k*2.1)*338,z=-165+rr(k*3.7)*330,h=hillsH(x,z);
       const sl=Math.abs(hillsH(x+3,z)-hillsH(x-3,z))/6,dr=Math.abs(z-ahRz(x))/Math.hypot(1,ahRzD(x));
       if((x>-360&&x<-205&&Math.abs(z)<125)||sl>.7||h<3||(-196-x<300&&dr<12)||Math.hypot(x-AHC.px,z-AHC.pz)<72)continue;

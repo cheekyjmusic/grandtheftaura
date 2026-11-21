@@ -247,6 +247,12 @@ window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
 });
 
+window.addEventListener('blur', () => {
+  for (const code of Object.keys(keys)) keys[code] = false;
+  inputState.isDraggingLook = false;
+  inputState.isPrimaryFireHeld = false;
+});
+
 window.addEventListener('keydown',e=>{
   if(e.code!=='KeyF'||gameState.screen!=='playing'||gameState.inCar||climb.on)return;
   const u=under(),i=nearestManhole(u?3.2:2.4);
