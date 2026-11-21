@@ -43,12 +43,14 @@
     #ps3-filter {
       position: fixed;
       inset: 0;
-      z-index: 29;
+      z-index: 4;
       pointer-events: none;
-      opacity: 0.13;
+      opacity: 0.18;
       mix-blend-mode: soft-light;
       background:
-        repeating-linear-gradient(0deg, rgba(255,255,255,.16) 0 1px, rgba(0,0,0,.14) 1px 3px),
+        repeating-linear-gradient(0deg, rgba(255,255,255,.10) 0 1px, rgba(0,0,0,.16) 1px 3px),
+        repeating-linear-gradient(90deg, rgba(68,96,124,.045) 0 1px, transparent 1px 4px),
+        linear-gradient(180deg, rgba(45,76,108,.04), transparent 22%, transparent 78%, rgba(54,34,24,.05)),
         radial-gradient(ellipse at center, transparent 62%, rgba(5,8,14,.30) 100%);
     }
     .glass-panel {
@@ -1055,7 +1057,13 @@
         lastNpcVisibilityCheck: 0,
         lastVehicleSend: 0,
         joinReadyCallback: null,
-        joinSettled: false
+        joinSettled: false,
+        playerOrder: [],
+        hostLost: false,
+        migrationTimer: null,
+        reconnectTimer: null,
+        reconnecting: false,
+        migrationFormerId: null
       };
 
       function mpPlayerCount() {
@@ -1125,11 +1133,71 @@
         multiplayer.remoteCars.clear();
         multiplayer.npcSnapshot = [];
         multiplayer.playerCount = 1;
+        multiplayer.playerOrder = [];
+        multiplayer.hostLost = false;
+        multiplayer.reconnecting = false;
+        clearTimeout(multiplayer.migrationTimer);
+        clearTimeout(multiplayer.reconnectTimer);
+        multiplayer.migrationTimer = null;
+        multiplayer.reconnectTimer = null;
         mpRemoveRemotePlayers();
         multiplayer.roomCode = '';
         multiplayer.localId = '1';
         try { peer?.destroy(); } catch (_) {}
         updateMultiplayerHud();
+      }
+
+      function mpBuildNpcSnapshot() {
+        return npcs.map((npc, id) => ({
+          id, name: npc.name, line: npc.line, role: npc.role, aggro: npc.aggro, clanId: npc.clanId,
+          homeX: npc.homeX, homeZ: npc.homeZ, x: npc.x, z: npc.z, yaw: npc.yaw,
+          shirt: npc.shirt, pants: npc.pants, bandana: npc.bandana, age: npc.age, skin: npc.skin, hair: npc.hair, scale: npc.scale,
+          gt: !!npc.gt, gtLook: npc.gtLook, hat: npc.hat, skirt: npc.skirt, sash: npc.sash, gtRole: npc.gtRole,
+          wallet: npc.wallet || 0, picked: !!npc.picked, pickCool: npc.pickCool || 0, fleeTimer: npc.fleeTimer || 0,
+          kvx: npc.kvx || 0, kvz: npc.kvz || 0, walkCycle: npc.walkCycle || 0, moving: !!npc.moving,
+          turnTimer: npc.turnTimer || 0, stunTimer: npc.stunTimer || 0, hostile: !!npc.hostile,
+          alertState: npc.alertState, searchX: npc.searchX, searchZ: npc.searchZ, searchTimer: npc.searchTimer || 0,
+          attackCooldown: npc.attackCooldown || 0, punchTimer: npc.punchTimer || 0, punchSide: npc.punchSide || 0,
+          hp: npc.hp, maxHp: npc.maxHp, asleep: !!npc.asleep, sleepTimer: npc.sleepTimer || 0,
+          gtHome: npc.gtHome ? { x: npc.gtHome.x, z: npc.gtHome.z } : null, gtYaw: npc.gtYaw,
+          gtStuck: npc.gtStuck || 0, row: npc.row, col: npc.col, jit: npc.jit
+        }));
+      }
+
+      function mpBuildNpcStateSnapshot() {
+        return npcs.map((npc, id) => ({
+          id, x: npc.x, z: npc.z, yaw: npc.yaw, wallet: npc.wallet || 0, picked: !!npc.picked,
+          pickCool: npc.pickCool || 0, fleeTimer: npc.fleeTimer || 0, kvx: npc.kvx || 0, kvz: npc.kvz || 0,
+          walkCycle: npc.walkCycle || 0, moving: !!npc.moving, turnTimer: npc.turnTimer || 0,
+          stunTimer: npc.stunTimer || 0, hostile: !!npc.hostile, alertState: npc.alertState,
+          searchX: npc.searchX, searchZ: npc.searchZ, searchTimer: npc.searchTimer || 0,
+          attackCooldown: npc.attackCooldown || 0, punchTimer: npc.punchTimer || 0, punchSide: npc.punchSide || 0,
+          hp: npc.hp, asleep: !!npc.asleep, sleepTimer: npc.sleepTimer || 0,
+          gtHome: npc.gtHome ? { x: npc.gtHome.x, z: npc.gtHome.z } : null, gtYaw: npc.gtYaw,
+          gtStuck: npc.gtStuck || 0
+        }));
+      }
+
+      function mpApplyNpcSnapshot(snap, interpolate = true, alpha = 1) {
+        if (!snap || !Number.isInteger(Number(snap.id))) return;
+        const npc = npcs[Number(snap.id)];
+        if (!npc) return;
+        const appearanceChanged = ['shirt', 'pants', 'bandana', 'age', 'skin', 'hair', 'scale', 'gt', 'gtLook', 'hat', 'skirt', 'sash', 'gtRole'].some(key => snap[key] !== undefined && npc[key] !== snap[key]);
+        for (const key of ['name', 'line', 'role', 'aggro', 'clanId', 'homeX', 'homeZ', 'shirt', 'pants', 'bandana', 'age', 'skin', 'hair', 'scale', 'gt', 'gtLook', 'hat', 'skirt', 'sash', 'gtRole', 'wallet', 'picked', 'pickCool', 'fleeTimer', 'kvx', 'kvz', 'walkCycle', 'moving', 'turnTimer', 'stunTimer', 'hostile', 'alertState', 'searchX', 'searchZ', 'searchTimer', 'attackCooldown', 'punchTimer', 'punchSide', 'hp', 'maxHp', 'asleep', 'sleepTimer', 'gtYaw', 'gtStuck', 'row', 'col', 'jit']) {
+          if (snap[key] !== undefined) npc[key] = snap[key];
+        }
+        if (snap.gtHome !== undefined) npc.gtHome = snap.gtHome ? { x: snap.gtHome.x, z: snap.gtHome.z } : null;
+        npc.x = interpolate ? npc.x + (snap.x - npc.x) * alpha : snap.x;
+        npc.z = interpolate ? npc.z + (snap.z - npc.z) * alpha : snap.z;
+        const yawDiff = (snap.yaw || 0) - npc.yaw;
+        npc.yaw = interpolate ? npc.yaw + Math.atan2(Math.sin(yawDiff), Math.cos(yawDiff)) * alpha : (snap.yaw || 0);
+        if (appearanceChanged && npc.mesh) {
+          scene.remove(npc.mesh);
+          freeGeo(npc.mesh);
+          npc.mesh = buildNpcMesh(npc.shirt, npc.pants, npc.bandana, npc);
+          npc.mesh.position.set(npc.x, npc.asleep ? 0.34 : 0.18, npc.z);
+          scene.add(npc.mesh);
+        }
       }
 
       function mpBuildWorldSnapshot() {
@@ -1143,26 +1211,34 @@
         const carSnapshots = vehicles.map((v, carIdx) => ({ carIdx, x: v.x, y: v.y, z: v.z, yaw: v.yaw, speed: v.speed, steerAngle: v.steerAngle || 0, flameTimer: v.flameTimer || 0 }));
         return {
           hostId: '1', roomCode: multiplayer.roomCode, playerCount: 1 + multiplayer.connections.size,
+          playerOrder: multiplayer.playerOrder.slice(), replacedPlayerId: multiplayer.migrationFormerId,
           hostState: mpCurrentPlayerState(), playerStates,
-          npcs: multiplayer.npcSnapshot, carOwners: Array.from(multiplayer.carOwners.entries()), carSnapshots
+          npcs: mpBuildNpcSnapshot(), carOwners: Array.from(multiplayer.carOwners.entries()), carSnapshots
         };
       }
 
-      function mpStartHost() {
+      function mpStartHost(roomCode = '', migrationFormerId = null) {
         if (!window.Peer) return pushFeed('PEERJS COULD NOT LOAD', 'border-l-rose-500');
-        if (multiplayer.mode !== 'single') mpResetConnectionState();
-        multiplayer.roomCode = mpRoomCode();
+        const migrating = Boolean(migrationFormerId);
+        if (!migrating && multiplayer.mode !== 'single') mpResetConnectionState();
+        multiplayer.roomCode = roomCode || multiplayer.roomCode || mpRoomCode();
         multiplayer.mode = 'host';
         multiplayer.localId = '1';
+        multiplayer.hostLost = false;
+        multiplayer.migrationFormerId = migrationFormerId;
+        if (!multiplayer.playerOrder.length) multiplayer.playerOrder = ['1'];
         const peerId = `gta-aura-chapin-${multiplayer.roomCode}-HOST`;
         multiplayer.peer = new Peer(peerId);
-        multiplayer.peer.on('open', () => {
+        const hostingPeer = multiplayer.peer;
+        hostingPeer.on('open', () => {
+          if (multiplayer.peer !== hostingPeer) return;
           document.getElementById('host-room-code').textContent = multiplayer.roomCode;
           document.getElementById('host-room-row').className = 'flex items-center gap-2';
           updateMultiplayerHud();
           pushFeed(`ROOM OPEN — CODE ${multiplayer.roomCode}`, 'border-l-amber-400');
         });
-        multiplayer.peer.on('connection', conn => {
+        hostingPeer.on('connection', conn => {
+          if (multiplayer.peer !== hostingPeer) { conn.close(); return; }
           const id = String(conn.peer || '').split('-').pop();
           if (!id) {
             conn.close();
@@ -1170,28 +1246,37 @@
           }
           multiplayer.connections.set(id, conn);
           conn.on('open', () => {
+            if (multiplayer.mode !== 'host' || multiplayer.peer !== hostingPeer) { conn.close(); return; }
+            if (!multiplayer.playerOrder.includes(id)) multiplayer.playerOrder.push(id);
             multiplayer.playerCount = 1 + multiplayer.connections.size;
             const snapshot = mpBuildWorldSnapshot();
             conn.send({ type: 'world_welcome', ...snapshot, playerId: id, playerCount: multiplayer.playerCount });
-            mpBroadcast({ type: 'player_join', playerId: id, playerCount: multiplayer.playerCount }, id);
+            mpBroadcast({ type: 'player_join', playerId: id, playerCount: multiplayer.playerCount, playerOrder: multiplayer.playerOrder.slice() }, id);
             updateMultiplayerHud();
           });
           conn.on('data', data => mpHostData(id, data));
           conn.on('close', () => mpGuestDisconnected(id));
           conn.on('error', err => pushFeed(`GUEST CONNECTION ERROR: ${err.type || 'CONNECTION'}`, 'border-l-rose-500'));
         });
-        multiplayer.peer.on('error', err => {
+        hostingPeer.on('error', err => {
+          if (multiplayer.peer !== hostingPeer) return;
           if (err.type === 'unavailable-id' && multiplayer.mode === 'host') {
-            mpResetConnectionState();
-            setTimeout(mpStartHost, 100);
-            pushFeed('ROOM CODE COLLISION — CREATING A NEW ROOM', 'border-l-amber-400');
+            if (migrationFormerId) {
+              hostingPeer.destroy();
+              multiplayer.peer = null;
+              setTimeout(() => mpStartHost(multiplayer.roomCode, migrationFormerId), 750);
+            } else {
+              mpResetConnectionState();
+              setTimeout(mpStartHost, 100);
+              pushFeed('ROOM CODE COLLISION — CREATING A NEW ROOM', 'border-l-amber-400');
+            }
             return;
           }
           if (multiplayer.mode === 'host') mpResetConnectionState();
           pushFeed(`MULTIPLAYER ERROR: ${err.type || 'CONNECTION'}`, 'border-l-rose-500');
         });
-        multiplayer.peer.on('close', () => {
-          if (multiplayer.mode === 'host') mpResetConnectionState();
+        hostingPeer.on('close', () => {
+          if (multiplayer.peer === hostingPeer && multiplayer.mode === 'host') mpResetConnectionState();
         });
       }
 
@@ -1202,56 +1287,142 @@
         if (multiplayer.mode !== 'single') mpResetConnectionState();
         multiplayer.roomCode = roomCode;
         multiplayer.mode = 'guest';
+        multiplayer.playerOrder = [];
+        multiplayer.hostLost = false;
+        multiplayer.migrationFormerId = null;
         const id = `G${Math.floor(Math.random() * 8999 + 1000)}${Math.floor(Math.random() * 10)}`;
         multiplayer.localId = id;
         multiplayer.joinReadyCallback = typeof onReady === 'function' ? onReady : null;
         multiplayer.joinSettled = false;
         multiplayer.peer = new Peer(`gta-aura-chapin-${roomCode}-${id}`);
         let connectionTimeout = null;
-        multiplayer.peer.on('open', () => {
-          const conn = multiplayer.peer.connect(`gta-aura-chapin-${roomCode}-HOST`, { reliable: true });
+        const guestPeer = multiplayer.peer;
+        const attachHostConnection = conn => {
           multiplayer.hostConnection = conn;
           connectionTimeout = setTimeout(() => {
-            if (multiplayer.mode === 'guest' && !conn.open) {
-              pushFeed('COULD NOT CONNECT — HOST NOT FOUND', 'border-l-rose-500');
-              mpResetConnectionState();
+            if (multiplayer.mode === 'guest' && multiplayer.hostConnection === conn && !conn.open) {
+              if (!multiplayer.joinSettled) {
+                pushFeed('COULD NOT CONNECT — HOST NOT FOUND', 'border-l-rose-500');
+                mpResetConnectionState();
+              } else {
+                mpHandleHostLost();
+              }
             }
           }, 12000);
           conn.on('open', () => {
             clearTimeout(connectionTimeout);
+            multiplayer.reconnecting = false;
             updateMultiplayerHud();
-            mpSendToHost({ type: 'guest_ready' });
+            conn.send({ type: 'guest_ready' });
           });
           conn.on('data', data => mpGuestData(data));
           conn.on('close', () => {
             clearTimeout(connectionTimeout);
-            if (multiplayer.mode !== 'guest') return;
-            mpResetConnectionState();
-            pushFeed('HOST DISCONNECTED — SINGLEPLAYER RESUMED', 'border-l-rose-500');
+            if (multiplayer.mode === 'guest' && multiplayer.hostConnection === conn) mpHandleHostLost();
           });
           conn.on('error', err => {
             clearTimeout(connectionTimeout);
-            if (!multiplayer.joinSettled) mpResetConnectionState();
-            pushFeed(`COULD NOT JOIN ROOM: ${err.type || 'CONNECTION'}`, 'border-l-rose-500');
+            if (!multiplayer.joinSettled) {
+              mpResetConnectionState();
+              pushFeed(`COULD NOT JOIN ROOM: ${err.type || 'CONNECTION'}`, 'border-l-rose-500');
+            } else if (multiplayer.mode === 'guest') mpHandleHostLost();
           });
-        });
-        multiplayer.peer.on('error', err => {
+        };
+        const connectToHost = () => {
+          if (multiplayer.mode !== 'guest' || multiplayer.peer !== guestPeer || !guestPeer || guestPeer.destroyed || multiplayer.reconnecting) return;
+          multiplayer.reconnecting = true;
+          try { attachHostConnection(guestPeer.connect(`gta-aura-chapin-${roomCode}-HOST`, { reliable: true })); }
+          catch (_) { multiplayer.reconnecting = false; mpScheduleHostReconnect(); }
+        };
+        multiplayer.peer.on('open', connectToHost);
+        guestPeer.on('error', err => {
           clearTimeout(connectionTimeout);
-          if (multiplayer.mode === 'guest') mpResetConnectionState();
-          pushFeed(`COULD NOT JOIN ROOM: ${err.type || 'CONNECTION'}`, 'border-l-rose-500');
+          if (multiplayer.mode === 'guest' && !multiplayer.joinSettled) {
+            mpResetConnectionState();
+            pushFeed(`COULD NOT JOIN ROOM: ${err.type || 'CONNECTION'}`, 'border-l-rose-500');
+          } else if (multiplayer.mode === 'guest') mpHandleHostLost();
         });
       }
 
+      function mpScheduleHostReconnect() {
+        if (multiplayer.mode !== 'guest' || !multiplayer.hostLost || multiplayer.reconnectTimer) return;
+        multiplayer.reconnectTimer = setTimeout(() => {
+          multiplayer.reconnectTimer = null;
+          if (multiplayer.mode !== 'guest' || !multiplayer.hostLost) return;
+          multiplayer.reconnecting = false;
+          const peer = multiplayer.peer;
+          if (peer && !peer.destroyed && peer.open) {
+            multiplayer.reconnecting = true;
+            const conn = peer.connect(`gta-aura-chapin-${multiplayer.roomCode}-HOST`, { reliable: true });
+            multiplayer.hostConnection = conn;
+            conn.on('open', () => { multiplayer.reconnecting = false; conn.send({ type: 'guest_ready' }); });
+            conn.on('data', data => mpGuestData(data));
+            conn.on('close', () => { if (multiplayer.mode === 'guest' && multiplayer.hostLost) { multiplayer.reconnecting = false; mpScheduleHostReconnect(); } });
+            conn.on('error', () => { multiplayer.reconnecting = false; mpScheduleHostReconnect(); });
+          } else mpScheduleHostReconnect();
+        }, 900);
+      }
+
+      function mpHandleHostLost() {
+        if (multiplayer.mode !== 'guest' || multiplayer.hostLost) return;
+        multiplayer.hostLost = true;
+        multiplayer.hostConnection = null;
+        multiplayer.reconnecting = false;
+        const oldHost = multiplayer.remotePlayers.get('1');
+        if (oldHost?.rig?.rig) scene.remove(oldHost.rig.rig);
+        multiplayer.remotePlayers.delete('1');
+        pushFeed('HOST DISCONNECTED — ELECTING THE FIRST JOINED PLAYER', 'border-l-amber-400');
+        multiplayer.migrationTimer = setTimeout(() => {
+          multiplayer.migrationTimer = null;
+          if (multiplayer.mode !== 'guest' || !multiplayer.hostLost) return;
+          const nextHostId = multiplayer.playerOrder.find(id => id !== '1');
+          if (!nextHostId) {
+            mpResetConnectionState();
+            pushFeed('HOST DISCONNECTED — SINGLEPLAYER RESUMED', 'border-l-rose-500');
+          } else if (nextHostId === multiplayer.localId) mpPromoteGuestToHost();
+        }, 3000);
+        mpScheduleHostReconnect();
+      }
+
+      function mpPromoteGuestToHost() {
+        if (multiplayer.mode !== 'guest' || !multiplayer.hostLost) return;
+        const formerId = multiplayer.localId;
+        const roomCode = multiplayer.roomCode;
+        for (const snap of multiplayer.npcSnapshot) mpApplyNpcSnapshot(snap, false);
+        const oldPeer = multiplayer.peer;
+        multiplayer.hostConnection = null;
+        multiplayer.connections.clear();
+        multiplayer.remotePlayers.delete('1');
+        multiplayer.remotePlayers.delete(formerId);
+        multiplayer.playerOrder = ['1', ...multiplayer.playerOrder.filter(id => id !== '1' && id !== formerId)];
+        multiplayer.localId = '1';
+        multiplayer.mode = 'host';
+        multiplayer.hostLost = false;
+        multiplayer.reconnecting = false;
+        clearTimeout(multiplayer.migrationTimer);
+        clearTimeout(multiplayer.reconnectTimer);
+        multiplayer.migrationTimer = null;
+        multiplayer.reconnectTimer = null;
+        multiplayer.peer = null;
+        try { oldPeer?.destroy(); } catch (_) {}
+        multiplayer.lastNpcSend = 0;
+        multiplayer.playerCount = multiplayer.playerOrder.length;
+        pushFeed('YOU ARE THE NEW HOST — NPC WORLD AUTHORITY TRANSFERRED', 'border-l-emerald-400');
+        setTimeout(() => mpStartHost(roomCode, formerId), 500);
+      }
+
       function mpGuestDisconnected(id) {
+        if (!multiplayer.connections.has(id)) return;
         for (const [idx, owner] of multiplayer.carOwners) if (owner === id) multiplayer.carOwners.delete(idx);
         multiplayer.connections.delete(id);
+        multiplayer.playerOrder = multiplayer.playerOrder.filter(playerId => playerId !== id);
         const remote = multiplayer.remotePlayers.get(id);
         if (remote?.rig?.rig) {
           scene.remove(remote.rig.rig);
         }
         multiplayer.remotePlayers.delete(id);
         multiplayer.playerCount = 1 + multiplayer.connections.size;
-        mpBroadcast({ type: 'player_leave', playerId: id });
+        mpBroadcast({ type: 'player_leave', playerId: id, playerOrder: multiplayer.playerOrder.slice() });
         mpBroadcast({ type: 'player_count_sync', playerCount: multiplayer.playerCount });
         mpBroadcast({ type: 'car_locks', carOwners: Array.from(multiplayer.carOwners.entries()) });
         updateMultiplayerHud();
@@ -1291,6 +1462,25 @@
         } else if (data.type === 'npc_damage') {
           const npc = npcs[Number(data.npcId)];
           if (npc) damageNpc(npc, Number(data.amount) || 0, Number(data.knockYaw) || 0);
+        } else if (data.type === 'npc_pickpocket') {
+          const npc = npcs[Number(data.npcId)];
+          const remote = multiplayer.remotePlayers.get(id);
+          if (!npc || !remote || !Number.isFinite(remote.x) || !Number.isFinite(remote.z) || npc.picked || npc.hostile || Math.hypot(npc.x - remote.x, npc.z - remote.z) >= 1.95) return;
+          npc.picked = true;
+          npc.pickCool = data.noticed ? 60 : 120;
+          if (data.noticed) {
+            if (npc.aggro === 'fighter' || npc.aggro === 'clan' || npc.aggro === 'thug') {
+              npc.hostile = true;
+              npc.alertState = 'chasing';
+              npc.searchX = remote.x;
+              npc.searchZ = remote.z;
+            } else npc.fleeTimer = 8;
+            multiplayer.connections.get(id)?.send({ type: 'npc_pickpocket_result', npcId: npc.id, noticed: true });
+          } else {
+            const cash = lootFor(npc);
+            const item = rnd() < 0.22 ? (rnd() < 0.5 ? 'soda' : 'medkit') : null;
+            multiplayer.connections.get(id)?.send({ type: 'npc_pickpocket_result', npcId: npc.id, cash, item });
+          }
         }
       }
 
@@ -1310,9 +1500,21 @@
       function mpGuestData(data) {
         if (!data || typeof data !== 'object') return;
         if (data.type === 'world_welcome') {
+          multiplayer.hostLost = false;
+          multiplayer.reconnecting = false;
+          clearTimeout(multiplayer.migrationTimer);
+          clearTimeout(multiplayer.reconnectTimer);
+          multiplayer.migrationTimer = null;
+          multiplayer.reconnectTimer = null;
           multiplayer.localId = data.playerId;
           multiplayer.playerCount = Number(data.playerCount) || 2;
+          multiplayer.playerOrder = Array.isArray(data.playerOrder) ? data.playerOrder.slice() : multiplayer.playerOrder;
           multiplayer.roomCode = data.roomCode || multiplayer.roomCode;
+          if (data.replacedPlayerId) {
+            const replacedRemote = multiplayer.remotePlayers.get(data.replacedPlayerId);
+            if (replacedRemote?.rig?.rig) scene.remove(replacedRemote.rig.rig);
+            multiplayer.remotePlayers.delete(data.replacedPlayerId);
+          }
           const prevHost = multiplayer.remotePlayers.get('1') || {};
           multiplayer.remotePlayers.set('1', { ...prevHost, ...(data.hostState || {}), targetTime: performance.now() });
           for (const entry of data.playerStates || []) {
@@ -1321,6 +1523,7 @@
             multiplayer.remotePlayers.set(entry[0], { ...prev, ...(entry[1] || {}), targetTime: performance.now() });
           }
           multiplayer.npcSnapshot = data.npcs || multiplayer.npcSnapshot;
+          for (const snap of multiplayer.npcSnapshot) mpApplyNpcSnapshot(snap, false);
           multiplayer.carOwners = new Map(data.carOwners || []);
           for (const car of data.carSnapshots || []) {
             const v = vehicles[Number(car.carIdx)];
@@ -1339,6 +1542,7 @@
           }
         } else if (data.type === 'player_join') {
           multiplayer.playerCount = Number(data.playerCount) || multiplayer.playerCount;
+          if (Array.isArray(data.playerOrder)) multiplayer.playerOrder = data.playerOrder.slice();
           if (!multiplayer.remotePlayers.has(data.playerId)) multiplayer.remotePlayers.set(data.playerId, { targetTime: performance.now() });
           updateMultiplayerHud();
         } else if (data.type === 'player_count_sync') {
@@ -1349,6 +1553,20 @@
           multiplayer.remotePlayers.set(data.playerId, { ...prev, ...(data.state || {}), targetTime: performance.now() });
         } else if (data.type === 'npc_snapshot') {
           multiplayer.npcSnapshot = data.npcs || [];
+        } else if (data.type === 'npc_pickpocket_result') {
+          if (data.noticed) {
+            sfx.hit();
+            flashEdge('rgba(244, 63, 94, 0.35)');
+            pushFeed(`${npcs[Number(data.npcId)]?.name || 'NPC'} NOTICED YOU!`, 'border-l-rose-500');
+          } else {
+            const cash = Number(data.cash) || 0;
+            gameState.cash += cash;
+            if (data.item) addLeftItemToBag(data.item, 1);
+            sfx.pickup();
+            flashEdge('rgba(52, 211, 153, 0.3)');
+            pushFeed(`PICKPOCKETED ${npcs[Number(data.npcId)]?.name || 'NPC'}: +$${cash}${data.item ? ' + ITEM' : ''}`, 'border-l-emerald-400');
+            updateHUD();
+          }
         } else if (data.type === 'car_locks') {
           multiplayer.carOwners = new Map(data.carOwners || []);
         } else if (data.type === 'car_enter_granted') {
@@ -1365,6 +1583,7 @@
           const remote = multiplayer.remotePlayers.get(data.playerId);
           if (remote?.rig?.rig) scene.remove(remote.rig.rig);
           multiplayer.remotePlayers.delete(data.playerId);
+          if (Array.isArray(data.playerOrder)) multiplayer.playerOrder = data.playerOrder.slice();
           multiplayer.playerCount = Math.max(1, multiplayer.playerCount - 1);
           updateMultiplayerHud();
         }
@@ -3940,6 +4159,7 @@
               npc.sleepZGroup = zzz;
             }
           } else if (npc.spawned && distToPlayer > DESPAWN_DIST) {
+            npc.moving = false;
             scene.remove(npc.mesh);
             freeGeo(npc.mesh);
             npc.mesh = null;
@@ -3960,6 +4180,7 @@
             npc.kvx *= dec; npc.kvz *= dec;
           }
           if (npc.asleep) {
+            npc.moving = false;
             npc.sleepTimer -= dt;
             npc.mesh.position.set(npc.x, 0.34, npc.z);
             npc.mesh.rotation.order = 'YXZ';
@@ -4098,6 +4319,7 @@
           }
 
           if (npc.age === 'elder') moveSpeed *= 0.6; else if (npc.age === 'child') moveSpeed *= 1.1;
+          npc.moving = moveSpeed > 0 || Math.abs(npc.kvx) + Math.abs(npc.kvz) > 0.3;
           if (moveSpeed > 0) {
             const nx = npc.x + Math.sin(npc.yaw) * moveSpeed * dt;
             const nz = npc.z + Math.cos(npc.yaw) * moveSpeed * dt;
@@ -4534,6 +4756,7 @@
           flameTimer: 0,
           flameL,
           flameR,
+          windowMaterial: glassMat,
           root,
           chassis,
           carScale,
@@ -4598,10 +4821,11 @@
           v.speed = v.trafficSpeed;
           const driverMesh = buildNpcMesh(paint[i][0], 0x1e293b, null, { age: 'adult', id: 700 + i, skin: [0xd99b72, 0xb77955, 0xf1c27d, 0x8d5524][i] });
           driverMesh.scale.setScalar(0.52);
-          driverMesh.position.set(-0.38, -0.03, -0.05);
-          driverMesh.userData.armL.rotation.x = -0.7;
-          driverMesh.userData.armR.rotation.x = -0.7;
+          driverMesh.position.set(-0.42, 0.08, 0.12);
+          driverMesh.userData.armL.rotation.x = -0.95;
+          driverMesh.userData.armR.rotation.x = -0.95;
           v.root.add(driverMesh);
+          v.windowMaterial.opacity = 0.07;
           v.driver = { name: `DRIVER ${i + 1}`, mesh: driverMesh, ejected: false };
           trafficCars.push(v);
         });
@@ -4631,9 +4855,30 @@
             ejectedDrivers.splice(i, 1);
             continue;
           }
+          if (driver.ejectTimer > 0) {
+            driver.ejectTimer = Math.max(0, driver.ejectTimer - dt);
+            driver.vy -= 16 * dt;
+            driver.x += driver.vx * dt;
+            driver.y += driver.vy * dt;
+            driver.z += driver.vz * dt;
+            const progress = 1 - driver.ejectTimer / 0.72;
+            driver.mesh.rotation.z = Math.sin(progress * Math.PI) * 0.85;
+            driver.mesh.rotation.x = -0.25 - Math.sin(progress * Math.PI) * 0.45;
+            driver.mesh.userData.armL.rotation.x = -1.8 + Math.sin(progress * 13) * 0.45;
+            driver.mesh.userData.armR.rotation.x = -1.8 - Math.sin(progress * 13) * 0.45;
+            driver.mesh.position.set(driver.x, driver.y, driver.z);
+            if (driver.ejectTimer <= 0) {
+              driver.y = computeSupportFloor(driver.x, driver.z, driver.y, player.radius) + 0.02;
+              driver.vy = 0;
+              driver.mesh.rotation.set(0, driver.yaw, 0);
+              driver.mesh.userData.armL.rotation.set(0, 0, 0);
+              driver.mesh.userData.armR.rotation.set(0, 0, 0);
+            }
+            continue;
+          }
           driver.x += Math.sin(driver.yaw) * 2.2 * dt;
           driver.z += Math.cos(driver.yaw) * 2.2 * dt;
-          driver.mesh.position.set(driver.x, 0.18, driver.z);
+          driver.mesh.position.set(driver.x, driver.y, driver.z);
           const step = Math.sin((8 - driver.timer) * 9) * 0.45;
           driver.mesh.userData.legL.rotation.x = step;
           driver.mesh.userData.legR.rotation.x = -step;
@@ -4676,8 +4921,13 @@
           driver.mesh.position.copy(exitPosition);
           driver.mesh.rotation.set(0, v.yaw - Math.PI / 2, 0);
           driver.x = exitPosition.x;
+          driver.y = exitPosition.y;
           driver.z = exitPosition.z;
-          driver.yaw = Math.atan2(driver.x - player.x, driver.z - player.z);
+          driver.yaw = v.yaw - Math.PI / 2;
+          driver.ejectTimer = 0.72;
+          driver.vx = Math.sin(v.yaw - Math.PI / 2) * 4.2 + Math.sin(v.yaw) * 1.5;
+          driver.vy = 3.4;
+          driver.vz = Math.cos(v.yaw - Math.PI / 2) * 4.2 + Math.cos(v.yaw) * 1.5;
           driver.timer = 8;
           driver.ejected = true;
           ejectedDrivers.push(driver);
@@ -5138,14 +5388,7 @@
             const npc = npcs[snap.id];
             if (!npc) continue;
             const alpha = Math.min(1, dt * 8);
-            npc.x += (snap.x - npc.x) * alpha;
-            npc.z += (snap.z - npc.z) * alpha;
-            const npcYawDiff = (snap.yaw || 0) - npc.yaw;
-            npc.yaw += Math.atan2(Math.sin(npcYawDiff), Math.cos(npcYawDiff)) * alpha;
-            npc.hp = snap.hp;
-            npc.asleep = !!snap.asleep;
-            npc.hostile = !!snap.hostile;
-            npc.walkCycle = (snap.walkCycle || npc.walkCycle || 0);
+            mpApplyNpcSnapshot(snap, true, alpha);
             if (npc.mesh) {
               const u = npc.mesh.userData;
               if (u?.legL && u?.legR && u?.armL && u?.armR) {
@@ -5155,6 +5398,7 @@
                 u.legR.rotation.x += (-swing - u.legR.rotation.x) * Math.min(1, dt * 10);
                 u.armL.rotation.x += (-swing * 0.75 - u.armL.rotation.x) * Math.min(1, dt * 10);
                 u.armR.rotation.x += (swing * 0.75 - u.armR.rotation.x) * Math.min(1, dt * 10);
+                if (u.flagG) u.flagG.rotation.y = Math.sin(performance.now() * 0.004 + npc.id) * 0.35;
               }
               npc.mesh.position.set(npc.x, npc.asleep ? 0.34 : 0.18, npc.z);
               npc.mesh.rotation.order = 'YXZ';
@@ -5192,7 +5436,7 @@
 
         if (multiplayer.mode === 'host' && multiplayer.lastNpcSend >= 0.1) {
           multiplayer.lastNpcSend = 0;
-          multiplayer.npcSnapshot = npcs.map((npc, id) => ({ id, x: npc.x, z: npc.z, yaw: npc.yaw || 0, hp: npc.hp, asleep: !!npc.asleep, hostile: !!npc.hostile, walkCycle: npc.walkCycle || 0, moving: !!(npc.alertState === 'chasing' || npc.fleeTimer > 0 || npc.kvx || npc.kvz) }));
+          multiplayer.npcSnapshot = mpBuildNpcStateSnapshot();
           mpBroadcast({ type: 'npc_snapshot', npcs: multiplayer.npcSnapshot });
         }
 
@@ -5713,12 +5957,36 @@
           gameState.stamina = 100;
           gameState.cash = Math.max(0, gameState.cash - 50);
           climb.on = false;
-          player.x = hospitalSpawn ? hospitalSpawn.x : -11.5;
-          player.y = 0.18;
-          player.z = hospitalSpawn ? hospitalSpawn.z : 18.5;
+          player.mantle.active = false;
+          const spawnCandidates = [];
+          if (hospitalSpawn) {
+            spawnCandidates.push(hospitalSpawn, { x: hospitalSpawn.x + 2.8, z: hospitalSpawn.z }, { x: hospitalSpawn.x, z: hospitalSpawn.z + 2.8 });
+          }
+          spawnCandidates.push({ x: -11.5, z: 18.5 }, { x: -14.5, z: 18.5 }, { x: -11.5, z: 22.0 });
+          let respawn = null;
+          for (const candidate of spawnCandidates) {
+            const floorY = computeSupportFloor(candidate.x, candidate.z, 1.5, player.radius);
+            if (!collidesHorizontally(candidate.x, candidate.z, floorY + 0.02, player.height, player.radius)) {
+              respawn = { x: candidate.x, y: floorY + 0.02, z: candidate.z };
+              break;
+            }
+          }
+          if (!respawn) {
+            respawn = { x: -11.5, y: computeSupportFloor(-11.5, 18.5, 1.5, player.radius) + 0.02, z: 18.5 };
+          }
+          player.x = respawn.x;
+          player.y = respawn.y;
+          player.z = respawn.z;
           player.vy = 0;
+          player.pvx = 0;
+          player.pvz = 0;
           player.grounded = true;
-          player.peakAirY = 0.18;
+          player.coyote = 0;
+          player.peakAirY = player.y;
+          player.landingDip = 0;
+          camera.position.set(player.x, player.y + player.eyeHeight, player.z);
+          camera.rotation.order = 'YXZ';
+          camera.rotation.set(player.pitch, player.yaw, 0);
           gameState.wastedTimer = 2.2;
           document.getElementById('wasted-cause').textContent = `ELIMINATED BY ${sourceLabel}`;
           document.getElementById('wasted-screen').style.display = 'flex';
@@ -6795,10 +7063,10 @@
         return highest;
       }
 
-      function collidesHorizontally(nx, nz, footY, bodyH, radius) {
+      function collidesHorizontally(nx, nz, footY, bodyH, radius, ignoreTerrainRise = false) {
         if (nx < -556 + radius || (nx < -196 && (nz < -170 + radius || nz > 170 - radius)) || nx > 370 - radius || nz < -585 + radius || nz > 208 - radius) return true;
         if (footY < -1.0 && !sewerOK(nx, nz, radius)) return true;
-        if (footY > -0.5) { const th = terrainH(nx, nz); if (th > -90 && th - footY > 1.0) return true; }
+        if (!ignoreTerrainRise && footY > -0.5) { const th = terrainH(nx, nz); if (th > -90 && th - footY > 1.0) return true; }
         for (let i = 0; i < worldBoxes.length; i++) {
           const b = worldBoxes[i];
           if (b.maxY <= footY + 0.42 || b.minY >= footY + bodyH - 0.08) continue;
@@ -7228,26 +7496,37 @@
           const nextZ = v.z + v.velZ * dt;
 
           const cfx = Math.sin(v.yaw), cfz = Math.cos(v.yaw);
+          const crx = Math.cos(v.yaw), crz = -Math.sin(v.yaw);
           const carFloor = computeSupportFloor(nextX, nextZ, v.y + 0.65, 0.8);
-          const fFloor = computeSupportFloor(nextX + cfx * 1.7, nextZ + cfz * 1.7, v.y + 0.65, 0.5);
-          const rFloor = computeSupportFloor(nextX - cfx * 1.7, nextZ - cfz * 1.7, v.y + 0.65, 0.5);
-          const gy = Math.max(carFloor, (fFloor + rFloor) * 0.5);
+          const wheelSupport = (forward, side) => {
+            const wheelX = nextX + cfx * forward * v.carScale + crx * side * v.carScale;
+            const wheelZ = nextZ + cfz * forward * v.carScale + crz * side * v.carScale;
+            return computeSupportFloor(wheelX, wheelZ, v.y + 0.65, 0.42);
+          };
+          const frontLeftFloor = wheelSupport(1.38, -0.98);
+          const frontRightFloor = wheelSupport(1.38, 0.98);
+          const rearLeftFloor = wheelSupport(-1.38, -0.98);
+          const rearRightFloor = wheelSupport(-1.38, 0.98);
+          const frontFloor = (frontLeftFloor + frontRightFloor) * 0.5;
+          const rearFloor = (rearLeftFloor + rearRightFloor) * 0.5;
+          const gy = Math.max(carFloor, frontLeftFloor, frontRightFloor, rearLeftFloor, rearRightFloor);
+          const groundY = gy + 0.02;
           v.vy = v.vy || 0;
-          if (gy > v.y + 0.08) {
+          if (groundY > v.y + 0.08) {
             v.vy = Math.max(0, v.vy);
-            v.y = gy;
-          } else if (gy < v.y) {
+            v.y = groundY;
+          } else if (groundY < v.y) {
             v.vy -= 19.5 * dt;
             v.y += v.vy * dt;
-            if (v.y <= gy) {
-              v.y = gy;
+            if (v.y <= groundY) {
+              v.y = groundY;
               v.vy = 0;
             }
           } else {
             v.vy = 0;
-            v.y = gy;
+            v.y = groundY;
           }
-          const tpT = Math.max(-0.5, Math.min(0.5, Math.atan2(fFloor - rFloor, 3.4)));
+          const tpT = Math.max(-0.5, Math.min(0.5, Math.atan2(frontFloor - rearFloor, 3.72 * v.carScale)));
           v.terrPitch = (v.terrPitch || 0) + (tpT - (v.terrPitch || 0)) * Math.min(1, dt * 10);
 
           for (const lp of lampPosts) {
@@ -7266,10 +7545,9 @@
             }
           }
 
-          const crx = Math.cos(v.yaw), crz = -Math.sin(v.yaw);
           const carHit = (px, pz) => {
             for (let q = 0; q < CAR_PTS.length; q++) {
-              if (collidesHorizontally(px + cfx * CAR_PTS[q][0] + crx * CAR_PTS[q][1], pz + cfz * CAR_PTS[q][0] + crz * CAR_PTS[q][1], v.y + 0.25, 1.3, 0.28)) return true;
+              if (collidesHorizontally(px + cfx * CAR_PTS[q][0] + crx * CAR_PTS[q][1], pz + cfz * CAR_PTS[q][0] + crz * CAR_PTS[q][1], v.y + 0.25, 1.3, 0.28, true)) return true;
             }
             return false;
           };
@@ -7416,6 +7694,7 @@
                 const fallDist = player.peakAirY - supportY;
                 if (fallDist > 8.0 && !chuteActive) {
                   applyPlayerDamage(1000, 'FATAL FALL');
+                  if (gameState.screen !== 'playing') return;
                 } else if (fallDist > 3.6 && !chuteActive) {
                   const fallDmg = Math.min(65, (fallDist - 3.6) * 8.5);
                   applyPlayerDamage(fallDmg, 'FALL IMPACT');
@@ -7871,9 +8150,9 @@
         head.scale.setScalar(bigHead);
         head.position.y = 0.55 + (hh / 2) * bigHead;
         const style = age === 'child' ? (id % 2 ? 'pigtails' : 'short') : age === 'elder' ? (id % 3 === 0 ? 'bald' : 'short')
-          : age === 'teen' ? pick(['cap', 'mohawk', 'long', 'short']) : pick(['short', 'short', 'long', 'bald']);
+          : age === 'teen' ? ['cap', 'mohawk', 'long', 'short'][id % 4] : ['short', 'short', 'long', 'bald'][id % 4];
         addHair(head, hw, hh, hd, 1, style, hairHex);
-        const face = makeFace(hw, hh, hd, 1, { age, skin, brow: hairHex, glasses: age === 'elder' && id % 2 === 0, iris: pick([0x3b2a1a, 0x1e40af, 0x166534, 0x44403c]) });
+        const face = makeFace(hw, hh, hd, 1, { age, skin, brow: hairHex, glasses: age === 'elder' && id % 2 === 0, iris: [0x3b2a1a, 0x1e40af, 0x166534, 0x44403c][id % 4] });
         head.add(face);
         if (bandC !== null && bandC !== undefined) {
           const band = bx(hw * 1.1, hh * 0.2, hd * 1.1, makeMat(bandC));
@@ -7910,7 +8189,7 @@
           armR.add(cane);
         }
         if (age === 'child' || age === 'teen') {
-          const pack = bx(0.3, 0.34, 0.12, makeMat(pick([0x16a34a, 0xf59e0b, 0x2563eb, 0xdb2777])));
+          const pack = bx(0.3, 0.34, 0.12, makeMat([0x16a34a, 0xf59e0b, 0x2563eb, 0xdb2777][id % 4]));
           pack.position.set(0, 0.3, -0.17);
           hip.add(pack);
         }
@@ -7975,7 +8254,9 @@
       }
       function updatePickpocket(dt) {
         ppEnsureUI();
-        for (const n of npcs) if (n.picked) { n.pickCool = (n.pickCool || 0) - dt; if (n.pickCool <= 0) n.picked = false; }
+        if (multiplayer.mode !== 'guest') {
+          for (const n of npcs) if (n.picked) { n.pickCool = (n.pickCool || 0) - dt; if (n.pickCool <= 0) n.picked = false; }
+        }
         const blocked = gameState.inCar || gameState.inventoryOpen || gameState.mapOpen || gameState.settingsOpen || meteorDrop.active || player.mantle.active;
         let best = null, bd = 1.95;
         if (!blocked) {
@@ -8004,28 +8285,36 @@
             pp.aware += Math.max(0, rate) * dt;
           }
           if (pp.aware >= 1) {
-            sfx.hit();
-            flashEdge('rgba(244, 63, 94, 0.35)');
-            n.picked = true; n.pickCool = 60;
-            if (n.aggro === 'fighter' || n.aggro === 'clan' || n.aggro === 'thug') {
-              n.hostile = true; n.alertState = 'chasing';
-              pushFeed(`${n.name} CAUGHT YOU! "HEY!"`, 'border-l-rose-500');
+            if (multiplayer.mode === 'guest') {
+              mpSendToHost({ type: 'npc_pickpocket', npcId: n.id, noticed: true });
             } else {
-              n.fleeTimer = 8;
-              pushFeed(`${n.name} NOTICED AND RAN OFF!`, 'border-l-rose-500');
+              sfx.hit();
+              flashEdge('rgba(244, 63, 94, 0.35)');
+              n.picked = true; n.pickCool = 60;
+              if (n.aggro === 'fighter' || n.aggro === 'clan' || n.aggro === 'thug') {
+                n.hostile = true; n.alertState = 'chasing';
+                pushFeed(`${n.name} CAUGHT YOU! "HEY!"`, 'border-l-rose-500');
+              } else {
+                n.fleeTimer = 8;
+                pushFeed(`${n.name} NOTICED AND RAN OFF!`, 'border-l-rose-500');
+              }
             }
             pp.prog = 0; pp.aware = 0;
           } else if (pp.prog >= 1) {
-            const cash = lootFor(n);
-            gameState.cash += cash;
-            let extra = '';
-            if (rnd() < 0.22) { addLeftItemToBag(rnd() < 0.5 ? 'soda' : 'medkit', 1); extra = ' + ITEM'; }
-            n.picked = true; n.pickCool = 120;
-            sfx.pickup();
-            flashEdge('rgba(52, 211, 153, 0.3)');
-            pushFeed(`PICKPOCKETED ${n.name}: +$${cash}${extra}`, 'border-l-emerald-400');
+            if (multiplayer.mode === 'guest') {
+              mpSendToHost({ type: 'npc_pickpocket', npcId: n.id, noticed: false });
+            } else {
+              const cash = lootFor(n);
+              gameState.cash += cash;
+              let extra = '';
+              if (rnd() < 0.22) { addLeftItemToBag(rnd() < 0.5 ? 'soda' : 'medkit', 1); extra = ' + ITEM'; }
+              n.picked = true; n.pickCool = 120;
+              sfx.pickup();
+              flashEdge('rgba(52, 211, 153, 0.3)');
+              pushFeed(`PICKPOCKETED ${n.name}: +$${cash}${extra}`, 'border-l-emerald-400');
+              updateHUD();
+            }
             pp.prog = 0; pp.aware = 0;
-            updateHUD();
           }
         } else {
           pp.prog = Math.max(0, pp.prog - dt * 1.5);
@@ -8662,7 +8951,7 @@
       const AO={heat:0,calm:0,cops:[],cars:[],spawnT:0,shotT:0,lastAtk:0};
       const stars=()=>Math.min(5,Math.ceil(AO.heat-.001));
       function crime(a){if(under())return;const s0=stars();AO.heat=Math.min(5,AO.heat+a);AO.calm=0;if(stars()>s0)pushFeed('WANTED LEVEL '+stars()+' — POLICE DISPATCHED','border-l-blue-500');}
-      const _dn=damageNpc;damageNpc=function(n,a,y){_dn(n,a,y);if(Math.hypot(player.x-n.x,player.z-n.z)<14)crime(a>40?.45:.25);};
+      const _dn=damageNpc;damageNpc=function(n,a,y){const civilian=!!n&&!n.asleep&&n.aggro==='passive';_dn(n,a,y);if(multiplayer.mode!=='guest'&&civilian&&Math.hypot(player.x-n.x,player.z-n.z)<14)crime(a>40?.45:.25);};
       const _kl=knockOverLamppost;knockOverLamppost=function(l,y,s){_kl(l,y,s);if(s>6)crime(.08);};
       const tmpV=new THREE.Vector3();
       function makeCop(x,z){
@@ -9468,6 +9757,7 @@
             u.legL.rotation.x = 0; u.legR.rotation.x = 0;
           });
           for (const n of GT.parade) {
+            if (multiplayer.mode === 'guest') continue;
             const slot = slotOf(n);
             if (busy(n)) continue;
             const dx = slot.x - n.x, dz = slot.z - n.z, d = Math.hypot(dx, dz);
@@ -9478,6 +9768,7 @@
               if (step >= d) { n.x = slot.x; n.z = slot.z; } else { n.x += dx / d * step; n.z += dz / d * step; }
               n.yaw = Math.atan2(dx, dz);
             } else { n.x = slot.x; n.z = slot.z; n.yaw = slot.yaw; }
+            n.moving = fast;
             if (n.mesh && n.spawned) {
               n.mesh.position.set(n.x, 0.18, n.z);
               n.mesh.rotation.y = n.yaw;
@@ -9518,7 +9809,7 @@
 
         function frameHomers(dt, t) {
           for (const n of GT.homers) {
-            if (busy(n)) continue;
+            if (multiplayer.mode === 'guest' || busy(n)) continue;
             const dx = n.gtHome.x - n.x, dz = n.gtHome.z - n.z, d = Math.hypot(dx, dz);
             let walking = false;
             if (d > 0.2) {
@@ -9529,6 +9820,7 @@
               else { n.gtStuck = (n.gtStuck || 0) + dt; if (n.gtStuck > 3) { n.x = n.gtHome.x; n.z = n.gtHome.z; } }
               n.yaw = Math.atan2(dx, dz);
             } else { n.x = n.gtHome.x; n.z = n.gtHome.z; n.yaw = n.gtYaw; }
+            n.moving = walking;
             if (n.mesh && n.spawned) {
               n.mesh.position.set(n.x, 0.18, n.z);
               n.mesh.rotation.y = n.yaw;
@@ -9741,7 +10033,7 @@
               else if (dP < 125) { gameState.damageCooldown = 0; applyPlayerDamage(Math.round(8 + 72 * (1 - (dP - 38) / 87)), 'NUCLEAR SHOCKWAVE'); }
               NK.shake = Math.max(NK.shake, clamp(1.4 - dP / 150, 0.2, 1.4));
             }
-            for (const n of npcs) {
+            if (multiplayer.mode !== 'guest') for (const n of npcs) {
               if (b.hit.has(n.id)) continue;
               const d = Math.hypot(n.x - b.x, n.z - b.z);
               if (b.R < d) continue;
