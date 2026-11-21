@@ -6081,6 +6081,7 @@
           }
         } else {
           updateHUD();
+          requestDesktopPointerLock();
         }
         if (window.__syncMobileControls) window.__syncMobileControls(true);
       }
@@ -6344,6 +6345,7 @@
 
       let isDraggingLook = false;
       let isPrimaryFireHeld = false;
+      const directKeyboardSources = new Set();
       let lastMouseX = 0;
       let lastMouseY = 0;
 
@@ -6362,9 +6364,18 @@
         player.pitch = Math.max(-1.42, Math.min(1.42, player.pitch - dy * mult));
       }
 
+      function requestDesktopPointerLock() {
+        if (gameState.settings.mobileControls && mobileRender) return;
+        if (document.pointerLockElement === canvas || !canvas.requestPointerLock) return;
+        try {
+          const result = canvas.requestPointerLock();
+          if (result && result.catch) result.catch(() => {});
+        } catch (_) {}
+      }
+
       document.addEventListener('pointerlockchange', () => {
         const locked = document.pointerLockElement === canvas;
-        document.getElementById('lock-hint').style.display = locked || mobileRender ? 'none' : 'block';
+        document.getElementById('lock-hint').style.display = locked || (mobileRender && gameState.settings.mobileControls) ? 'none' : 'block';
       });
 
       window.addEventListener('contextmenu', (e) => {
@@ -6388,12 +6399,7 @@
           return;
         }
 
-        if (!mobileRender && document.pointerLockElement !== canvas && canvas.requestPointerLock) {
-          try {
-            const res = canvas.requestPointerLock();
-            if (res && res.catch) res.catch(() => {});
-          } catch (_) {}
-        }
+        requestDesktopPointerLock();
 
         isDraggingLook = true;
         lastMouseX = e.clientX;
@@ -6422,6 +6428,7 @@
       window.addEventListener('blur', () => {
         for (const code in keys) keys[code] = false;
         if (typeof jk !== 'undefined') for (const code in jk) jk[code] = false;
+        directKeyboardSources.clear();
         isPrimaryFireHeld = false;
         isDraggingLook = false;
       });
@@ -6430,6 +6437,7 @@
         if (document.hidden) {
           for (const code in keys) keys[code] = false;
           if (typeof jk !== 'undefined') for (const code in jk) jk[code] = false;
+          directKeyboardSources.clear();
           isPrimaryFireHeld = false;
           isDraggingLook = false;
         }
@@ -6450,6 +6458,7 @@
 
       window.addEventListener('keydown', (e) => {
         const code = e.code;
+        directKeyboardSources.add(code);
         keys[code] = true;
 
         if (code === 'Tab' || code === 'Escape') {
@@ -6597,6 +6606,7 @@
       });
 
       window.addEventListener('keyup', (e) => {
+        directKeyboardSources.delete(e.code);
         keys[e.code] = false;
       });
 
@@ -6648,12 +6658,7 @@
         sfx.uiClick();
         setScreen('playing');
         triggerMeteorLanding();
-        if (!mobileRender && canvas.requestPointerLock) {
-          try {
-            const p = canvas.requestPointerLock();
-            if (p && p.catch) p.catch(() => {});
-          } catch (_) {}
-        }
+        requestDesktopPointerLock();
       };
 
       function startMultiplayerSession() {
@@ -6662,9 +6667,7 @@
         sfx.uiClick();
         setScreen('playing');
         triggerMeteorLanding();
-        if (!mobileRender && canvas.requestPointerLock) {
-          try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (_) {}
-        }
+        requestDesktopPointerLock();
       }
 
       document.getElementById('btn-host-multiplayer').onclick = () => {
@@ -10282,7 +10285,7 @@
         window.addEventListener('blur', () => { for (const k in jk) jk[k] = false; });
         window.addEventListener('mousedown', (e) => {
           if (!J.flying || gameState.screen !== 'playing') return; e.stopImmediatePropagation(); if (e.button === 2) e.preventDefault();
-          if (e.button === 0) { jk.M0 = true; if (!mobileRender && document.pointerLockElement !== canvas) { try { const r = canvas.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (_) {} } }
+          if (e.button === 0) { jk.M0 = true; requestDesktopPointerLock(); }
         }, true);
         window.addEventListener('mouseup', (e) => { if (e.button === 0) jk.M0 = false; }, true);
         window.addEventListener('mousemove', (e) => {
@@ -10387,7 +10390,7 @@
           let sources = mobileKeySources.get(code);
           if (!sources) { sources = new Set(); mobileKeySources.set(code, sources); }
           if (down) sources.add(source); else sources.delete(source);
-          const held = sources.size > 0; keys[code] = held; jk[code] = held;
+          const held = sources.size > 0 || directKeyboardSources.has(code); keys[code] = held; jk[code] = held;
           if (!held) mobileKeySources.delete(code);
         };
         const mobileTapKey = (code) => {
@@ -10505,6 +10508,7 @@
         window.addEventListener('blur', () => { mobileClearStick(); for (const id of mobileHeld.keys()) mobileEndHold(id); lookPointer = null; });
         window.addEventListener('orientationchange', () => { mobileClearStick(); });
         let lastMobileUiSync = 0;
+        let mobileControlsWasActive = false;
         window.__syncMobileControls = (force = false) => {
           if (!mobileDevice) return;
           const now = performance.now();
@@ -10517,13 +10521,16 @@
             && !gameState.mapOpen
             && !gameState.settingsOpen;
           if (!active) {
-            mobileClearStick();
-            for (const pointerId of Array.from(mobileHeld.keys())) mobileEndHold(pointerId);
-            isPrimaryFireHeld = false;
-            jk.M0 = false;
-            lookPointer = null;
-            mobileLook.classList.remove('active');
+            if (mobileControlsWasActive) {
+              mobileClearStick();
+              for (const pointerId of Array.from(mobileHeld.keys())) mobileEndHold(pointerId);
+              isPrimaryFireHeld = false;
+              jk.M0 = false;
+              lookPointer = null;
+              mobileLook.classList.remove('active');
+            }
           }
+          mobileControlsWasActive = active;
           mobileControls.classList.toggle('visible', active);
           document.getElementById('mobile-foot-actions').style.display = !gameState.inCar && !J.flying ? 'grid' : 'none';
           document.getElementById('mobile-car-controls').classList.toggle('active', gameState.inCar && !J.flying);
