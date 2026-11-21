@@ -23,9 +23,18 @@
 
       <div class="rgroup" aria-label="Transform tools">
         <button class="tbtn tool active" data-tool="select" title="Select (Q)"><span class="ico">⬚</span>Select<kbd>Q</kbd></button>
-        <button class="tbtn tool" data-tool="translate" title="Move (W)"><span class="ico">✥</span>Move<kbd>W</kbd></button>
+        <button class="tbtn tool" data-tool="translate" title="Move"><span class="ico">✥</span>Move</button>
         <button class="tbtn tool" data-tool="rotate" title="Rotate (E)"><span class="ico">⟳</span>Rotate<kbd>E</kbd></button>
         <button class="tbtn tool" data-tool="scale" title="Scale (R)"><span class="ico">⤢</span>Scale<kbd>R</kbd></button>
+        <button class="tbtn tool" data-tool="sculpt" title="Sculpt terrain"><span class="ico">◒</span>Sculpt</button>
+      </div>
+
+      <div class="rgroup" id="sculpt-controls" aria-label="Terrain brush controls">
+        <label class="snap-label" for="sculpt-mode">Brush</label>
+        <select id="sculpt-mode" title="Sculpt mode"><option value="raise">Raise</option><option value="lower">Lower</option><option value="smooth">Smooth</option></select>
+        <label class="snap-label" for="sculpt-size">Size</label>
+        <input id="sculpt-size" type="range" min="2" max="40" step="1" value="12" title="Brush radius in metres" />
+        <span id="sculpt-size-value">12m</span>
       </div>
 
       <div class="rgroup">
@@ -60,6 +69,8 @@
         <p class="hint" id="insert-hint">Parts appear in front of the camera.</p>
         <h3>Vehicles</h3><div class="chips" id="prefabs-vehicles"></div>
         <h3>Weapons &amp; pickups</h3><div class="chips" id="prefabs-pickups"></div>
+        <h3>Buildings</h3><div class="chips" id="prefabs-buildings"></div>
+        <h3>Roads &amp; map pieces</h3><div class="chips" id="prefabs-map-pieces"></div>
         <h3>World parts &amp; ramps</h3><div class="chips" id="prefabs-parts"></div>
       </section>
 
@@ -87,7 +98,16 @@
       <div id="viewport">
         <canvas id="studio-canvas"></canvas>
         <div id="viewport-info"></div>
-        <div id="viewport-help">Right-drag: look · Wheel: zoom · Hold right mouse + W A S D (Q/E down/up, Shift boost) · Arrow keys fly · F: focus</div>
+        <div id="viewport-nav" aria-label="Map navigation">
+          <button class="small" data-view="city" title="Jump to Sunnyvale city">City</button>
+          <button class="small" data-view="desert" title="Jump to Redrock Desert">Desert</button>
+          <button class="small" data-view="north" title="Jump to Aura Hills and mountain roads">Hills</button>
+          <button class="small" data-view="biomes" title="Jump to alpine, woods, and cove">Biomes</button>
+          <button class="small" data-view="jungle" title="Jump to the jungle">Jungle</button>
+          <button class="small" data-view="world" title="Frame the whole world">Whole map</button>
+          <button class="small" id="btn-focus-selection" title="Focus selected object (F)">Focus selection</button>
+        </div>
+        <div id="viewport-help">Select: click · Look: left-drag · Pan: middle/right-drag · Zoom: wheel · Focus: F · Fly: WASD or arrows · Shift: fast</div>
       </div>
     </main>
 

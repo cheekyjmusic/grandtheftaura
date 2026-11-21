@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { levelData } from './levelData.js';
 import { CAR_PTS, collidesHorizontally, computeSupportFloor, gameState, hooks, inputState, isInWater, keys, lampPosts, npcs, player, pushFeed, surfaceGrip, terrainH } from './state.js';
-import { camera, makeMat, scene, worldRoot } from './engine.js';
+import { camera, makeMat, worldRoot } from './engine.js';
 import { sfx } from './audio.js';
 import { spawnParticles } from './items.js';
 
@@ -18,10 +18,14 @@ export const GEAR_RATIO_MULT = [-0.55, 0, 1.0, 0.66, 0.46, 0.34, 0.26, 0.21];
 
 export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, accentHex = 0xf8fafc, x = 0, z = 0, yaw = 0, isCoupe = true, isSupercar = false } = {}) {
   const root = new THREE.Group();
+  root.userData.studioName = name;
+  const carScale = 1.35;
+  root.scale.setScalar(carScale);
   root.position.set(x, 0.12, z);
   root.rotation.y = yaw;
 
   const chassis = new THREE.Group();
+  chassis.userData.studioName = 'Chassis';
   root.add(chassis);
 
   const bodyMat = makeMat(bodyHex, {
@@ -53,17 +57,20 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
   });
   const carbonMat = makeMat(0x0f172a, { roughness: 0.32, metalness: 0.55, clearcoat: 0.7, flatShading: false });
   const glassMat = makeMat(0x38bdf8, {
-    metalness: 0.92,
-    roughness: 0.06,
-    clearcoat: 1.0,
-    envMapIntensity: 2.5,
+    metalness: 0.35,
+    roughness: 0.12,
+    clearcoat: 0.8,
+    envMapIntensity: 1.2,
     transparent: true,
-    opacity: 0.48,
+    opacity: 0.16,
+    depthWrite: false,
+    side: THREE.DoubleSide,
     flatShading: false
   });
 
   const lowerH = isSupercar ? 0.42 : 0.54;
   const lower = new THREE.Mesh(new THREE.BoxGeometry(2.04, lowerH, 4.46), bodyMat);
+  lower.userData.studioName = 'Body';
   lower.position.y = isSupercar ? 0.54 : 0.62;
   lower.castShadow = true;
   lower.receiveShadow = true;
@@ -79,12 +86,73 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
   const cabinLen = isSupercar ? 1.85 : (isCoupe ? 2.0 : 2.65);
   const cabinH = isSupercar ? 0.56 : 0.78;
   const cabinZ = isSupercar ? -0.10 : (isCoupe ? -0.22 : -0.05);
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.74, cabinH, cabinLen), bodyMat);
+  const cabin = new THREE.Group();
+  cabin.userData.studioName = 'Cabin';
   cabin.position.set(0, lower.position.y + lowerH / 2 + cabinH / 2 - 0.02, cabinZ);
-  cabin.castShadow = true;
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.74, 0.09, cabinLen), bodyMat);
+  roof.userData.studioName = 'Cabin roof';
+  roof.position.y = cabinH / 2 - 0.045;
+  roof.castShadow = true;
+  cabin.add(roof);
 
-  const glass = new THREE.Mesh(new THREE.BoxGeometry(1.78, cabinH * 0.78, cabinLen - 0.18), glassMat);
-  glass.position.set(0, cabin.position.y - 0.02, cabinZ);
+  const pillarGeo = new THREE.BoxGeometry(0.11, cabinH - 0.08, 0.11);
+  for (const side of [-1, 1]) {
+    for (const end of [-1, 1]) {
+      const pillar = new THREE.Mesh(pillarGeo, bodyMat);
+      pillar.position.set(side * 0.82, -0.02, end * (cabinLen / 2 - 0.06));
+      pillar.castShadow = true;
+      cabin.add(pillar);
+    }
+    const sill = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, cabinLen - 0.12), bodyMat);
+    sill.position.set(side * 0.82, -cabinH / 2 + 0.05, 0);
+    cabin.add(sill);
+  }
+
+  const glassFront = new THREE.Mesh(new THREE.PlaneGeometry(1.48, cabinH * 0.74), glassMat);
+  glassFront.position.set(0, -0.015, cabinLen / 2 - 0.035);
+  glassFront.rotation.x = -0.16;
+  const glassRear = new THREE.Mesh(new THREE.PlaneGeometry(1.48, cabinH * 0.68), glassMat);
+  glassRear.position.set(0, -0.015, -cabinLen / 2 + 0.035);
+  glassRear.rotation.y = Math.PI;
+  const glassLeft = new THREE.Mesh(new THREE.PlaneGeometry(cabinLen * 0.76, cabinH * 0.64), glassMat);
+  glassLeft.position.set(-0.79, -0.015, 0);
+  glassLeft.rotation.y = -Math.PI / 2;
+  const glassRight = glassLeft.clone();
+  glassRight.position.x = 0.79;
+  glassRight.rotation.y = Math.PI / 2;
+  cabin.add(glassFront, glassRear, glassLeft, glassRight);
+
+  const dashboard = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.15, 0.42), carbonMat);
+  dashboard.userData.studioName = 'Dashboard';
+  dashboard.position.set(0, lower.position.y + lowerH / 2 + 0.08, 0.76);
+  const seatBackHeight = isSupercar ? 0.25 : 0.38;
+  const seats = [];
+  for (const side of [-1, 1]) {
+    const seat = new THREE.Group();
+    const cushion = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.12, 0.52), carbonMat);
+    cushion.position.set(0, 0.83, -0.26);
+    const back = new THREE.Mesh(new THREE.BoxGeometry(0.48, seatBackHeight, 0.12), carbonMat);
+    back.position.set(0, 0.88 + seatBackHeight / 2, -0.5);
+    seat.add(cushion, back);
+    seat.position.x = side * 0.4;
+    seats.push(seat);
+  }
+  const steeringPivot = new THREE.Group();
+  steeringPivot.userData.studioName = 'Steering assembly';
+  steeringPivot.position.set(-0.42, cabin.position.y - (isSupercar ? 0.12 : 0.16), 0.54);
+  const steeringWheel = new THREE.Mesh(new THREE.TorusGeometry(0.25, 0.035, 8, 20), carbonMat);
+  steeringWheel.userData.studioName = 'Steering wheel';
+  steeringPivot.add(steeringWheel);
+  const steeringHub = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.09, 8), chromeMat);
+  steeringHub.userData.studioName = 'Steering hub';
+  steeringHub.rotation.x = Math.PI / 2;
+  steeringPivot.add(steeringHub);
+  for (let spoke = 0; spoke < 3; spoke++) {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.22, 0.035), chromeMat);
+    bar.userData.studioName = `Steering spoke ${spoke + 1}`;
+    bar.rotation.z = spoke * Math.PI * 2 / 3;
+    steeringPivot.add(bar);
+  }
 
   const grille = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.24, 0.08), carbonMat);
   grille.position.set(0, 0.52, 2.24);
@@ -131,7 +199,7 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
   flameR.position.x = 0.52;
   flameR.visible = false;
 
-  chassis.add(lower, sideSkirtL, sideSkirtR, stripe, cabin, glass, grille, splitter, hlL, hlR, tlL, tlR, diffuser, pipeL, pipeR, flameL, flameR);
+  chassis.add(lower, sideSkirtL, sideSkirtR, stripe, cabin, dashboard, steeringPivot, ...seats, grille, splitter, hlL, hlR, tlL, tlR, diffuser, pipeL, pipeR, flameL, flameR);
 
   if (isCoupe || isSupercar) {
     const wingY = isSupercar ? 1.02 : 1.04;
@@ -157,6 +225,7 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
     [0.98, 0.38, -1.38]
   ].forEach(([wx, wy, wz], idx) => {
     const steerPivot = new THREE.Group();
+    steerPivot.userData.studioName = `${idx < 2 ? 'Front' : 'Rear'} ${idx % 2 === 0 ? 'left' : 'right'} wheel`;
     steerPivot.position.set(wx, wy, wz);
 
     const spinGroup = new THREE.Group();
@@ -177,12 +246,20 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
     wheelSpinners.push(spinGroup);
   });
 
-  return { root, chassis, wheelPivots, wheelSpinners, flameL, flameR, windowMaterial: glassMat, name, isSupercar };
+  return {
+    root, chassis, wheelPivots, wheelSpinners, flameL, flameR, windowMaterial: glassMat,
+    steeringPivot, name, isSupercar, carScale,
+    cameraSeat: new THREE.Vector3(-0.38, isSupercar ? 1.02 : 1.30, 0.12),
+    cameraYaw: yaw + Math.PI, cameraPitch: 0.25, cameraLookIdle: 2, lastCameraYaw: yaw
+  };
 }
 
 export function buildSportsCar(cfg) {
   const { name, x, z, yaw, isSupercar = false } = cfg;
-  const { root, chassis, wheelPivots, wheelSpinners, flameL, flameR, windowMaterial } = buildSportsCarMesh(cfg);
+  const {
+    root, chassis, wheelPivots, wheelSpinners, flameL, flameR, windowMaterial,
+    steeringPivot, carScale, cameraSeat, cameraYaw, cameraPitch, cameraLookIdle, lastCameraYaw
+  } = buildSportsCarMesh(cfg);
   worldRoot.add(root);
 
   const carObj = {
@@ -206,6 +283,13 @@ export function buildSportsCar(cfg) {
     windowMaterial,
     root,
     chassis,
+    carScale,
+    cameraSeat,
+    cameraYaw,
+    cameraPitch,
+    cameraLookIdle,
+    lastCameraYaw,
+    steeringPivot,
     wheelPivots,
     wheelSpinners
   };
@@ -213,7 +297,7 @@ export function buildSportsCar(cfg) {
   return carObj;
 }
 
-export function getNearestVehicle(maxDist = 4.2) {
+export function getNearestVehicle(maxDist = 5.2) {
   let best = null;
   let bestDist = maxDist;
   vehicles.forEach((v, idx) => {
@@ -235,10 +319,17 @@ export function enterVehicle(idx) {
   gameState.isAiming = false;
   inputState.isPrimaryFireHeld = false;
   player.crouching = false;
+  player.yaw = v.yaw + Math.PI;
+  player.pitch = 0;
+  v.lastCameraYaw = v.yaw;
+  v.cameraYaw = v.yaw + Math.PI;
+  v.cameraPitch = 0.25;
+  v.cameraLookIdle = 2;
   v.gearIndex = 2; // Start in 1st Gear
   v.rpm = 1100;
   sfx.shift();
   pushFeed(`ENTERED ${v.name} — [I] UPSHIFT • [K] DOWNSHIFT`, 'border-l-amber-400');
+  hooks.syncMobileControls(true);
   hooks.updateHUD();
 }
 
@@ -250,11 +341,28 @@ export function exitCurrentCar(silent = false) {
   if (v) {
     v.flameL.visible = false;
     v.flameR.visible = false;
-    const exitX = v.x - Math.cos(v.yaw) * 2.1;
-    const exitZ = v.z + Math.sin(v.yaw) * 2.1;
-    player.x = Math.max(-136, Math.min(365, exitX));
-    player.z = Math.max(-172, Math.min(205, exitZ));
-    player.y = Math.max(0.18, v.y + 0.06);
+    const exitDistance = 2.1 * (v.carScale || 1.35);
+    const forwardX = Math.sin(v.yaw);
+    const forwardZ = Math.cos(v.yaw);
+    const candidates = [
+      { x: v.x - Math.cos(v.yaw) * exitDistance, z: v.z + Math.sin(v.yaw) * exitDistance },
+      { x: v.x + Math.cos(v.yaw) * exitDistance, z: v.z - Math.sin(v.yaw) * exitDistance },
+      { x: v.x - forwardX * exitDistance, z: v.z - forwardZ * exitDistance },
+      { x: v.x, y: v.y + 3, z: v.z }
+    ];
+    let exitSpot = null;
+    for (const candidate of candidates) {
+      const candidateY = candidate.y ?? Math.max(0.18, v.y + 0.06);
+      const floorY = computeSupportFloor(candidate.x, candidate.z, candidateY + 0.4, player.radius);
+      if (!collidesHorizontally(candidate.x, candidate.z, floorY, player.height, player.radius)) {
+        exitSpot = { x: candidate.x, y: candidate.y ?? Math.max(floorY, v.y + 0.06), z: candidate.z };
+        break;
+      }
+    }
+    exitSpot ||= { x: v.x, y: Math.max(0.18, v.y + 0.06), z: v.z };
+    player.x = exitSpot.x;
+    player.y = exitSpot.y;
+    player.z = exitSpot.z;
     player.vy = 0;
     player.grounded = true;
     player.peakAirY = player.y;
@@ -263,6 +371,7 @@ export function exitCurrentCar(silent = false) {
   }
   sfx.updateEngine(false, 0, false);
   if (!silent) pushFeed('EXITED VEHICLE', 'border-l-slate-400');
+  hooks.syncMobileControls(true);
   hooks.updateHUD();
 }
 
@@ -403,12 +512,34 @@ export function stepVehicleDriving(dt, elapsed) {
     const nextZ = v.z + v.velZ * dt;
 
     const cfx = Math.sin(v.yaw), cfz = Math.cos(v.yaw);
+    const crx = Math.cos(v.yaw), crz = -Math.sin(v.yaw);
     const carFloor = computeSupportFloor(nextX, nextZ, v.y + 0.65, 0.8);
-    const fFloor = computeSupportFloor(nextX + cfx * 1.7, nextZ + cfz * 1.7, v.y + 0.65, 0.5);
-    const rFloor = computeSupportFloor(nextX - cfx * 1.7, nextZ - cfz * 1.7, v.y + 0.65, 0.5);
-    const gy = Math.max(carFloor, (fFloor + rFloor) * 0.5);
-    v.y = gy > v.y ? gy : v.y + (gy - v.y) * Math.min(1, dt * 14);
-    const tpT = Math.max(-0.5, Math.min(0.5, Math.atan2(fFloor - rFloor, 3.4)));
+    const wheelSupport = (forward, side) => computeSupportFloor(
+      nextX + cfx * forward * v.carScale + crx * side * v.carScale,
+      nextZ + cfz * forward * v.carScale + crz * side * v.carScale,
+      v.y + 0.65,
+      0.42
+    );
+    const frontFloor = (wheelSupport(1.38, -0.98) + wheelSupport(1.38, 0.98)) * 0.5;
+    const rearFloor = (wheelSupport(-1.38, -0.98) + wheelSupport(-1.38, 0.98)) * 0.5;
+    const gy = Math.max(carFloor, frontFloor, rearFloor);
+    const groundY = gy + 0.02;
+    v.vy = v.vy || 0;
+    if (groundY > v.y + 0.08) {
+      v.vy = Math.max(0, v.vy);
+      v.y = groundY;
+    } else if (groundY < v.y) {
+      v.vy -= 19.5 * dt;
+      v.y += v.vy * dt;
+      if (v.y <= groundY) {
+        v.y = groundY;
+        v.vy = 0;
+      }
+    } else {
+      v.vy = 0;
+      v.y = groundY;
+    }
+    const tpT = Math.max(-0.5, Math.min(0.5, Math.atan2(frontFloor - rearFloor, 3.72 * v.carScale)));
     v.terrPitch = (v.terrPitch || 0) + (tpT - (v.terrPitch || 0)) * Math.min(1, dt * 10);
 
     for (const lp of lampPosts) {
@@ -427,7 +558,6 @@ export function stepVehicleDriving(dt, elapsed) {
       }
     }
 
-    const crx = Math.cos(v.yaw), crz = -Math.sin(v.yaw);
     const carHit = (px, pz) => {
       for (let q = 0; q < CAR_PTS.length; q++) {
         if (collidesHorizontally(px + cfx * CAR_PTS[q][0] + crx * CAR_PTS[q][1], pz + cfz * CAR_PTS[q][0] + crz * CAR_PTS[q][1], v.y + 0.25, 1.3, 0.28)) return true;
@@ -476,30 +606,35 @@ export function stepVehicleDriving(dt, elapsed) {
     player.z = v.z;
 
     if (!gameState.thirdPerson) {
-      const seatX = v.x - Math.cos(v.yaw) * 0.35 + Math.sin(v.yaw) * 0.05;
-      const seatZ = v.z + Math.sin(v.yaw) * 0.35 + Math.cos(v.yaw) * 0.05;
-      camera.position.set(seatX, v.y + 1.14, seatZ);
+      let yawStep = v.yaw - (v.lastCameraYaw === undefined ? v.yaw : v.lastCameraYaw);
+      while (yawStep > Math.PI) yawStep -= Math.PI * 2;
+      while (yawStep < -Math.PI) yawStep += Math.PI * 2;
+      player.yaw += yawStep;
+      v.lastCameraYaw = v.yaw;
+      camera.position.copy(v.root.localToWorld(v.cameraSeat.clone()));
       camera.rotation.y = player.yaw;
       camera.rotation.x = player.pitch;
+      v.steeringPivot.rotation.z = -v.steerAngle * 1.7;
     } else {
-      if (Math.abs(v.speed) > 1.5) {
-        const targetRearYaw = v.yaw + Math.PI;
-        let diff = targetRearYaw - player.yaw;
-        while (diff > Math.PI) diff -= Math.PI * 2;
-        while (diff < -Math.PI) diff += Math.PI * 2;
-        player.yaw += diff * Math.min(1, dt * 2.8);
+      v.cameraLookIdle = (v.cameraLookIdle || 0) + dt;
+      if (v.cameraLookIdle > 2) {
+        const followYaw = v.yaw + Math.PI;
+        const yawDelta = Math.atan2(Math.sin(followYaw - v.cameraYaw), Math.cos(followYaw - v.cameraYaw));
+        const followBlend = 1 - Math.exp(-dt * 1.8);
+        v.cameraYaw += yawDelta * followBlend;
+        v.cameraPitch += (0.25 - v.cameraPitch) * followBlend;
       }
-      const aerialDist = 11.4 + Math.min(4.2, Math.abs(v.speed) * 0.085);
-      const aerialHeight = 8.4 + Math.min(2.6, Math.abs(v.speed) * 0.05);
-      const camX = v.x + Math.sin(player.yaw) * aerialDist;
-      const camZ = v.z + Math.cos(player.yaw) * aerialDist;
-      const camY = Math.max(v.y + aerialHeight + Math.sin(-player.pitch) * 4.5, terrainH(camX, camZ) + 1.5);
-      camera.position.set(camX, camY, camZ);
-      camera.lookAt(
-        v.x + Math.sin(v.yaw) * 4.5,
-        v.y + 0.85,
-        v.z + Math.cos(v.yaw) * 4.5
+      const aerialDist = (11.4 * (v.carScale || 1.35)) + Math.min(5.0, Math.abs(v.speed) * 0.085);
+      const horizontalDist = aerialDist * Math.cos(v.cameraPitch);
+      const camX = v.x + Math.sin(v.cameraYaw) * horizontalDist;
+      const camZ = v.z + Math.cos(v.cameraYaw) * horizontalDist;
+      const camY = Math.max(
+        v.y + 1.15 + Math.sin(v.cameraPitch) * aerialDist,
+        terrainH(camX, camZ) + 3.0,
+        2.4
       );
+      camera.position.set(camX, camY, camZ);
+      camera.lookAt(v.x, v.y + 0.95, v.z);
     }
 }
 

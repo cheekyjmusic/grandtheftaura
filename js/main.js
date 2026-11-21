@@ -8,7 +8,7 @@ import { levelData } from './levelData.js';
 import { initEngine, scene, camera, renderer, skyGroup, applyGraphicsTier, resizeRenderer, animatedWaterTex } from './engine.js';
 import { preloadBoundAudio, preloadRegisteredTextures } from './assets.js';
 import { sfx } from './audio.js';
-import { gameState } from './state.js';
+import { gameState, hooks } from './state.js';
 import { buildWorld } from './world.js';
 import { buildSewerRats } from './npcs.js';
 import { syncEquippedMeshes, applyLevelParams } from './player.js';
@@ -28,6 +28,7 @@ function animate(now) {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
   const elapsed = now * 0.001;
+  hooks.syncMobileControls();
 
   if (animatedWaterTex) {
     animatedWaterTex.offset.x = (elapsed * 0.08) % 1;

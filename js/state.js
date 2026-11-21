@@ -1,6 +1,7 @@
 // =============================================================================
 // state.js — Shared game state, player state, input state, collision registries, terrain/collision math and the `hooks` registry.
 // =============================================================================
+import { terrainHeightOffset } from './levelData.js';
 
 export const noop = () => {};
 
@@ -202,7 +203,7 @@ export const WORLD_BOUNDS = Object.freeze({ minX: -556, maxX: 498, minZ: -585, m
 
 export function computeSupportFloor(x, z, footY, radius) {
   if (footY < -1.0) return sewerFloor(x, z);
-  let highest = x >= 368 ? 0.18 : (x >= 164 ? 0.02 : 0.18);
+  let highest = (x >= 368 ? 0.18 : (x >= 164 ? 0.02 : 0.18)) + terrainHeightOffset(x, z);
   if (z < -170 || x < -196) highest = Math.max(highest, terrainH(x, z));
 
   for (let r = 0; r < driveableRamps.length; r++) {
@@ -320,7 +321,7 @@ export function hillsH(x,z){
 
 export function riverX(z){return roadC(z)-72+14*Math.sin(z*.04);}
 
-export function terrainH(x,z){
+export function terrainBaseH(x,z){
   if(x<-196&&x>-560&&z>-172&&z<172) return hillsH(x,z);
   if(z>-170) return -99;
   const t=-170-z, env=sstep(0,120,t);
@@ -332,6 +333,10 @@ export function terrainH(x,z){
   const w=sstep(8,64,Math.abs(x-roadC(z)));
   const hh=roadH(z)*(1-w)+(0.2+m)*w, cv=5*(1-sstep(3,18,Math.abs(x-riverX(z))))*sstep(20,120,t);
   return cv>0.01?Math.max(.3,hh-cv):hh;
+}
+
+export function terrainH(x,z){
+  return terrainBaseH(x,z) + terrainHeightOffset(x, z);
 }
 
 export const SCX=20,SCZ=-30,SFY=-9;

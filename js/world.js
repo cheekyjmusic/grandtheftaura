@@ -2,8 +2,8 @@
 // world.js — Roads, I-88 freeway, desert & alpine/woods/cove biomes, walk-in interiors, skyscrapers, Aura Hills, sewers and the data-driven entity spawner.
 // =============================================================================
 import * as THREE from 'three';
-import { colorToHex, levelData } from './levelData.js';
-import { AHC, SFY, addDriveableRamp, addWorldBox, ahRy, ahRz, ahRzD, aura, aviationBeacons, biomeAt, buildingLods, collidesHorizontally, crime, enterableZones, fbm, gameState, hillsH, hooks, iceZones, isInWater, keys, lampPosts, manholeCovers, manholeHoles, manholeOpen, manholes, mapShapes, pick, player, pushFeed, registerBuildingLod, riverX, rnd, roadC, roadH, sRects, sausageRefillZones, skyscrapers, sstep, terrainH, under, waterZones, worldBoxes } from './state.js';
+import { colorToHex, levelData, terrainHeightOffset } from './levelData.js';
+import { AHC, SFY, addDriveableRamp, addWorldBox, ahRy, ahRz, ahRzD, aura, aviationBeacons, biomeAt, buildingLods, collidesHorizontally, crime, enterableZones, fbm, gameState, hillsH, hooks, iceZones, isInWater, keys, lampPosts, manholeCovers, manholeHoles, manholeOpen, manholes, mapShapes, pick, player, pushFeed, registerBuildingLod, riverX, rnd, roadC, roadH, sRects, sausageRefillZones, skyscrapers, sstep, terrainBaseH, terrainH, under, waterZones, worldBoxes } from './state.js';
 import { camera, makeMat, realWindowGlassMat, regHigh, scene, worldRoot } from './engine.js';
 import { applyEntityColor, applyEntityTexture, applyModelPreset } from './assets.js';
 import { sfx } from './audio.js';
@@ -56,25 +56,68 @@ export function buildWallWithRealWindow(parent, width, height, thick, winW, winH
   return group;
 }
 
+export const sculptableTerrainMeshes = [];
+
+function registerSculptableTerrain(mesh) {
+  const positions = mesh.geometry.attributes.position;
+  mesh.userData.terrainBaseY = Float32Array.from(positions.array.filter((_, index) => index % 3 === 1));
+  const bounds = new THREE.Box3().setFromBufferAttribute(positions);
+  mesh.userData.terrainBounds = {
+    minX: bounds.min.x + mesh.position.x, maxX: bounds.max.x + mesh.position.x,
+    minZ: bounds.min.z + mesh.position.z, maxZ: bounds.max.z + mesh.position.z
+  };
+  mesh.userData.sculptableTerrain = true;
+  sculptableTerrainMeshes.push(mesh);
+  refreshTerrainSculpt(mesh.position.x, mesh.position.z, Infinity, mesh);
+  return mesh;
+}
+
+/** Update visible terrain meshes after a sculpt stroke or undo/redo. */
+export function refreshTerrainSculpt(centerX = null, centerZ = null, radius = Infinity, onlyMesh = null) {
+  const meshes = onlyMesh ? [onlyMesh] : sculptableTerrainMeshes;
+  for (const mesh of meshes) {
+    const positions = mesh.geometry.attributes.position;
+    const baseY = mesh.userData.terrainBaseY;
+    const partial = Number.isFinite(radius);
+    const bounds = mesh.userData.terrainBounds;
+    if (partial && (centerX + radius < bounds.minX - 3 || centerX - radius > bounds.maxX + 3
+      || centerZ + radius < bounds.minZ - 3 || centerZ - radius > bounds.maxZ + 3)) continue;
+    let changed = false;
+    for (let i = 0; i < positions.count; i++) {
+      const x = mesh.position.x + positions.getX(i), z = mesh.position.z + positions.getZ(i);
+      if (partial && Math.hypot(x - centerX, z - centerZ) > radius + 3) continue;
+      positions.setY(i, baseY[i] + terrainHeightOffset(x, z));
+      changed = true;
+    }
+    if (changed) {
+      positions.needsUpdate = true;
+      mesh.geometry.computeVertexNormals();
+      mesh.geometry.computeBoundingSphere();
+    }
+  }
+}
+
+function terrainPlane(width, depth, x, y, z, material) {
+  const geometry = new THREE.PlaneGeometry(width, depth, Math.ceil(width / 2), Math.ceil(depth / 2));
+  geometry.rotateX(-Math.PI / 2);
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.set(x, y, z);
+  mesh.receiveShadow = true;
+  registerSculptableTerrain(mesh);
+  return mesh;
+}
+
 export function buildRoadsFreewayAndDesert() {
   // City Grass Terrain (West & Central Sunnyvale)
-  const cityGround = new THREE.Mesh(
-    new THREE.PlaneGeometry(360, 440),
-    makeMat(0x61a153, { texType: 'grass', repeatX: 52, repeatY: 64, roughness: 0.94 })
+  const cityGround = terrainPlane(
+    360, 440, -16, 0, -30, makeMat(0x61a153, { texType: 'grass', repeatX: 52, repeatY: 64, roughness: 0.94 })
   );
-  cityGround.rotation.x = -Math.PI / 2;
-  cityGround.position.set(-16, 0, -30);
-  cityGround.receiveShadow = true;
   worldRoot.add(cityGround);
 
   // Redrock Desert Terrain (East of I-88 Freeway, x >= 164)
-  const desertGround = new THREE.Mesh(
-    new THREE.PlaneGeometry(260, 460),
-    makeMat(0xd99b52, { texType: 'sand', repeatX: 38, repeatY: 64, roughness: 0.95, bumpScale: 0.02 })
+  const desertGround = terrainPlane(
+    260, 460, 294, 0.02, -10, makeMat(0xd99b52, { texType: 'sand', repeatX: 38, repeatY: 64, roughness: 0.95, bumpScale: 0.02 })
   );
-  desertGround.rotation.x = -Math.PI / 2;
-  desertGround.position.set(294, 0.02, -10);
-  desertGround.receiveShadow = true;
   worldRoot.add(desertGround);
 
   // City Grid Roads: NS [-120, -72, -24, 24, 72, 120] & EW [-168, -120, -72, -24, 24, 72]
@@ -321,6 +364,7 @@ export function buildRedrockDesertBiome() {
     [282, 64], [308, 12], [332, 68], [192, 92], [255, 148]
   ].forEach(([cx, cz], idx) => {
     const cGroup = new THREE.Group();
+    cGroup.userData.studioName = `Saguaro cactus ${idx + 1}`;
     const h = 2.6 + (idx % 3) * 0.55;
     cGroup.position.set(cx, 0.02, cz);
     const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, h, 8), cactusMat);
@@ -987,6 +1031,7 @@ export function buildReserveBank(x, z) {
 
 export function buildSkyscraperBase({ x, z, w = 13.5, d = 13.5, h = 44, glassHex = 0x0ea5e9, frameHex = 0x1e293b, name = 'AURA TOWER', hasHelipad = true }) {
   const group = new THREE.Group();
+  group.userData.studioName = name;
   group.position.set(x, 0.18, z);
 
   const lobbyH = 4.6;
@@ -1205,6 +1250,7 @@ export function buildKnockableLamppost(x, z) {
   const bulbMat = makeMat(0xfef08a, { emissive: 0xfacc15, emissiveIntensity: 0.95 });
 
   const pivot = new THREE.Group();
+  pivot.userData.studioName = 'Streetlight';
   pivot.position.set(x, 0.18, z);
 
   const baseFlange = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 0.14, 10), poleMat);
@@ -1759,6 +1805,11 @@ export function buildNewBiomes() {
     grp.add(m);
     return m;
   };
+  const ground = (x0, x1, z0, z1, y, mat) => {
+    const m = terrainPlane(x1 - x0, z1 - z0, (x0 + x1) / 2, y, (z0 + z1) / 2, mat);
+    grp.add(m);
+    return m;
+  };
   const road = (rx, name) => {
     plane(rx - 6, rx + 6, 74, 208, 0.18, makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 26, roughness: 0.86 }));
     for (let zz = 80; zz < 206; zz += 6) {
@@ -1778,7 +1829,7 @@ export function buildNewBiomes() {
   };
 
   // === FROSTPINE ALPINE (x -134..-52) ===
-  plane(-136, -52, 108, 208, 0.17, makeMat(0xf1f5f9, { roughness: 0.92 }));
+  ground(-136, -52, 108, 208, 0.17, makeMat(0xf1f5f9, { roughness: 0.92 }));
   road(-96, 'Alpine Pass');
   mapShapes.unshift({ x: -94, z: 158, w: 84, d: 100, color: '#e2e8f0', border: '#94a3b8', enterable: false });
   const pineG = [new THREE.ConeGeometry(1.7, 2.2, 7), new THREE.ConeGeometry(1.3, 1.9, 7), new THREE.ConeGeometry(0.9, 1.6, 7)];
@@ -1826,7 +1877,7 @@ export function buildNewBiomes() {
   buildWalkInHouse({ x: -70, z: 139, w: 11, d: 9, wallColor: 0x92400e, roofColor: 0xf8fafc, label: 'FROSTPINE SKI LODGE' });
 
   // === EMERALD WOODS (x -52..28) ===
-  plane(-52, 28, 108, 208, 0.17, makeMat(0x4f8f46, { texType: 'grass', repeatX: 12, repeatY: 16, roughness: 0.95 }));
+  ground(-52, 28, 108, 208, 0.17, makeMat(0x4f8f46, { texType: 'grass', repeatX: 12, repeatY: 16, roughness: 0.95 }));
   road(-24, 'Forest Road');
   mapShapes.unshift({ x: -12, z: 158, w: 80, d: 100, color: '#166534', border: '#14532d', enterable: false });
   const camp = { x: 8, z: 176 };
@@ -1892,7 +1943,7 @@ export function buildNewBiomes() {
   [-1, 1].forEach((s) => mesh(new THREE.BoxGeometry(14, 0.9, 0.12), makeMat(0x78350f, { texType: 'wood' }), -24, 0.7, 150 + s * 2.95, false));
 
   // === SUNSET COVE (x 28..132) ===
-  plane(28, 138, 108, 208, 0.17, makeMat(0xf2d9a0, { texType: 'sand', repeatX: 14, repeatY: 14, roughness: 0.96 }));
+  ground(28, 138, 108, 208, 0.17, makeMat(0xf2d9a0, { texType: 'sand', repeatX: 14, repeatY: 14, roughness: 0.96 }));
   road(72, 'Cove Boulevard');
   mapShapes.unshift({ x: 83, z: 158, w: 110, d: 100, color: '#fcd34d', border: '#f59e0b', enterable: false });
   const sea = plane(28, 138, 168, 208, 0.2, makeMat(0x0ea5e9, { texType: 'water', repeatX: 14, repeatY: 6, roughness: 0.08, metalness: 0.3, transparent: true, opacity: 0.88 }));
@@ -1980,7 +2031,13 @@ export function buildJungleBiome() {
   };
 
   // 1. Lush Mossy Jungle Floor (y = 0.17, matching Alpine/Woods/Cove)
-  plane(368, 498, -140, 200, 0.17, makeMat(0x2d5a27, { texType: 'grass', repeatX: 18, repeatY: 42, roughness: 0.96 }));
+  const groundGeometry = new THREE.PlaneGeometry(130, 340, 65, 170);
+  groundGeometry.rotateX(-Math.PI / 2);
+  const jungleGround = new THREE.Mesh(groundGeometry, makeMat(0x2d5a27, { texType: 'grass', repeatX: 18, repeatY: 42, roughness: 0.96 }));
+  jungleGround.position.set(433, 0.17, 30);
+  jungleGround.receiveShadow = true;
+  registerSculptableTerrain(jungleGround);
+  grp.add(jungleGround);
   mapShapes.unshift({ x: 433, z: 30, w: 130, d: 340, color: '#14532d', border: '#166534', enterable: false });
 
   // 2. Smooth Entry Ramp + Jungle Road extending from Route 66 (z = 40, x = 360 -> 472)
@@ -2317,7 +2374,7 @@ export function buildMountains(){
   const X0=-138,X1=370,Z0=-170,Z1=-590,SX=254,SZ=210;
   const g=new THREE.PlaneGeometry(X1-X0,Z0-Z1,SX,SZ); g.rotateX(-Math.PI/2);
   const p=g.attributes.position, col=new Float32Array(p.count*3), c=new THREE.Color(), c2=new THREE.Color(), stv=SX+1, Hh=new Float32Array(p.count), dx=(X1-X0)/SX, dz=(Z0-Z1)/SZ;
-  for(let i=0;i<p.count;i++){const x=p.getX(i)+(X0+X1)/2, z=p.getZ(i)+(Z0+Z1)/2, h=terrainH(x,z);Hh[i]=h;p.setXYZ(i,x,h-0.1,z);}
+  for(let i=0;i<p.count;i++){const x=p.getX(i)+(X0+X1)/2, z=p.getZ(i)+(Z0+Z1)/2, h=terrainBaseH(x,z);Hh[i]=h;p.setXYZ(i,x,h-0.1,z);}
   for(let i=0;i<p.count;i++){
     const x=p.getX(i), z=p.getZ(i), h=Hh[i], cx=i%stv, cz=(i/stv)|0;
     const il=cx>0?i-1:i, ir=cx<SX?i+1:i, iu=cz>0?i-stv:i, id=cz<SZ?i+stv:i;
@@ -2332,7 +2389,7 @@ export function buildMountains(){
     col[i*3]=c.r;col[i*3+1]=c.g;col[i*3+2]=c.b;
   }
   g.setAttribute('color',new THREE.BufferAttribute(col,3)); g.computeVertexNormals();
-  const mesh=new THREE.Mesh(g,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1})); mesh.receiveShadow=true; worldRoot.add(mesh);
+  const mesh=new THREE.Mesh(g,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1})); mesh.receiveShadow=true; registerSculptableTerrain(mesh); worldRoot.add(mesh);
   // road ribbon + lines
   function ribbon(hw,dy,hex,zs){const pos=[],idx=[];let k=0;
     for(let z=-168;z>=-584;z-=2.5){const cx=roadC(z),tx=roadC(z-1)-cx,len=Math.hypot(tx,1),nx=1/len,nz=-tx/len,y=roadH(z)+dy;
@@ -2413,14 +2470,14 @@ export function buildAuraEstates(){
   // ---- Aura Hills terrain + winding road ----
   {const X0=-560,X1=-196,Z0=-172,Z1=172,N=114,g=new THREE.PlaneGeometry(X1-X0,Z1-Z0,N,N);g.rotateX(-Math.PI/2);
     const p=g.attributes.position,col=new Float32Array(p.count*3),H=new Float32Array(p.count),c=new THREE.Color(),c2=new THREE.Color(),st=N+1,dx=(X1-X0)/N,dz=(Z1-Z0)/N;
-    for(let i=0;i<p.count;i++){const x=p.getX(i)+(X0+X1)/2,z=p.getZ(i)+(Z0+Z1)/2,h=hillsH(x,z);H[i]=h;p.setXYZ(i,x,h-.1,z);}
+    for(let i=0;i<p.count;i++){const x=p.getX(i)+(X0+X1)/2,z=p.getZ(i)+(Z0+Z1)/2,h=terrainBaseH(x,z);H[i]=h;p.setXYZ(i,x,h-.1,z);}
     for(let i=0;i<p.count;i++){const x=p.getX(i),z=p.getZ(i),h=H[i],cx=i%st,cz=(i/st)|0,il=cx>0?i-1:i,ir=cx<N?i+1:i,iu=cz>0?i-st:i,id=cz<N?i+st:i;
       const sl=Math.abs(H[ir]-H[il])/(2*dx)+Math.abs(H[id]-H[iu])/(2*dz),n=fbm(x*.06,z*.06,3);
       c.set(0x5b7d3c).lerp(c2.set(0x8a8f52),n);c.lerp(c2.set(0xa59a76),sstep(40,85,h));
       c.lerp(c2.set(0x4f8a3f),1-sstep(66,100,Math.hypot(x-AHC.px,z-AHC.pz)));
       c.lerp(c2.set(0x76705f),sstep(.35,.75,sl));c.multiplyScalar(.9+.2*n);col[i*3]=c.r;col[i*3+1]=c.g;col[i*3+2]=c.b;}
     g.setAttribute('color',new THREE.BufferAttribute(col,3));g.computeVertexNormals();
-    const tm=new THREE.Mesh(g,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1}));tm.receiveShadow=true;worldRoot.add(tm);
+    const tm=new THREE.Mesh(g,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1}));tm.receiveShadow=true;registerSculptableTerrain(tm);worldRoot.add(tm);
     const pts=[];for(let s=0;s<=274;s+=3){const x=-196-s;pts.push([x,ahRz(x)]);}
     const ribbon=(w,dy,color)=>{const pos=[],idx=[];pts.forEach((q,k)=>{const a=pts[Math.max(0,k-1)],b=pts[Math.min(pts.length-1,k+1)],tx=b[0]-a[0],tz=b[1]-a[1],l=Math.hypot(tx,tz),nx=-tz/l,nz=tx/l,y=ahRy(q[0])+dy;
         pos.push(q[0]+nx*w,y,q[1]+nz*w,q[0]-nx*w,y,q[1]-nz*w);if(k){const i=(k-1)*2;idx.push(i,i+1,i+2,i+1,i+3,i+2);}});
@@ -2553,6 +2610,49 @@ export function buildAuraSkylineAndHighway(){
 // ============================================================================
 /** entity.id -> { entity, object, record }. Studio uses this to move/edit entities live. */
 export const entityObjects = new Map();
+export const studioObjects = new Map();
+const studioObjectBaseTransforms = new Map();
+
+function applyObjectTransform(object, transform) {
+  object.position.fromArray(transform.position);
+  object.rotation.fromArray(transform.rotation);
+  object.scale.fromArray(transform.scale);
+}
+
+function registerStudioObjectTree(root, rootPath, data = levelData) {
+  const visit = (object, path) => {
+    object.userData.studioPath = path;
+    object.userData.studioNamed = Boolean(object.userData.studioName || object.name);
+    if (!object.userData.studioName) object.userData.studioName = object.name || `${object.isMesh ? 'Mesh' : object.type} ${path.split('/').pop()}`;
+    studioObjects.set(path, object);
+    if (!studioObjectBaseTransforms.has(path)) {
+      studioObjectBaseTransforms.set(path, { position: object.position.toArray(), rotation: object.rotation.toArray(), scale: object.scale.toArray() });
+    }
+    const saved = data.worldTransforms && data.worldTransforms[path];
+    if (saved) applyObjectTransform(object, saved);
+    object.children.forEach((child, index) => visit(child, `${path}/${index}`));
+  };
+  visit(root, rootPath);
+}
+
+export function applyStudioWorldTransforms(data = levelData) {
+  for (const [path, object] of studioObjects) {
+    const base = studioObjectBaseTransforms.get(path);
+    if (base) applyObjectTransform(object, base);
+    const saved = data.worldTransforms && data.worldTransforms[path];
+    if (saved) applyObjectTransform(object, saved);
+  }
+}
+
+function registerGeneratedWorldObjects(data = levelData) {
+  studioObjects.clear();
+  let staticIndex = 0;
+  for (const root of worldRoot.children) {
+    if (root.userData.studioSelectable === false) continue;
+    const entityId = root.userData.entityId;
+    registerStudioObjectTree(root, entityId ? `entity:${entityId}` : `static:${staticIndex++}`, data);
+  }
+}
 
 const ENTITY_Y_OFFSET = { pickup: 0.55 };
 
@@ -2562,7 +2662,7 @@ function tagEntity(root, id) {
 }
 
 function applyEntityLook(object, entity) {
-  if (entity.color && entity.type !== 'vehicle' && entity.type !== 'block' && entity.type !== 'prop' && entity.type !== 'ramp') applyEntityColor(object, entity.color);
+  if (entity.color && entity.type !== 'vehicle' && entity.type !== 'block' && entity.type !== 'prop' && entity.type !== 'ramp' && entity.type !== 'building' && entity.type !== 'road') applyEntityColor(object, entity.color);
   if (entity.texture) applyEntityTexture(object, entity.texture, (entity.texRepeat || [1, 1])[0], (entity.texRepeat || [1, 1])[1]);
 }
 
@@ -2587,6 +2687,64 @@ function makePrimitiveMesh(shape, color, fallback) {
   const m = new THREE.Mesh(geo, makeMat(colorToHex(color, fallback), { roughness: 0.8 }));
   m.castShadow = true; m.receiveShadow = true;
   return m;
+}
+
+function makeBuildingMesh(entity) {
+  const building = entity.building || {};
+  const width = THREE.MathUtils.clamp(Number(building.width) || 12, 2, 200);
+  const depth = THREE.MathUtils.clamp(Number(building.depth) || 10, 2, 200);
+  const height = THREE.MathUtils.clamp(Number(building.height) || 12, 2, 300);
+  const wallMat = makeMat(colorToHex(entity.color, 0x64748b), { texType: 'concrete', roughness: 0.82 });
+  const trimMat = makeMat(colorToHex(building.roofColor, 0x1e293b), { metalness: 0.35, roughness: 0.55 });
+  const windowColor = colorToHex(building.windowColor, 0x7dd3fc);
+  const glassMat = new THREE.MeshStandardMaterial({ color: windowColor, emissive: windowColor, emissiveIntensity: 0.12, metalness: 0.2, roughness: 0.25 });
+  const root = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), wallMat);
+  body.userData.studioName = 'Building body';
+  body.position.y = height / 2;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  root.add(body);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(width + 0.5, 0.35, depth + 0.5), trimMat);
+  roof.userData.studioName = 'Roof';
+  roof.position.y = height + 0.17;
+  roof.castShadow = true;
+  root.add(roof);
+
+  const floors = Math.min(20, Math.max(1, Math.floor(height / 3.2)));
+  const columns = Math.min(8, Math.max(1, Math.floor(width / 2.8)));
+  const windowW = Math.min(1.35, width / (columns * 2.2));
+  const windowH = Math.min(1.45, Math.max(0.55, height / (floors * 2.1)));
+  for (let floor = 0; floor < floors; floor++) {
+    const y = (floor + 0.55) * height / floors;
+    for (let column = 0; column < columns; column++) {
+      const x = (column + 0.5) * width / columns - width / 2;
+      for (const side of [-1, 1]) {
+        const window = new THREE.Mesh(new THREE.BoxGeometry(windowW, windowH, 0.06), glassMat);
+        window.userData.studioName = `Window ${floor + 1}-${column + 1}-${side < 0 ? 'back' : 'front'}`;
+        window.position.set(x, y, side * (depth / 2 + 0.035));
+        root.add(window);
+      }
+    }
+  }
+  return root;
+}
+
+function makeRoadMesh(entity) {
+  const road = entity.road || {};
+  const width = THREE.MathUtils.clamp(Number(road.width) || 24, 2, 500);
+  const depth = THREE.MathUtils.clamp(Number(road.depth) || 12, 2, 500);
+  const root = new THREE.Group();
+  const surface = new THREE.Mesh(new THREE.BoxGeometry(width, 0.12, depth), makeMat(colorToHex(entity.color, 0x313946), { texType: 'asphalt', roughness: 0.88 }));
+  surface.position.y = 0.06;
+  surface.receiveShadow = true;
+  root.add(surface);
+  if (road.markings !== false) {
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.025, depth * 0.78), new THREE.MeshBasicMaterial({ color: 0xfacc15 }));
+    stripe.position.set(0, 0.13, 0);
+    root.add(stripe);
+  }
+  return root;
 }
 
 /**
@@ -2648,6 +2806,23 @@ else {
 }
 break;
     }
+    case 'building': {
+object = makeBuildingMesh(entity);
+object.position.set(x, y, z); object.rotation.set(rot[0], rot[1], rot[2]); object.scale.set(scale[0], scale[1], scale[2]);
+worldRoot.add(object);
+if (register) {
+  object.updateMatrixWorld(true);
+  const bounds = new THREE.Box3().setFromObject(object);
+  record = addWorldBox(bounds.min.x, bounds.max.x, bounds.min.y, bounds.max.y, bounds.min.z, bounds.max.z, 'entity_building', true);
+}
+break;
+    }
+    case 'road': {
+object = makeRoadMesh(entity);
+object.position.set(x, y, z); object.rotation.set(rot[0], rot[1], rot[2]); object.scale.set(scale[0], scale[1], scale[2]);
+worldRoot.add(object);
+break;
+    }
     case 'ramp': {
 object = makeRampMesh(entity.color);
 object.position.set(x, y, z); object.rotation.set(rot[0], rot[1], rot[2]); object.scale.set(scale[0], scale[1], scale[2]);
@@ -2688,7 +2863,9 @@ return { object: null, record: null };
   }
 
   applyEntityLook(object, entity);
+  object.userData.studioName = object.userData.studioName || entity.name;
   tagEntity(object, entity.id);
+  registerStudioObjectTree(object, `entity:${entity.id}`);
   entityObjects.set(entity.id, { entity, object, record });
   return { object, record };
 }
@@ -2702,6 +2879,10 @@ export function removeEntityObject(id) {
   const rec = entityObjects.get(id);
   if (!rec) return;
   if (rec.object && rec.object.parent) rec.object.parent.remove(rec.object);
+  for (const path of studioObjects.keys()) if (path === `entity:${id}` || path.startsWith(`entity:${id}/`)) {
+    studioObjects.delete(path);
+    studioObjectBaseTransforms.delete(path);
+  }
   entityObjects.delete(id);
 }
 
@@ -2727,6 +2908,8 @@ export function revealAllLods() {
  * Used identically by index.html (register=true) and studio.html (register=false).
  */
 export function buildWorld(data = levelData, { register = true, afterStatic = null } = {}) {
+  sculptableTerrainMeshes.length = 0;
+  studioObjects.clear();
   buildRoadsFreewayAndDesert();
   buildRedrockDesertBiome();
   buildNewBiomes();
@@ -2739,6 +2922,7 @@ export function buildWorld(data = levelData, { register = true, afterStatic = nu
   buildAuraEstates();
   buildAuraSkylineAndHighway();
   buildCriminalHideout();
+  registerGeneratedWorldObjects(data);
 }
 
 // Register late-bound implementations for lower layers (see state.js).

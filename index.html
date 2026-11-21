@@ -26,11 +26,9 @@
     #loading-progress { transition: width .25s ease; }
     #ps3-filter { position:fixed; inset:0; z-index:4; pointer-events:none; opacity:.18; mix-blend-mode:soft-light;
       background:repeating-linear-gradient(0deg,rgba(255,255,255,.10) 0 1px,rgba(0,0,0,.16) 1px 3px),radial-gradient(ellipse at center,transparent 62%,rgba(5,8,14,.30) 100%); }
-    #orientation-lock { display:none; position:fixed; inset:0; z-index:100; align-items:center; justify-content:center; text-align:center; background:#090b0f; }
     #wasted-screen { display:none; }
     #hud, #vehicle-hud, #ammo-hud-card, #sniper-scope, #npc-dialogue, #pause-menu, #settings-menu, #inventory-menu, #radial-menu, #map-modal, #error-banner { display:none; }
     .menu-btn, .menu-btn-primary, .glass-panel, .glass-panel-amber { font-variant-numeric:tabular-nums; }
-    @media (orientation:portrait) and (max-width:900px) { #orientation-lock { display:flex; } }
   </style>
 </head>
 <body class="menu-active">
@@ -42,7 +40,7 @@
       <div id="loading-percent" class="mt-2 font-display text-sm text-slate-200">0%</div>
     </div>
   </div>
-  <div id="orientation-lock" aria-live="polite"><div><div style="font-size:54px">&#8635;</div><div class="font-display text-3xl uppercase text-amber-300 mt-4">Rotate to Play</div><p class="text-sm text-slate-300 mt-2">Grand Theft Aura is designed for landscape mode.</p></div></div>
+  <div id="orientation-lock" aria-live="polite"><div><div class="rotate-icon" aria-hidden="true">&#8635;</div><div class="font-display text-3xl uppercase text-amber-300 mt-4">Rotate to Play</div><p class="text-sm text-slate-300 mt-2">Grand Theft Aura is designed for landscape mode.</p></div></div>
   <!-- Fullscreen 3D WebGL Canvas -->
   <canvas id="game-canvas"></canvas>
   <div id="ps3-filter" aria-hidden="true"></div>
@@ -263,7 +261,7 @@
       </div>
 
       <!-- Compact Watch Strap Keybind Strip -->
-      <div class="glass-panel px-3 py-1 flex items-center gap-2 text-[9px] font-tactical font-bold uppercase text-slate-300">
+      <div id="watch-keybind-strip" class="glass-panel px-3 py-1 flex items-center gap-2 text-[9px] font-tactical font-bold uppercase text-slate-300">
         <span>[C] CROUCH</span>
         <span>[G] PICKPOCKET</span>
         <span class="text-white/25">&bull;</span>
@@ -380,7 +378,7 @@
           <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold">SIMULATION PAUSED</div>
           <h2><img src="assets/images/title.png" alt="Grand Theft Aura" class="w-[220px] max-w-full h-auto object-contain mt-1" /></h2>
         </div>
-        <span class="text-xs font-tactical text-slate-400 border border-white/15 rounded px-2 py-0.5">[TAB]</span>
+        <span id="pause-key-hint" class="text-xs font-tactical text-slate-400 border border-white/15 rounded px-2 py-0.5">[TAB]</span>
       </div>
 
       <div class="flex flex-col gap-2.5">

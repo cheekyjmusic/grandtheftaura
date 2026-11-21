@@ -12,7 +12,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
 import {
   levelData, DEFAULT_LEVEL_DATA, replaceLevelData, saveLevelData, clearSavedLevelData,
-  makeEntity, nextEntityId, PREFABS, colorToHex, hexToCss
+  makeEntity, nextEntityId, PREFABS, colorToHex, hexToCss, sculptTerrain
 } from '../levelData.js';
 import { initEngine, scene, renderer, camera as gameCamera, worldRoot, skyGroup, applyGraphicsTier, onViewportResize, getViewportSize } from '../engine.js';
 import {
@@ -22,7 +22,8 @@ import {
 import { sfx } from '../audio.js';
 import { RIGHT_WEAPONS, buildRightWeaponMesh } from '../items.js';
 import { buildSportsCarMesh } from '../vehicles.js';
-import { buildWorld, createEntityObject, entityObjects, removeEntityObject, updateEntityTransform, revealAllLods } from '../world.js';
+import { buildWorld, createEntityObject, entityObjects, studioObjects, applyStudioWorldTransforms, removeEntityObject, updateEntityTransform, revealAllLods, sculptableTerrainMeshes, refreshTerrainSculpt } from '../world.js';
+import { terrainBaseH } from '../state.js';
 import { buildNpcMesh } from '../npcs.js';
 import { buildPlayerRigMesh } from '../player.js';
 
@@ -84,7 +85,7 @@ const AUDIO_EVENTS = [
   ['hotdogFire', 'Hotdog fire'], ['batSwing', 'Bat / weapon swing'], ['punch', 'Punch'],
   ['pickup', 'Pickup'], ['carHorn', 'Car horn'], ['engineLoop', 'Engine loop'], ['bgMusic', 'Background music']
 ];
-const ENTITY_GLYPH = { vehicle: '◢', pickup: '◇', crate: '▣', barrel: '◍', ramp: '◿', block: '■', prop: '●' };
+const ENTITY_GLYPH = { vehicle: '◢', pickup: '◇', crate: '▣', barrel: '◍', ramp: '◿', block: '■', prop: '●', building: '▥', road: '═' };
 
 // -----------------------------------------------------------------------------
 // Studio state
@@ -96,14 +97,17 @@ const state = {
   tabs: [],                   // viewport tabs
   activeTab: 'world',
   collapsed: new Set(),
+  expanded: new Set(),
   query: '',
   rmbDown: false,
+  lookDragging: false,
+  sculpting: false,
   keys: new Set(),
   savedJson: '',
   worldReady: false
 };
 
-let cam, controls, transform, boxHelper, stage, raycaster;
+let cam, controls, transform, boxHelper, stage, raycaster, brushPreview;
 let worldBackground = null, worldFog = null, skyWasVisible = false;
 
 // -----------------------------------------------------------------------------
@@ -129,6 +133,8 @@ function applySnapshot(json) {
   replaceLevelData(JSON.parse(json));
   history.present = json;
   rebuildEntities();
+  applyStudioWorldTransforms(levelData);
+  refreshTerrainSculpt();
   rebuildOpenTabs();
   refreshAssetPanel();
   if (keepSel && keepSel.kind === 'entity' && !levelData.entities.find((e) => e.id === keepSel.id)) select(null);
@@ -355,18 +361,41 @@ function selectedObject() {
     return null;
   }
   if (s.kind === 'entity') { const rec = entityObjects.get(s.id); return rec ? rec.object : null; }
+  if (s.kind === 'worldObject' || s.kind === 'worldPart') return s.object;
   return null;
+}
+
+function saveWorldObjectTransform(key, object) {
+  if (!key || !object) return;
+  if (!levelData.worldTransforms || typeof levelData.worldTransforms !== 'object') levelData.worldTransforms = {};
+  levelData.worldTransforms[key] = {
+    position: object.position.toArray(),
+    rotation: object.rotation.toArray(),
+    scale: object.scale.toArray()
+  };
 }
 
 function select(sel, { silent = false } = {}) {
   state.selection = sel;
+  if (sel && (sel.kind === 'worldObject' || sel.kind === 'worldPart')) {
+    const path = sel.key || sel.object?.userData.studioPath || '';
+    if (path.startsWith('entity:')) state.expanded.add('f:ws');
+    if (path.startsWith('static:')) state.expanded.add('f:generated');
+    const parts = path.split('/');
+    let parentPath = parts[0];
+    for (const part of parts.slice(1)) {
+      state.expanded.add(`world-node:${parentPath}`);
+      state.collapsed.delete(`world-node:${parentPath}`);
+      parentPath += '/' + part;
+    }
+  }
   attachGizmo();
   if (!silent) { refreshExplorer(); renderInspector(); }
 }
 
 function attachGizmo() {
   const obj = selectedObject();
-  if (obj && state.tool !== 'select') {
+  if (obj && ['translate', 'rotate', 'scale'].includes(state.tool)) {
     transform.attach(obj);
     transform.setMode(state.tool);
     transform.getHelper().visible = true;
@@ -402,7 +431,7 @@ function pointInFrontOfCamera() {
   return p;
 }
 
-const GROUND_Y = { vehicle: 0.12, pickup: 0.18, crate: 0.18, barrel: 0.18, ramp: 0 };
+const GROUND_Y = { vehicle: 0.12, pickup: 0.18, crate: 0.18, barrel: 0.18, ramp: 0, building: 0, road: 0 };
 
 function addEntity(entity, { select: doSelect = true } = {}) {
   levelData.entities.push(entity);
@@ -458,27 +487,37 @@ function focusSelection() {
   const sphere = box.getBoundingSphere(new THREE.Sphere());
   const dist = Math.max(sphere.radius / Math.sin(THREE.MathUtils.degToRad(cam.fov / 2)) * 1.25, 1.5);
   const dir = cam.position.clone().sub(controls.target).normalize();
+  if (dir.lengthSq() < 0.001) dir.set(0.75, 0.45, 1).normalize();
   controls.target.copy(sphere.center);
   cam.position.copy(sphere.center).addScaledVector(dir, dist);
   controls.update();
 }
 
+function navigateTo(x, y, z, distance) {
+  if (state.activeTab !== 'world') setActiveTab('world');
+  const target = new THREE.Vector3(x, y, z);
+  const direction = new THREE.Vector3(0.75, 0.62, 1).normalize();
+  controls.target.copy(target);
+  cam.position.copy(target).addScaledVector(direction, distance);
+  controls.update();
+  saveCameraToTab(activeTab());
+}
+
 function flyUpdate(dt) {
   const k = state.keys;
   const worldTab = state.activeTab === 'world';
-  let f = 0, r = 0, u = 0;
-  if (k.has('ArrowUp') || (state.rmbDown && k.has('KeyW'))) f += 1;
-  if (k.has('ArrowDown') || (state.rmbDown && k.has('KeyS'))) f -= 1;
-  if (k.has('ArrowRight') || (state.rmbDown && k.has('KeyD'))) r += 1;
-  if (k.has('ArrowLeft') || (state.rmbDown && k.has('KeyA'))) r -= 1;
-  if (state.rmbDown && k.has('KeyE')) u += 1;
-  if (state.rmbDown && k.has('KeyQ')) u -= 1;
-  if (!f && !r && !u) return;
+  const workspaceFocused = document.activeElement === $('#studio-canvas');
+  let f = 0, r = 0;
+  if (workspaceFocused && (k.has('ArrowUp') || k.has('KeyW'))) f += 1;
+  if (workspaceFocused && (k.has('ArrowDown') || k.has('KeyS'))) f -= 1;
+  if (workspaceFocused && (k.has('ArrowRight') || k.has('KeyD'))) r += 1;
+  if (workspaceFocused && (k.has('ArrowLeft') || k.has('KeyA'))) r -= 1;
+  if (!f && !r) return;
   const speed = (worldTab ? 28 : 3.5) * (k.has('ShiftLeft') || k.has('ShiftRight') ? 3.2 : 1) * dt;
   const fwd = new THREE.Vector3();
   cam.getWorldDirection(fwd);
   const right = new THREE.Vector3().crossVectors(fwd, cam.up).normalize();
-  const move = new THREE.Vector3().addScaledVector(fwd, f * speed).addScaledVector(right, r * speed).addScaledVector(cam.up, u * speed);
+  const move = new THREE.Vector3().addScaledVector(fwd, f * speed).addScaledVector(right, r * speed);
   cam.position.add(move);
   controls.target.add(move);
 }
@@ -486,16 +525,52 @@ function flyUpdate(dt) {
 // -----------------------------------------------------------------------------
 // Picking
 // -----------------------------------------------------------------------------
-function pick(ev) {
+function terrainHitAtEvent(event) {
+  const rect = $('#studio-canvas').getBoundingClientRect();
+  raycaster.setFromCamera(new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1), cam);
+  return raycaster.intersectObjects(sculptableTerrainMeshes, false)[0] || null;
+}
+
+function updateBrushPreview(event) {
+  if (!brushPreview) return;
+  if (state.activeTab !== 'world' || state.tool !== 'sculpt') { brushPreview.visible = false; return; }
+  const hit = terrainHitAtEvent(event);
+  if (!hit) { brushPreview.visible = false; return; }
+  const radius = Number($('#sculpt-size').value);
+  if (brushPreview.userData.radius !== radius) {
+    brushPreview.geometry.dispose();
+    brushPreview.geometry = new THREE.RingGeometry(Math.max(0.1, radius - 0.16), radius, 48);
+    brushPreview.geometry.rotateX(-Math.PI / 2);
+    brushPreview.userData.radius = radius;
+  }
+  brushPreview.position.set(hit.point.x, hit.point.y + 0.12, hit.point.z);
+  brushPreview.visible = true;
+}
+
+function pick(ev, { part = false } = {}) {
   const rect = $('#studio-canvas').getBoundingClientRect();
   const ndc = new THREE.Vector2(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
   raycaster.setFromCamera(ndc, cam);
   const tab = activeTab();
   if (tab.id === 'world') {
-    const roots = [...entityObjects.values()].map((r) => r.object).filter(Boolean);
-    const hits = raycaster.intersectObjects(roots, true);
-    const hit = hits.find((x) => x.object.userData.entityId);
-    if (hit) { select({ kind: 'entity', id: hit.object.userData.entityId }); return; }
+    const hits = raycaster.intersectObjects(worldRoot.children, true);
+    for (const hit of hits) {
+      let root = hit.object;
+      let blocked = false;
+      while (root && root !== worldRoot) {
+        if (root.userData.studioSelectable === false) blocked = true;
+        if (root.parent === worldRoot) break;
+        root = root.parent;
+      }
+      if (blocked || !root || root === worldRoot) continue;
+      const entityId = root.userData.entityId;
+      if (part && hit.object !== root) {
+        const object = hit.object;
+        select({ kind: 'worldPart', object, key: object.userData.studioPath, name: object.userData.studioName || object.name || 'Model part' });
+      } else if (entityId) select({ kind: 'entity', id: entityId });
+      else select({ kind: 'worldObject', object: root, key: root.userData.studioPath, name: root.userData.studioName || root.name || 'Map object' });
+      return;
+    }
     select(null);
   } else {
     const hits = raycaster.intersectObject(tab.pivot, true);
@@ -568,6 +643,7 @@ function triple(arr, { step = 0.1, convert = null } = {}, after = () => {}) {
   });
   const wrap = h('div', { class: 'inline' }, ...['X', 'Y', 'Z'].map((ax, i) => h('div', { class: 'xyz' }, h('span', {}, ax), inputs[i])));
   wrap._inputs = inputs;
+  wrap._values = arr;
   return wrap;
 }
 
@@ -607,6 +683,7 @@ function renderInspector() {
   const s = state.selection;
   if (!s) { setInspector('Properties', h('p', { class: 'empty' }, 'Select something in the viewport or the Explorer to edit it.')); return; }
   if (s.kind === 'entity') return renderEntityInspector(entityOf(s.id));
+  if (s.kind === 'worldObject' || s.kind === 'worldPart') return renderWorldObjectInspector(s);
   if (s.kind === 'model') return renderModelInspector(s.id);
   if (s.kind === 'audio') return renderAudioInspector();
   if (s.kind === 'param') return renderParamInspector(s.key);
@@ -620,6 +697,34 @@ function afterEntityEdit(entity, { structural = true } = {}) {
     attachGizmo();
   };
   if (structural) scheduleRebuild(redo);
+}
+
+function renderWorldObjectInspector(selection) {
+  const object = selection.object;
+  if (!object) { setInspector('Properties'); return; }
+  const key = selection.key || object.userData.studioPath;
+  const pos = triple(object.position.toArray(), { step: 0.1 }, () => {
+    object.position.fromArray(posValues);
+    saveWorldObjectTransform(key, object);
+    if (boxHelper.visible) boxHelper.update();
+  });
+  const posValues = pos._values;
+  const rot = triple(object.rotation.toArray(), { step: 5, convert: { to: deg, from: rad } }, () => {
+    object.rotation.fromArray(rotValues);
+    saveWorldObjectTransform(key, object);
+    if (boxHelper.visible) boxHelper.update();
+  });
+  const rotValues = rot._values;
+  const scale = triple(object.scale.toArray(), { step: 0.1 }, () => {
+    object.scale.fromArray(scaleValues);
+    saveWorldObjectTransform(key, object);
+    if (boxHelper.visible) boxHelper.update();
+  });
+  const scaleValues = scale._values;
+  inspectorRefs.transform = { pos, rot, scl: scale, object };
+  setInspector(`World object — ${selection.name}`,
+    group('Transform', row('Position', pos), row('Rotation °', rot), row('Scale', scale)),
+    h('p', { class: 'note' }, selection.kind === 'worldPart' ? 'This part belongs to its parent model. Its local transform is saved with the level.' : 'This generated map model and its parts are editable and saved with the level.'));
 }
 
 function renderEntityInspector(entity) {
@@ -662,6 +767,20 @@ function renderEntityInspector(entity) {
     nodes.push(group('Prop',
       row('Shape', selectField([['box', 'Box'], ['cylinder', 'Cylinder'], ['sphere', 'Sphere'], ['cone', 'Cone']], entity.prop.shape, (v) => { entity.prop.shape = v; afterEntityEdit(entity); commit(); })),
       row('Solid (collides)', checkField(entity.prop, 'solid'))));
+  } else if (entity.type === 'building') {
+    entity.building = entity.building || { width: 12, depth: 10, height: 12, roofColor: '#1e293b', windowColor: '#7dd3fc' };
+    nodes.push(group('Building dimensions',
+      row('Width (m)', numField(entity.building, 'width', { step: 1, min: 2, max: 200 }, () => afterEntityEdit(entity))),
+      row('Depth (m)', numField(entity.building, 'depth', { step: 1, min: 2, max: 200 }, () => afterEntityEdit(entity))),
+      row('Height (m)', numField(entity.building, 'height', { step: 1, min: 2, max: 300 }, () => afterEntityEdit(entity))),
+      row('Roof color', colorField(entity.building, 'roofColor', { fallback: '#1e293b' }, () => afterEntityEdit(entity))),
+      row('Window color', colorField(entity.building, 'windowColor', { fallback: '#7dd3fc' }, () => afterEntityEdit(entity)))));
+  } else if (entity.type === 'road') {
+    entity.road = entity.road || { width: 24, depth: 12, markings: true };
+    nodes.push(group('Road dimensions',
+      row('Width (m)', numField(entity.road, 'width', { step: 1, min: 2, max: 500 }, () => afterEntityEdit(entity))),
+      row('Length (m)', numField(entity.road, 'depth', { step: 1, min: 2, max: 500 }, () => afterEntityEdit(entity))),
+      row('Center marking', checkField(entity.road, 'markings', () => afterEntityEdit(entity)))));
   }
   if (entity.type === 'ramp') nodes.push(h('p', { class: 'note' }, 'Ramps rise toward their local +Z. Scale X / Y / Z = width / height / length. In-game ramps follow the nearest 90° heading.'));
 
@@ -690,7 +809,11 @@ function syncInspectorTransform() {
   const r = inspectorRefs.transform;
   if (!r) return;
   const set = (wrap, arr, conv) => wrap._inputs.forEach((el, i) => { if (document.activeElement !== el) el.value = fmt(conv ? conv(arr[i]) : arr[i]); });
-  set(r.pos, r.entity.pos); set(r.rot, r.entity.rot, deg); set(r.scl, r.entity.scale);
+  if (r.object) {
+    set(r.pos, r.object.position.toArray()); set(r.rot, r.object.rotation.toArray(), deg); set(r.scl, r.object.scale.toArray());
+  } else {
+    set(r.pos, r.entity.pos); set(r.rot, r.entity.rot, deg); set(r.scl, r.entity.scale);
+  }
 }
 
 // ---- models ----
@@ -770,7 +893,13 @@ function renderAudioInspector() {
 // ---- parameters ----
 function renderParamInspector(key) {
   const P = levelData.params;
-  if (key === 'player') {
+  if (key === 'terrain') {
+    const count = Object.keys(levelData.terrain.heights || {}).length;
+    setInspector('World Editing — Terrain',
+      group('Sculpt brush', h('p', { class: 'note' }, 'Choose Sculpt in the top toolbar, select Raise, Lower, or Smooth, then drag over any ground surface. Brush edits are saved with the level and affect gameplay terrain collision.'),
+        h('p', { class: 'note' }, `Terrain height cells: ${count.toLocaleString()}`),
+        h('div', { class: 'btnrow' }, h('button', { class: 'small', onclick: () => { if (!count) return; levelData.terrain.heights = {}; refreshTerrainSculpt(); commit(); renderInspector(); toast('Terrain sculpt cleared.', 'ok'); } }, 'Clear terrain sculpt'))));
+  } else if (key === 'player') {
     setInspector('Game Parameters — Player Stats',
       group('Player',
         row('Max HP', numField(P.player, 'maxHp', { step: 1, min: 1 })),
@@ -805,8 +934,32 @@ function renderParamInspector(key) {
 // -----------------------------------------------------------------------------
 // Explorer
 // -----------------------------------------------------------------------------
+function objectTreeNode(object) {
+  const key = object.userData.studioPath;
+  if (!key) return null;
+  const entityId = object.parent === worldRoot ? object.userData.entityId : null;
+  const entityRoot = entityId && entityObjects.get(entityId)?.object === object;
+  const kind = entityRoot ? 'entity' : object.parent === worldRoot ? 'worldObject' : 'worldPart';
+  const name = object.userData.studioName || object.name || 'Object';
+  const children = object.children.filter((child) => child.userData.studioSelectable !== false).map(objectTreeNode).filter(Boolean);
+  return {
+    id: `world-node:${key}`, label: name, glyph: entityRoot ? (ENTITY_GLYPH[entityOf(entityId)?.type] || '•') : '▣',
+    folder: children.length > 0, defaultCollapsed: children.length > 0,
+    sel: entityRoot ? { kind: 'entity', id: entityId } : { kind, object, key, name },
+    children
+  };
+}
+
 function treeData() {
   const P = levelData.params;
+  const entities = levelData.entities.map((entity) => {
+    const record = entityObjects.get(entity.id);
+    return record ? objectTreeNode(record.object) : null;
+  }).filter(Boolean);
+  let selectedStaticRoot = state.selection?.kind === 'worldObject' || state.selection?.kind === 'worldPart' ? state.selection.object : null;
+  while (selectedStaticRoot && selectedStaticRoot.parent !== worldRoot) selectedStaticRoot = selectedStaticRoot.parent;
+  if (selectedStaticRoot?.userData.entityId) selectedStaticRoot = null;
+  const generated = worldRoot.children.filter((object) => object.parent === worldRoot && object.userData.studioPath?.startsWith('static:') && (object.userData.studioNamed || (object.isGroup && object.children.length > 1) || object === selectedStaticRoot)).map(objectTreeNode).filter(Boolean);
   return [
     { id: 'f:models', label: 'Models', folder: true, children: MODELS.map((m) => ({ id: 'model:' + m.id, label: m.name, glyph: m.glyph, sel: { kind: 'model', id: m.id }, open: () => openModelTab(m.id) })) },
     { id: 'f:audio', label: 'Audio Bindings', folder: true, children: [{ id: 'audio', label: 'Sound events', glyph: '♪', sel: { kind: 'audio' } }] },
@@ -815,53 +968,55 @@ function treeData() {
       { id: 'param:vehicles', label: 'Vehicle Gear Speeds', glyph: '⚙', sel: { kind: 'param', key: 'vehicles' } },
       { id: 'f:weapons', label: 'Weapons', folder: true, sel: { kind: 'param', key: 'weapons' }, children: Object.keys(P.weapons).map((w) => ({ id: 'weapon:' + w, label: (RIGHT_WEAPONS[w] && RIGHT_WEAPONS[w].name) || w, glyph: '╾', sel: { kind: 'param', key: 'weapon:' + w } })) }
     ] },
-    { id: 'f:ws', label: `Workspace Entities (${levelData.entities.length})`, folder: true, children: levelData.entities.map((e) => ({ id: 'entity:' + e.id, label: e.name, glyph: ENTITY_GLYPH[e.type] || '•', sel: { kind: 'entity', id: e.id }, open: () => openEntityTab(e.id) })) }
+    { id: 'f:world', label: 'World Editing', folder: true, children: [
+      { id: 'param:terrain', label: 'Terrain Sculpt', glyph: '◒', sel: { kind: 'param', key: 'terrain' } },
+      { id: 'f:ws', label: `Map Objects (${levelData.entities.length})`, folder: true, children: entities },
+      { id: 'f:generated', label: `Generated Map (${generated.length})`, folder: true, defaultCollapsed: true, children: generated }
+    ] }
   ];
 }
 
-const selKey = (s) => (!s ? '' : s.kind === 'entity' ? 'entity:' + s.id : s.kind === 'model' ? 'model:' + s.id : s.kind === 'audio' ? 'audio' : s.kind === 'param' ? (s.key.startsWith('weapon:') ? s.key : 'param:' + s.key) : '');
+const selKey = (s) => (!s ? '' : s.kind === 'entity' ? `world-node:entity:${s.id}` : s.kind === 'worldObject' || s.kind === 'worldPart' ? `world-node:${s.key || s.object?.userData.studioPath}` : s.kind === 'model' ? 'model:' + s.id : s.kind === 'audio' ? 'audio' : s.kind === 'param' ? (s.key.startsWith('weapon:') ? s.key : 'param:' + s.key) : '');
 
 function refreshExplorer({ keepScroll = true } = {}) {
   const tree = $('#explorer-tree');
   const top = tree.scrollTop;
   const q = state.query.trim().toLowerCase();
   const out = [];
+  const isOpen = (node) => q || state.expanded.has(node.id) || (!node.defaultCollapsed && !state.collapsed.has(node.id));
   const visit = (nodes, depth) => {
     let any = false;
-    for (const n of nodes) {
-      if (n.folder) {
-        const kids = [];
-        const sub = [];
-        // collect children first to know whether anything matches
+    for (const node of nodes) {
+      if (node.folder) {
+        const open = isOpen(node);
         const before = out.length;
-        out.push(null); // placeholder for the folder row
-        const hit = visit(n.children, depth + 1);
-        const match = !q || n.label.toLowerCase().includes(q) || hit;
-        if (match) {
-          const open = q ? true : !state.collapsed.has(n.id);
-          out[before] = { n, depth, open };
-          if (!open) out.length = before + 1;
-        } else out.length = before;
+        out.push({ n: node, depth, open });
+        let hit = false;
+        if (q || open) hit = visit(node.children, depth + 1);
+        const match = !q || node.label.toLowerCase().includes(q) || hit;
+        if (!match) out.length = before;
         any = any || match;
-        void kids; void sub;
-      } else if (!q || n.label.toLowerCase().includes(q)) { out.push({ n, depth }); any = true; }
+      } else if (!q || node.label.toLowerCase().includes(q)) { out.push({ n: node, depth }); any = true; }
     }
     return any;
   };
   visit(treeData(), 0);
   const current = selKey(state.selection);
-  tree.replaceChildren(...out.filter(Boolean).map(({ n, depth, open }) => {
-    const selected = n.id === `${current}` || (n.sel && selKey(n.sel) === current && !n.folder);
+  tree.replaceChildren(...out.map(({ n, depth, open }) => {
+    const selected = n.sel && selKey(n.sel) === current;
+    const toggle = () => {
+      const expanded = isOpen(n);
+      if (expanded) { state.expanded.delete(n.id); state.collapsed.add(n.id); }
+      else { state.collapsed.delete(n.id); state.expanded.add(n.id); }
+      refreshExplorer();
+    };
     return h('div', {
       class: `tnode${n.folder ? ' folder' : ''}${selected ? ' selected' : ''}`,
       style: `padding-left:${6 + depth * 14}px`,
       role: 'treeitem',
-      onclick: () => {
-        if (n.folder) { if (state.collapsed.has(n.id)) state.collapsed.delete(n.id); else state.collapsed.add(n.id); if (n.sel) select(n.sel, { silent: true }); refreshExplorer(); if (n.sel) renderInspector(); return; }
-        select(n.sel);
-      },
+      onclick: () => { if (n.sel) select(n.sel); else if (n.folder) toggle(); },
       ondblclick: () => { if (n.open) n.open(); }
-    }, h('span', { class: 'twist' }, n.folder ? (open ? '▾' : '▸') : ''), h('span', { class: 'glyph' }, n.glyph || ''), h('span', { class: 'label', title: n.label }, n.label));
+    }, h('span', { class: 'twist', onclick: (event) => { event.stopPropagation(); if (n.folder) toggle(); } }, n.folder ? (open ? '▾' : '▸') : ''), h('span', { class: 'glyph' }, n.glyph || ''), h('span', { class: 'label', title: n.label }, n.label));
   }));
   if (keepScroll) tree.scrollTop = top;
 }
@@ -1004,7 +1159,7 @@ function resetDefaults() {
   if (!confirm('Reset everything to the built-in defaults and clear the saved level in this browser?')) return;
   clearSavedLevelData();
   replaceLevelData(DEFAULT_LEVEL_DATA);
-  rebuildEntities(); rebuildOpenTabs(); select(null, { silent: true });
+  rebuildEntities(); applyStudioWorldTransforms(levelData); refreshTerrainSculpt(); rebuildOpenTabs(); select(null, { silent: true });
   refreshAssetPanel(); refreshExplorer(); renderInspector();
   history.undo.push(history.present); history.present = JSON.stringify(levelData); history.redo.length = 0;
   updateHistoryButtons(); updateSaveState();
@@ -1018,6 +1173,8 @@ function buildToolbox() {
   const chips = (host, list) => $(host).replaceChildren(...list.map((p) => h('button', { class: 'chip', title: `Insert ${p.name}`, onclick: () => insertPrefab(p) }, p.name)));
   chips('#prefabs-vehicles', PREFABS.vehicles);
   chips('#prefabs-pickups', PREFABS.pickups);
+  chips('#prefabs-buildings', PREFABS.buildings);
+  chips('#prefabs-map-pieces', PREFABS.mapPieces);
   chips('#prefabs-parts', PREFABS.parts);
   $('#model-list').replaceChildren(...MODELS.map((m) => h('button', { class: 'list-item', title: 'Open in its own tab', onclick: () => openModelTab(m.id) }, h('span', { class: 'dot' }), m.name)));
   $('#btn-import-texture').addEventListener('click', () => pickFile('image/png,image/jpeg,image/webp', (f) => importAsset(f, 'texture')));
@@ -1035,6 +1192,14 @@ function wireRibbon() {
   $('#btn-save-test').addEventListener('click', saveAndTest);
   $('#btn-export').addEventListener('click', exportLevelData);
   $('#explorer-search').addEventListener('input', (e) => { state.query = e.target.value; refreshExplorer(); });
+  $('#sculpt-mode').addEventListener('change', () => { $('#sculpt-mode').blur(); });
+  $('#sculpt-size').addEventListener('input', (e) => { $('#sculpt-size-value').textContent = `${e.target.value}m`; });
+  $('#btn-focus-selection').addEventListener('click', focusSelection);
+  const views = {
+    city: [0, 0, -36, 240], desert: [280, 4, 35, 245], north: [-360, 24, -350, 470],
+    biomes: [0, 4, 155, 260], jungle: [430, 4, 30, 230], world: [-30, 20, -190, 1180]
+  };
+  $$('#viewport-nav [data-view]').forEach((button) => button.addEventListener('click', () => navigateTo(...views[button.dataset.view])));
 }
 
 function wireKeyboard(canvas) {
@@ -1042,6 +1207,7 @@ function wireKeyboard(canvas) {
   window.addEventListener('keydown', (e) => {
     if (typing(e.target)) return;
     state.keys.add(e.code);
+    if (document.activeElement === canvas && ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && e.code === 'KeyZ') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
     if (ctrl && e.code === 'KeyY') { e.preventDefault(); redo(); return; }
@@ -1051,9 +1217,9 @@ function wireKeyboard(canvas) {
     if (e.code === 'KeyF' && !state.rmbDown) { focusSelection(); return; }
     if (state.rmbDown) return; // WASD/QE belong to fly mode while the right mouse button is held
     if (e.code === 'KeyQ') setTool('select');
-    else if (e.code === 'KeyW') setTool('translate');
     else if (e.code === 'KeyE') setTool('rotate');
     else if (e.code === 'KeyR') setTool('scale');
+    else if (e.code === 'KeyT') setTool('sculpt');
   });
   window.addEventListener('keyup', (e) => state.keys.delete(e.code));
   window.addEventListener('blur', () => { state.keys.clear(); state.rmbDown = false; });
@@ -1077,8 +1243,9 @@ async function main() {
   controls = new OrbitControls(cam, canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.12;
+  controls.enableRotate = false;
   controls.screenSpacePanning = true;
-  controls.mouseButtons = { LEFT: -1, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+  controls.mouseButtons = { LEFT: -1, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
 
   transform = new TransformControls(cam, canvas);
   transform.setSize(0.9);
@@ -1092,6 +1259,9 @@ async function main() {
     if (s && s.kind === 'entity' && state.activeTab === 'world') {
       const ent = entityOf(s.id);
       if (ent) { writeTransformFromObject(ent); syncInspectorTransform(); }
+    } else if (s && (s.kind === 'worldObject' || s.kind === 'worldPart')) {
+      saveWorldObjectTransform(s.key || s.object.userData.studioPath, s.object);
+      syncInspectorTransform();
     }
   });
 
@@ -1101,6 +1271,11 @@ async function main() {
   boxHelper.renderOrder = 999;
   scene.add(boxHelper);
   raycaster = new THREE.Raycaster();
+  brushPreview = new THREE.Mesh(new THREE.RingGeometry(5.84, 6, 48), new THREE.MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.78, side: THREE.DoubleSide, depthWrite: false }));
+  brushPreview.geometry.rotateX(-Math.PI / 2);
+  brushPreview.userData.radius = 6;
+  brushPreview.userData.studioSelectable = false;
+  brushPreview.visible = false;
 
   // Isolation stage for model tabs: grid, pedestal and a soft fill light
   stage = new THREE.Group();
@@ -1132,12 +1307,13 @@ async function main() {
   const urlTier = new URLSearchParams(location.search).get('tier');
   const tier = ['low', 'medium', 'high'].includes(urlTier) ? urlTier : 'medium'; // studio.html?tier=low for slower GPUs
   buildWorld(levelData, { register: false, afterStatic: () => applyGraphicsTier(tier) });
+  worldRoot.add(brushPreview);
   revealAllLods();
   worldBackground = scene.background;
   worldFog = scene.fog;
   skyWasVisible = skyGroup.visible;
 
-  state.tabs.push({ id: 'world', kind: 'world', title: 'World Map', pinned: true, cam: { position: new THREE.Vector3(150, 120, 170), target: new THREE.Vector3(0, 0, -30) } });
+  state.tabs.push({ id: 'world', kind: 'world', title: 'World Map', pinned: true, cam: { position: new THREE.Vector3(150, 120, 170), target: new THREE.Vector3(0, 0, -36) } });
   state.worldReady = true;
   setSnap(0);
   state.savedJson = JSON.stringify(levelData);
@@ -1148,13 +1324,77 @@ async function main() {
   // pointer interaction
   let down = null;
   let downOnGizmo = false;
+  let lookLast = null;
+  let lookYaw = 0;
+  let lookPitch = 0;
+  let strokeLastPoint = null;
+  const applyBrushAtEvent = (event) => {
+    if (state.activeTab !== 'world' || state.tool !== 'sculpt') return;
+    const hit = terrainHitAtEvent(event);
+    if (!hit) { strokeLastPoint = null; return; }
+    const radius = Number($('#sculpt-size').value);
+    const spacing = Math.max(1, radius * 0.22);
+    const start = strokeLastPoint || hit.point;
+    const distance = start.distanceTo(hit.point);
+    const steps = Math.max(1, Math.ceil(distance / spacing));
+    for (let i = 1; i <= steps; i++) {
+      const point = start.clone().lerp(hit.point, i / steps);
+      sculptTerrain(levelData, point.x, point.z, radius, 0.55, $('#sculpt-mode').value, terrainBaseH);
+      refreshTerrainSculpt(point.x, point.z, radius + 3);
+    }
+    strokeLastPoint = hit.point.clone();
+  };
+  canvas.addEventListener('dblclick', (e) => {
+    if (state.activeTab === 'world' && state.tool !== 'sculpt') { e.preventDefault(); pick(e, { part: true }); }
+  });
   canvas.addEventListener('pointerdown', (e) => {
     if (e.button === 2) state.rmbDown = true;
-    if (e.button === 0) { down = { x: e.clientX, y: e.clientY }; downOnGizmo = transform.axis !== null; }
+    if (e.button === 0 && state.tool === 'sculpt' && state.activeTab === 'world') {
+      state.sculpting = true;
+      strokeLastPoint = null;
+      applyBrushAtEvent(e);
+      e.preventDefault();
+      canvas.focus();
+      return;
+    }
+    if (e.button === 0) {
+      down = { x: e.clientX, y: e.clientY };
+      downOnGizmo = transform.axis !== null;
+      if (!downOnGizmo && state.tool !== 'sculpt') {
+        const direction = cam.getWorldDirection(new THREE.Vector3());
+        lookYaw = Math.atan2(-direction.x, -direction.z);
+        lookPitch = Math.asin(THREE.MathUtils.clamp(direction.y, -1, 1));
+        lookLast = { x: e.clientX, y: e.clientY };
+        state.lookDragging = true;
+      }
+    }
     canvas.focus();
+  });
+  window.addEventListener('pointermove', (e) => {
+    if (state.lookDragging && (e.buttons & 1) && lookLast) {
+      const dx = e.clientX - lookLast.x, dy = e.clientY - lookLast.y;
+      lookLast = { x: e.clientX, y: e.clientY };
+      lookYaw -= dx * 0.003;
+      lookPitch = THREE.MathUtils.clamp(lookPitch - dy * 0.003, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
+      cam.rotation.order = 'YXZ';
+      cam.rotation.set(lookPitch, lookYaw, 0);
+      const direction = cam.getWorldDirection(new THREE.Vector3());
+      controls.target.copy(cam.position).addScaledVector(direction, 10);
+      controls.update();
+    }
+    if (state.sculpting && (e.buttons & 1)) applyBrushAtEvent(e);
+    else updateBrushPreview(e);
   });
   window.addEventListener('pointerup', (e) => {
     if (e.button === 2) state.rmbDown = false;
+    if (e.button === 0) { state.lookDragging = false; lookLast = null; }
+    if (e.button === 0 && state.sculpting) {
+      state.sculpting = false;
+      strokeLastPoint = null;
+      commit();
+      renderInspector();
+      return;
+    }
     if (e.button === 0 && down) {
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
       if (moved < 5 && !downOnGizmo && !transform.dragging && e.target === canvas) pick(e);
@@ -1183,8 +1423,10 @@ async function main() {
       const s = state.selection;
       let selTxt = 'nothing selected';
       if (s && s.kind === 'entity') { const e = entityOf(s.id); if (e) selTxt = `${e.name} @ ${e.pos.map((v) => v.toFixed(1)).join(', ')}`; }
+          else if (s && (s.kind === 'worldObject' || s.kind === 'worldPart')) selTxt = s.name;
       else if (s && s.kind === 'model') selTxt = MODEL_BY_ID[s.id].name;
-      info.textContent = `${tab.title} · ${state.tool === 'select' ? 'Select' : state.tool === 'translate' ? 'Move' : state.tool === 'rotate' ? 'Rotate' : 'Scale'}${state.snap ? ` · snap ${state.snap}m` : ''} · ${selTxt}`;
+      const toolLabel = state.tool === 'sculpt' ? `Sculpt ${$('#sculpt-mode').value} · ${$('#sculpt-size').value}m` : state.tool === 'select' ? 'Select' : state.tool === 'translate' ? 'Move' : state.tool === 'rotate' ? 'Rotate' : 'Scale';
+      info.textContent = `${tab.title} · ${toolLabel}${state.snap ? ` · snap ${state.snap}m` : ''} · ${selTxt}`;
     }
     renderer.render(scene, cam);
   };

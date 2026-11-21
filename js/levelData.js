@@ -13,6 +13,8 @@ export const LEVEL_STORAGE_KEY = 'gta_aura_studio_level';
 // ---- DEFAULT_LEVEL_DATA:BEGIN (Studio "Export levelData.js" rewrites this block) ----
 export const DEFAULT_LEVEL_DATA = {
   "version": 1,
+  "terrain": { "cellSize": 2, "heights": {} },
+  "worldTransforms": {},
   "assets": {
     "textures": ["assets/textures/sample_grid.png"],
     "audio": []
@@ -103,7 +105,7 @@ export const DEFAULT_LEVEL_DATA = {
 // -----------------------------------------------------------------------------
 // Entity type catalogue (used by the world spawner and by Studio's Toolbox).
 // -----------------------------------------------------------------------------
-export const ENTITY_TYPES = ['vehicle', 'pickup', 'crate', 'barrel', 'ramp', 'block', 'prop'];
+export const ENTITY_TYPES = ['vehicle', 'pickup', 'crate', 'barrel', 'ramp', 'block', 'prop', 'building', 'road'];
 
 /** Create a fresh entity of the given prefab with a unique id. */
 export function makeEntity(prefab, pos = [0, 0, 0], rot = [0, 0, 0]) {
@@ -127,6 +129,14 @@ export const PREFABS = {
     { key: 'pk_cash', type: 'pickup', name: 'Cash Pickup', extra: { pickup: { kind: 'left', itemId: 'cash' } } },
     { key: 'crate', type: 'crate', name: 'Smash Crate', extra: { loot: { type: 'left', id: 'cash' } } },
     { key: 'barrel', type: 'barrel', name: 'Hazard Barrel' }
+  ],
+  buildings: [
+    { key: 'building_office', type: 'building', name: 'Office Building', scale: [1, 1, 1], color: '#64748b', extra: { building: { width: 14, depth: 12, height: 28, roofColor: '#1e293b', windowColor: '#7dd3fc' } } },
+    { key: 'building_house', type: 'building', name: 'House', scale: [1, 1, 1], color: '#d6b38a', extra: { building: { width: 10, depth: 9, height: 6, roofColor: '#9a3412', windowColor: '#93c5fd' } } },
+    { key: 'building_warehouse', type: 'building', name: 'Warehouse', scale: [1, 1, 1], color: '#a3a3a3', extra: { building: { width: 22, depth: 16, height: 9, roofColor: '#475569', windowColor: '#bae6fd' } } }
+  ],
+  mapPieces: [
+    { key: 'road_straight', type: 'road', name: 'Road Segment', scale: [1, 1, 1], color: '#313946', extra: { road: { width: 24, depth: 12, markings: true } } }
   ],
   parts: [
     { key: 'ramp', type: 'ramp', name: 'Stunt Ramp', scale: [8, 3, 12], color: '#f59e0b' },
@@ -173,6 +183,64 @@ export function loadLevelData() {
 
 /** Live singleton shared by every module (mutated in place by Studio). */
 export const levelData = loadLevelData();
+
+const TERRAIN_CELL_SIZE = 2;
+
+function terrainCell(heights, x, z) {
+  return Number(heights[`${x},${z}`]) || 0;
+}
+
+/** Bilinearly sample the saved terrain height offset at world coordinates. */
+export function terrainHeightOffset(x, z, data = levelData) {
+  const heights = data.terrain && data.terrain.heights;
+  if (!heights) return 0;
+  const gx = x / TERRAIN_CELL_SIZE, gz = z / TERRAIN_CELL_SIZE;
+  const x0 = Math.floor(gx), z0 = Math.floor(gz);
+  const tx = gx - x0, tz = gz - z0;
+  const a = terrainCell(heights, x0, z0), b = terrainCell(heights, x0 + 1, z0);
+  const c = terrainCell(heights, x0, z0 + 1), d = terrainCell(heights, x0 + 1, z0 + 1);
+  return (a + (b - a) * tx) * (1 - tz) + (c + (d - c) * tx) * tz;
+}
+
+/** Raise, lower, or smooth the saved terrain heightfield with a soft circular brush. */
+export function sculptTerrain(data, centerX, centerZ, radius, strength, mode = 'raise', baseHeightAt = () => 0) {
+  if (!data.terrain || typeof data.terrain !== 'object') data.terrain = { cellSize: TERRAIN_CELL_SIZE, heights: {} };
+  if (!data.terrain.heights || typeof data.terrain.heights !== 'object') data.terrain.heights = {};
+  const heights = data.terrain.heights;
+  const minX = Math.floor((centerX - radius) / TERRAIN_CELL_SIZE);
+  const maxX = Math.ceil((centerX + radius) / TERRAIN_CELL_SIZE);
+  const minZ = Math.floor((centerZ - radius) / TERRAIN_CELL_SIZE);
+  const maxZ = Math.ceil((centerZ + radius) / TERRAIN_CELL_SIZE);
+  const before = mode === 'smooth' ? { ...heights } : heights;
+  const read = (x, z) => terrainCell(before, x, z);
+  for (let iz = minZ; iz <= maxZ; iz++) {
+    for (let ix = minX; ix <= maxX; ix++) {
+      const distance = Math.hypot(ix * TERRAIN_CELL_SIZE - centerX, iz * TERRAIN_CELL_SIZE - centerZ);
+      if (distance >= radius) continue;
+      const t = 1 - distance / radius;
+      const falloff = t * t * (3 - 2 * t);
+      const key = `${ix},${iz}`;
+      const current = read(ix, iz);
+      let next;
+      if (mode === 'smooth') {
+        let total = 0;
+        for (let dz = -1; dz <= 1; dz++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const sx = (ix + dx) * TERRAIN_CELL_SIZE, sz = (iz + dz) * TERRAIN_CELL_SIZE;
+            total += baseHeightAt(sx, sz) + read(ix + dx, iz + dz);
+          }
+        }
+        const currentHeight = baseHeightAt(ix * TERRAIN_CELL_SIZE, iz * TERRAIN_CELL_SIZE) + current;
+        next = current + (total / 9 - currentHeight) * Math.min(1, strength * falloff);
+      } else {
+        next = current + (mode === 'lower' ? -1 : 1) * strength * falloff;
+      }
+      next = Math.round(next * 1000) / 1000;
+      if (Math.abs(next) < 0.001) delete heights[key];
+      else heights[key] = next;
+    }
+  }
+}
 
 /** Replace the contents of the live singleton while keeping its identity. */
 export function replaceLevelData(next) {

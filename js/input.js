@@ -6,11 +6,20 @@ import { MAX_HOTDOG_AMMO, aura, climb, flashEdge, gameState, hooks, inputState, 
 import { canvas } from './engine.js';
 import { sfx } from './audio.js';
 import { useLeftHandItem } from './items.js';
-import { enterVehicle, exitCurrentCar, getNearestVehicle, shiftVehicleGear } from './vehicles.js';
+import { enterVehicle, exitCurrentCar, getNearestVehicle, shiftVehicleGear, vehicles } from './vehicles.js';
 import { findMantleTarget, getNearestElevatorPad, nearestManhole, startClimb, syncEquippedMeshes, triggerRightHandAttack } from './player.js';
 
 export function applyLookDelta(dx, dy) {
   const mult = 0.0023 * gameState.settings.sensitivity * (gameState.isAiming ? 0.55 : 1.0);
+  if (gameState.inCar && gameState.thirdPerson) {
+    const vehicle = vehicles[gameState.activeCarIndex];
+    if (vehicle) {
+      vehicle.cameraYaw -= dx * mult;
+      vehicle.cameraPitch = Math.max(-0.2, Math.min(1.05, vehicle.cameraPitch - dy * mult));
+      vehicle.cameraLookIdle = 0;
+    }
+    return;
+  }
   player.yaw -= dx * mult;
   player.pitch = Math.max(-1.42, Math.min(1.42, player.pitch - dy * mult));
 }
