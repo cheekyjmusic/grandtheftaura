@@ -1,8 +1,9 @@
 // =============================================================================
 // ui.js — HUD updates, watch rings, minimap, modals, save/load JSON and DOM button bindings (call initUI() once from main.js).
 // =============================================================================
+import * as THREE from 'three';
 import { AO, MAX_HOTDOG_AMMO, ahRz, aura, gameState, hooks, inputState, manholes, mapShapes, meteorDrop, npcs, player, pushFeed, riverX, roadC, sausageRefillZones, under } from './state.js';
-import { applyGraphicsTier, canvas, meteorGroup, meteorReticle } from './engine.js';
+import { applyGraphicsTier, canvas, meteorGroup, meteorReticle, renderer, scene } from './engine.js';
 import { sfx } from './audio.js';
 import { LEFT_ITEMS, RIGHT_WEAPONS, dropLeftSlot, useLeftHandItem } from './items.js';
 import { GEAR_CAPS_MPH, GEAR_LABELS, exitCurrentCar, vehicles } from './vehicles.js';
@@ -17,140 +18,323 @@ function setClass(el, v) { if (el && _cls.get(el) !== v) { _cls.set(el, v); el.c
 function setDisp(el, v) { if (el && _disp.get(el) !== v) { _disp.set(el, v); el.style.display = v; } }
 function setAttr(el, k, v) { const m = _attr.get(el) || {}; if (m[k] !== v) { m[k] = v; _attr.set(el, m); el.setAttribute(k, v); } }
 function setWidth(el, v) { if (el && el.__w !== v) { el.__w = v; el.style.width = v; } }
+
+// ---- 1. Real Top-Down Satellite Map Snapshot Generator ----
+let satelliteMapCanvas = null;
+const MAP_WORLD = { minX: -720, maxX: 560, minZ: -600, maxZ: 340 };
+
+export function captureSatelliteSnapshot() {
+  if (satelliteMapCanvas || !renderer || !scene) return;
+  try {
+    const w = 2048;
+    const h = 2048;
+    satelliteMapCanvas = document.createElement('canvas');
+    satelliteMapCanvas.width = w;
+    satelliteMapCanvas.height = h;
+    const ctx = satelliteMapCanvas.getContext('2d');
+
+    const oldFog = scene.fog;
+    scene.fog = null;
+
+    const hideList = [];
+    if (meteorGroup) { hideList.push({ obj: meteorGroup, vis: meteorGroup.visible }); meteorGroup.visible = false; }
+    if (meteorReticle) { hideList.push({ obj: meteorReticle, vis: meteorReticle.visible }); meteorReticle.visible = false; }
+
+    const bounds = MAP_WORLD;
+    const halfW = (bounds.maxX - bounds.minX) / 2;
+    const halfH = (bounds.maxZ - bounds.minZ) / 2;
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    const centerZ = (bounds.minZ + bounds.maxZ) / 2;
+
+    const orthoCam = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 1, 1000);
+    orthoCam.position.set(centerX, 450, centerZ);
+    orthoCam.up.set(0, 0, -1);
+    orthoCam.lookAt(centerX, 0, centerZ);
+    orthoCam.updateProjectionMatrix();
+
+    const renderTarget = new THREE.WebGLRenderTarget(w, h);
+    const currentTarget = renderer.getRenderTarget();
+    renderer.setRenderTarget(renderTarget);
+    renderer.render(scene, orthoCam);
+    renderer.setRenderTarget(currentTarget);
+
+    const pixels = new Uint8Array(w * h * 4);
+    renderer.readRenderTargetPixels(renderTarget, 0, 0, w, h, pixels);
+    renderTarget.dispose();
+
+    const imgData = ctx.createImageData(w, h);
+    for (let y = 0; y < h; y++) {
+      const srcRow = (h - 1 - y) * w * 4;
+      const destRow = y * w * 4;
+      imgData.data.set(pixels.subarray(srcRow, srcRow + w * 4), destRow);
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    scene.fog = oldFog;
+    hideList.forEach((item) => { item.obj.visible = item.vis; });
+  } catch (err) {
+    console.warn('Satellite snapshot capture deferred/failed:', err);
+  }
+}
+
+// ---- 4. Crosshair Hitmarkers ----
+export function triggerHitmarker(isKill = false) {
+  let hm = document.getElementById('crosshair-hitmarker');
+  if (!hm) {
+    const ch = document.getElementById('crosshair');
+    if (ch) {
+      hm = document.createElement('div');
+      hm.id = 'crosshair-hitmarker';
+      hm.style.cssText = 'position:absolute;inset:-10px;pointer-events:none;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity 0.04s ease-out, transform 0.04s ease-out;';
+      hm.innerHTML = `
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none" style="filter: drop-shadow(0 0 4px rgba(0,0,0,0.8));">
+          <line x1="5" y1="5" x2="10" y2="10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+          <line x1="23" y1="5" x2="18" y2="10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+          <line x1="5" y1="23" x2="10" y2="18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+          <line x1="23" y1="23" x2="18" y2="18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+      `;
+      ch.appendChild(hm);
+    }
+  }
+  if (hm) {
+    hm.style.color = isKill ? '#ef4444' : '#ffffff';
+    hm.style.opacity = '1';
+    hm.style.transform = 'scale(1.25)';
+    clearTimeout(hm._t);
+    hm._t = setTimeout(() => {
+      hm.style.opacity = '0';
+      hm.style.transform = 'scale(1.0)';
+    }, 140);
+  }
+}
+hooks.triggerHitmarker = triggerHitmarker;
+
+// ---- 3. Animated Cash Delta Popups ----
+let lastCashVal = null;
+function checkCashDelta() {
+  const currentCash = gameState.cash;
+  if (lastCashVal !== null && Math.floor(currentCash) !== Math.floor(lastCashVal)) {
+    const diff = Math.floor(currentCash) - Math.floor(lastCashVal);
+    spawnCashPopup(diff);
+  }
+  lastCashVal = currentCash;
+}
+
+function spawnCashPopup(diff) {
+  const cashEl = document.getElementById('hud-cash');
+  if (!cashEl) return;
+  const parent = cashEl.parentElement;
+  if (parent) {
+    if (getComputedStyle(parent).position === 'static') {
+      parent.style.position = 'relative';
+    }
+    const pop = document.createElement('div');
+    const isPos = diff > 0;
+    pop.className = `cash-popup-item ${isPos ? 'text-emerald-400' : 'text-rose-400'}`;
+    pop.textContent = `${isPos ? '+' : '-'}$${Math.abs(diff).toLocaleString()}`;
+    parent.appendChild(pop);
+    setTimeout(() => pop.remove(), 1100);
+  }
+}
+
+// ---- 5. GTA-Style District / Biome Fade-In Banner ----
+let lastZoneName = null;
+function checkZoneChange() {
+  const currentZone = gameState.zoneName;
+  if (currentZone && currentZone !== lastZoneName) {
+    if (lastZoneName !== null) {
+      showDistrictBanner(currentZone);
+    }
+    lastZoneName = currentZone;
+  }
+}
+
+function showDistrictBanner(zoneName) {
+  let banner = document.getElementById('district-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'district-banner';
+    banner.style.cssText = `
+      position: fixed;
+      right: 28px;
+      bottom: 42px;
+      z-index: 24;
+      pointer-events: none;
+      opacity: 0;
+      transform: translateX(20px);
+      transition: opacity 0.4s ease, transform 0.4s ease;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    `;
+    banner.innerHTML = `
+      <div style="font-size:10px; font-family:'Rajdhani',sans-serif; font-weight:700; letter-spacing:0.25em; color:#f59e0b; text-transform:uppercase;">DISTRICT DISCOVERED</div>
+      <div id="district-banner-name" style="font-size:26px; font-family:'Oswald',sans-serif; font-weight:700; letter-spacing:0.08em; color:#f8fafc; text-transform:uppercase; text-shadow:0 3px 12px rgba(0,0,0,0.9); line-height:1.1;"></div>
+      <div style="width:100%; height:2px; background:linear-gradient(90deg, transparent, #f59e0b); margin-top:4px;"></div>
+    `;
+    document.body.appendChild(banner);
+  }
+  const nameEl = document.getElementById('district-banner-name');
+  if (nameEl) nameEl.textContent = zoneName;
+
+  banner.style.opacity = '1';
+  banner.style.transform = 'translateX(0)';
+
+  clearTimeout(banner._t);
+  banner._t = setTimeout(() => {
+    banner.style.opacity = '0';
+    banner.style.transform = 'translateX(20px)';
+  }, 2500);
+}
+
 let hotbarEls = null;
 function buildHotbar() {
-const hb = document.getElementById('hotbar-container');
-hb.innerHTML = '';
-hotbarEls = [];
-for (let i = 0; i < 5; i++) {
-const div = document.createElement('div');
-div.className = 'hotbar-slot w-14 h-14 p-1.5 flex flex-col justify-between cursor-pointer';
-div.innerHTML = `
-<div class="flex justify-between items-center text-[9px] font-tactical font-bold leading-none">
-<span data-num class="text-slate-400">${i + 1}</span>
-<span data-count class="text-slate-300"></span>
-</div>
-<div data-icon class="flex items-center justify-center my-auto"></div>
-<div data-name class="text-[8px] font-tactical uppercase text-center truncate text-slate-200 leading-none"></div>
-`;
-div.onclick = () => { gameState.activeLeftSlot = i; syncEquippedMeshes(); updateHUD(true); };
-hb.appendChild(div);
-hotbarEls.push({ root: div, num: div.querySelector('[data-num]'), count: div.querySelector('[data-count]'), icon: div.querySelector('[data-icon]'), name: div.querySelector('[data-name]') });
+  const hb = document.getElementById('hotbar-container');
+  hb.innerHTML = '';
+  hotbarEls = [];
+  for (let i = 0; i < 5; i++) {
+    const div = document.createElement('div');
+    div.className = 'hotbar-slot w-14 h-14 p-1.5 flex flex-col justify-between cursor-pointer';
+    div.innerHTML = `
+      <div class="flex justify-between items-center text-[9px] font-tactical font-bold leading-none">
+        <span data-num class="text-slate-400">${i + 1}</span>
+        <span data-count class="text-slate-300"></span>
+      </div>
+      <div data-icon class="flex items-center justify-center my-auto"></div>
+      <div data-name class="text-[8px] font-tactical uppercase text-center truncate text-slate-200 leading-none"></div>
+    `;
+    div.onclick = () => { gameState.activeLeftSlot = i; syncEquippedMeshes(); updateHUD(true); };
+    hb.appendChild(div);
+    hotbarEls.push({ root: div, num: div.querySelector('[data-num]'), count: div.querySelector('[data-count]'), icon: div.querySelector('[data-icon]'), name: div.querySelector('[data-name]') });
+  }
 }
-}
+
 function updateHotbar() {
-if (!hotbarEls) buildHotbar();
-for (let i = 0; i < 5; i++) {
-const slot = gameState.leftHotbar[i];
-const item = slot ? LEFT_ITEMS[slot.id] : null;
-const active = i === gameState.activeLeftSlot;
-const el = hotbarEls[i];
-el.root.classList.toggle('active', active);
-setClass(el.num, active ? 'text-sky-300' : 'text-slate-400');
-setText(el.count, slot && slot.count > 1 ? 'x' + slot.count : '');
-setHTML(el.icon, item ? item.svg : '<span class="text-[10px]">-</span>');
-const color = item ? item.color : '#475569';
-if (el.icon.__c !== color) { el.icon.__c = color; el.icon.style.color = color; }
-setText(el.name, item ? item.name.split(' ')[0] : 'EMPTY');
+  if (!hotbarEls) buildHotbar();
+  for (let i = 0; i < 5; i++) {
+    const slot = gameState.leftHotbar[i];
+    const item = slot ? LEFT_ITEMS[slot.id] : null;
+    const active = i === gameState.activeLeftSlot;
+    const el = hotbarEls[i];
+    el.root.classList.toggle('active', active);
+    setClass(el.num, active ? 'text-sky-300' : 'text-slate-400');
+    setText(el.count, slot && slot.count > 1 ? 'x' + slot.count : '');
+    setHTML(el.icon, item ? item.svg : '<span class="text-[10px]">-</span>');
+    const color = item ? item.color : '#475569';
+    if (el.icon.__c !== color) { el.icon.__c = color; el.icon.style.color = color; }
+    setText(el.name, item ? item.name.split(' ')[0] : 'EMPTY');
+  }
 }
-}
+
 export function updateHUD(force) {
-const hn = performance.now();
-if (!force && hn - hudClock < 50) return;
-hudClock = hn;
-setText(document.getElementById('hud-cash'), Math.floor(gameState.cash).toLocaleString());
-setText(document.getElementById('hud-zone'), gameState.zoneName);
-setText(document.getElementById('hud-pov'), gameState.inCar
-? (gameState.thirdPerson ? 'AERIAL 3RD' : 'DRIVER CAB')
-: (gameState.thirdPerson ? '3RD PERSON' : '1ST PERSON'));
-const clanBadge = document.getElementById('clan-alert-badge');
-if (activeClanAlertText && !meteorDrop.active) {
-setText(clanBadge, activeClanAlertText);
-setClass(clanBadge, activeClanAlertText.startsWith('⚠')
-? 'glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-rose-500 text-rose-300 animate-pulse'
-: 'glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-amber-400 text-amber-300');
-} else {
-setClass(clanBadge, 'hidden');
-}
-const hpPct = Math.max(0, Math.min(100, (gameState.hp / gameState.maxHp) * 100));
-const stPct = Math.max(0, Math.min(100, gameState.stamina));
-const hpRing = document.getElementById('hud-hp-ring');
-const stamRing = document.getElementById('hud-stam-ring');
-if (hpRing) {
-const off = (333.01 * (1 - hpPct / 100)).toFixed(2);
-if (hpRing.__off !== off) { hpRing.__off = off; hpRing.style.strokeDashoffset = off; }
-const col = hpPct > 50 ? '#10b981' : hpPct > 25 ? '#f59e0b' : '#ef4444';
-if (hpRing.__col !== col) { hpRing.__col = col; hpRing.style.stroke = col; }
-}
-if (stamRing) {
-const off = (257.61 * (1 - stPct / 100)).toFixed(2);
-if (stamRing.__off !== off) { stamRing.__off = off; stamRing.style.strokeDashoffset = off; }
-}
-setText(document.getElementById('hud-hp-val'), String(Math.ceil(gameState.hp)));
-setText(document.getElementById('hud-stam-val'), `${Math.round(stPct)}%`);
-const rw = RIGHT_WEAPONS[gameState.activeRightWeapon] || RIGHT_WEAPONS.fists;
-setHTML(document.getElementById('hud-rhand-icon'), rw.svg);
-setText(document.getElementById('hud-rhand-name'), rw.name);
-const lSlot = gameState.leftHotbar[gameState.activeLeftSlot];
-const lItem = lSlot ? LEFT_ITEMS[lSlot.id] : null;
-setHTML(document.getElementById('hud-lhand-icon'), lItem ? lItem.svg : '<span class="text-[10px] text-slate-500">&mdash;</span>');
-setText(document.getElementById('hud-lhand-name'), lItem ? `${lItem.name}${lSlot.count > 1 ? ' x' + lSlot.count : ''}` : 'EMPTY');
-const ammoCard = document.getElementById('ammo-hud-card');
-if (gameState.activeRightWeapon === 'hotdog_shooter' && !gameState.inCar) {
-setDisp(ammoCard, 'flex');
-const countEl = document.getElementById('hud-ammo-count');
-const hintEl = document.getElementById('hud-ammo-hint');
-const barEl = document.getElementById('hud-sausage-bar');
-setText(countEl, `${gameState.hotdogAmmo} / ${MAX_HOTDOG_AMMO}`);
-setClass(countEl, gameState.hotdogAmmo === 0
-? 'font-display text-sm text-rose-400 animate-pulse'
-: gameState.hotdogAmmo <= 12 ? 'font-display text-sm text-amber-400' : 'font-display text-sm text-white');
-setWidth(barEl, `${Math.round((gameState.hotdogAmmo / MAX_HOTDOG_AMMO) * 100)}%`);
-setHTML(hintEl, gameState.hotdogAmmo === 0
-? '<span class="text-rose-400 font-bold">EMPTY! REFILL AT HOTDOG CART/STORE</span>'
-: '<span>[RMB] AIM</span><span class="text-amber-400">[LMB] FIRE</span>');
-} else {
-setDisp(ammoCard, 'none');
-}
-setDisp(document.getElementById('vehicle-hud'), gameState.inCar ? 'flex' : 'none');
-setDisp(document.getElementById('onfoot-hotbar'), gameState.inCar ? 'none' : 'block');
-const isScoped = gameState.isAiming && gameState.activeRightWeapon === 'hotdog_shooter' && !gameState.inCar;
-setDisp(document.getElementById('sniper-scope'), isScoped ? 'flex' : 'none');
-setDisp(document.getElementById('crosshair'), isScoped ? 'none' : 'flex');
-if (gameState.inCar) {
-const v = vehicles[gameState.activeCarIndex];
-if (v) {
-setText(document.getElementById('veh-name'), v.name);
-const gLabel = GEAR_LABELS[v.gearIndex];
-const gearCap = GEAR_CAPS_MPH[v.gearIndex];
-setText(document.getElementById('veh-gear'), gLabel);
-setText(document.getElementById('veh-gear-cap'), v.gearIndex === 1 ? 'NEUTRAL' : `MAX ${gearCap}`);
-const mph = Math.round(Math.abs(v.speed) * 2.237);
-setText(document.getElementById('veh-mph-text'), String(mph));
-setText(document.getElementById('veh-rpm-text'), String(Math.round(v.rpm)));
-const rpmDeg = -125 + Math.min(1, v.rpm / 8000) * 250;
-const mphDeg = -125 + Math.min(1, mph / 200) * 250;
-setAttr(document.getElementById('veh-rpm-needle'), 'transform', `rotate(${rpmDeg.toFixed(1)} 60 60)`);
-setAttr(document.getElementById('veh-mph-needle'), 'transform', `rotate(${mphDeg.toFixed(1)} 60 60)`);
-const normRpm = v.rpm / 8000;
-const torqueEff = v.gearIndex === 1 ? 0 : Math.max(0.28, 1 - Math.pow((normRpm - 0.62) / 0.65, 2));
-setWidth(document.getElementById('veh-torque-bar'), `${Math.round(torqueEff * 100)}%`);
-const shiftLight = document.getElementById('veh-shift-light');
-if (v.rpm >= 7150 && v.gearIndex >= 2 && v.gearIndex < 7) {
-setText(shiftLight, 'SHIFT UP [I]');
-setClass(shiftLight, 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-rose-500 text-white animate-pulse');
-} else if (v.gearIndex > 2 && mph < GEAR_CAPS_MPH[v.gearIndex - 1] * 0.58) {
-setText(shiftLight, 'DOWNSHIFT [K]');
-setClass(shiftLight, 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-amber-500/30 text-amber-300');
-} else {
-setText(shiftLight, v.isSupercar ? 'SUPERCHARGED' : 'MANUAL');
-setClass(shiftLight, v.isSupercar
-? 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-amber-500/20 text-amber-300'
-: 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-slate-800 text-slate-300');
-}
-}
-}
-updateHotbar();
+  const hn = performance.now();
+  if (!force && hn - hudClock < 50) return;
+  hudClock = hn;
+
+  checkCashDelta();
+  checkZoneChange();
+
+  setText(document.getElementById('hud-cash'), Math.floor(gameState.cash).toLocaleString());
+  setText(document.getElementById('hud-zone'), gameState.zoneName);
+  setText(document.getElementById('hud-pov'), gameState.inCar
+    ? (gameState.thirdPerson ? 'AERIAL 3RD' : 'DRIVER CAB')
+    : (gameState.thirdPerson ? '3RD PERSON' : '1ST PERSON'));
+
+  const clanBadge = document.getElementById('clan-alert-badge');
+  if (activeClanAlertText && !meteorDrop.active) {
+    setText(clanBadge, activeClanAlertText);
+    setClass(clanBadge, activeClanAlertText.startsWith('⚠')
+      ? 'glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-rose-500 text-rose-300 animate-pulse'
+      : 'glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-amber-400 text-amber-300');
+  } else {
+    setClass(clanBadge, 'hidden');
+  }
+
+  const hpPct = Math.max(0, Math.min(100, (gameState.hp / gameState.maxHp) * 100));
+  const stPct = Math.max(0, Math.min(100, gameState.stamina));
+  const hpRing = document.getElementById('hud-hp-ring');
+  const stamRing = document.getElementById('hud-stam-ring');
+  if (hpRing) {
+    const off = (333.01 * (1 - hpPct / 100)).toFixed(2);
+    if (hpRing.__off !== off) { hpRing.__off = off; hpRing.style.strokeDashoffset = off; }
+    const col = hpPct > 50 ? '#10b981' : hpPct > 25 ? '#f59e0b' : '#ef4444';
+    if (hpRing.__col !== col) { hpRing.__col = col; hpRing.style.stroke = col; }
+  }
+  if (stamRing) {
+    const off = (257.61 * (1 - stPct / 100)).toFixed(2);
+    if (stamRing.__off !== off) { stamRing.__off = off; stamRing.style.strokeDashoffset = off; }
+  }
+  setText(document.getElementById('hud-hp-val'), String(Math.ceil(gameState.hp)));
+  setText(document.getElementById('hud-stam-val'), `${Math.round(stPct)}%`);
+
+  const rw = RIGHT_WEAPONS[gameState.activeRightWeapon] || RIGHT_WEAPONS.fists;
+  setHTML(document.getElementById('hud-rhand-icon'), rw.svg);
+  setText(document.getElementById('hud-rhand-name'), rw.name);
+
+  const lSlot = gameState.leftHotbar[gameState.activeLeftSlot];
+  const lItem = lSlot ? LEFT_ITEMS[lSlot.id] : null;
+  setHTML(document.getElementById('hud-lhand-icon'), lItem ? lItem.svg : '<span class="text-[10px] text-slate-500">&mdash;</span>');
+  setText(document.getElementById('hud-lhand-name'), lItem ? `${lItem.name}${lSlot.count > 1 ? ' x' + lSlot.count : ''}` : 'EMPTY');
+
+  const ammoCard = document.getElementById('ammo-hud-card');
+  if (gameState.activeRightWeapon === 'hotdog_shooter' && !gameState.inCar) {
+    setDisp(ammoCard, 'flex');
+    const countEl = document.getElementById('hud-ammo-count');
+    const hintEl = document.getElementById('hud-ammo-hint');
+    const barEl = document.getElementById('hud-sausage-bar');
+    setText(countEl, `${gameState.hotdogAmmo} / ${MAX_HOTDOG_AMMO}`);
+    setClass(countEl, gameState.hotdogAmmo === 0
+      ? 'font-display text-sm text-rose-400 animate-pulse'
+      : gameState.hotdogAmmo <= 12 ? 'font-display text-sm text-amber-400' : 'font-display text-sm text-white');
+    setWidth(barEl, `${Math.round((gameState.hotdogAmmo / MAX_HOTDOG_AMMO) * 100)}%`);
+    setHTML(hintEl, gameState.hotdogAmmo === 0
+      ? '<span class="text-rose-400 font-bold">EMPTY! REFILL AT HOTDOG CART/STORE</span>'
+      : '<span>[RMB] AIM</span><span class="text-amber-400">[LMB] FIRE</span>');
+  } else {
+    setDisp(ammoCard, 'none');
+  }
+
+  setDisp(document.getElementById('vehicle-hud'), gameState.inCar ? 'flex' : 'none');
+  setDisp(document.getElementById('onfoot-hotbar'), gameState.inCar ? 'none' : 'block');
+  const isScoped = gameState.isAiming && gameState.activeRightWeapon === 'hotdog_shooter' && !gameState.inCar;
+  setDisp(document.getElementById('sniper-scope'), isScoped ? 'flex' : 'none');
+  setDisp(document.getElementById('crosshair'), isScoped ? 'none' : 'flex');
+
+  if (gameState.inCar) {
+    const v = vehicles[gameState.activeCarIndex];
+    if (v) {
+      setText(document.getElementById('veh-name'), v.name);
+      const gLabel = GEAR_LABELS[v.gearIndex];
+      const gearCap = GEAR_CAPS_MPH[v.gearIndex];
+      setText(document.getElementById('veh-gear'), gLabel);
+      setText(document.getElementById('veh-gear-cap'), v.gearIndex === 1 ? 'NEUTRAL' : `MAX ${gearCap}`);
+      const mph = Math.round(Math.abs(v.speed) * 2.237);
+      setText(document.getElementById('veh-mph-text'), String(mph));
+      setText(document.getElementById('veh-rpm-text'), String(Math.round(v.rpm)));
+      const rpmDeg = -125 + Math.min(1, v.rpm / 8000) * 250;
+      const mphDeg = -125 + Math.min(1, mph / 200) * 250;
+      setAttr(document.getElementById('veh-rpm-needle'), 'transform', `rotate(${rpmDeg.toFixed(1)} 60 60)`);
+      setAttr(document.getElementById('veh-mph-needle'), 'transform', `rotate(${mphDeg.toFixed(1)} 60 60)`);
+      const normRpm = v.rpm / 8000;
+      const torqueEff = v.gearIndex === 1 ? 0 : Math.max(0.28, 1 - Math.pow((normRpm - 0.62) / 0.65, 2));
+      setWidth(document.getElementById('veh-torque-bar'), `${Math.round(torqueEff * 100)}%`);
+      const shiftLight = document.getElementById('veh-shift-light');
+      if (v.rpm >= 7150 && v.gearIndex >= 2 && v.gearIndex < 7) {
+        setText(shiftLight, 'SHIFT UP [I]');
+        setClass(shiftLight, 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-rose-500 text-white animate-pulse');
+      } else if (v.gearIndex > 2 && mph < GEAR_CAPS_MPH[v.gearIndex - 1] * 0.58) {
+        setText(shiftLight, 'DOWNSHIFT [K]');
+        setClass(shiftLight, 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-amber-500/30 text-amber-300');
+      } else {
+        setText(shiftLight, v.isSupercar ? 'SUPERCHARGED' : 'MANUAL');
+        setClass(shiftLight, v.isSupercar
+          ? 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-amber-500/20 text-amber-300'
+          : 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-slate-800 text-slate-300');
+      }
+    }
+  }
+  updateHotbar();
 }
 
 export function showWeaponWheel() {
@@ -199,129 +383,84 @@ export function cycleRightWeapon(dir = 1) {
   showWeaponWheel();
 }
 
-const mapStaticCache = new Map();
-const MAP_WORLD = { minX: -720, maxX: 560, minZ: -600, maxZ: 340 };
-function buildStaticMap(scale) {
-const w = Math.ceil((MAP_WORLD.maxX - MAP_WORLD.minX) * scale);
-const h = Math.ceil((MAP_WORLD.maxZ - MAP_WORLD.minZ) * scale);
-const cv = document.createElement('canvas');
-cv.width = w; cv.height = h;
-const ctx = cv.getContext('2d');
-const X = wx => (wx - MAP_WORLD.minX) * scale;
-const Y = wz => (wz - MAP_WORLD.minZ) * scale;
-ctx.fillStyle = '#365e33'; ctx.fillRect(0, 0, w, h);
-mapShapes.forEach(s => { if (s.w > 200 && s.color === '#d97706') { ctx.fillStyle = s.color; ctx.fillRect(X(s.x - s.w / 2), Y(s.z - s.d / 2), s.w * scale, s.d * scale); } });
-ctx.fillStyle = '#1f2937';
-[-120, -72, -24, 24, 72, 120].forEach(rx => ctx.fillRect(X(rx - 6), Y(-174), 12 * scale, 252 * scale));
-[-168, -120, -72, -24, 24, 72].forEach(rz => ctx.fillRect(X(-126), Y(rz - 6), 252 * scale, 12 * scale));
-mapShapes.forEach(s => {
-if (s.w > 200 && s.color === '#d97706') return;
-ctx.fillStyle = s.color;
-ctx.fillRect(X(s.x - s.w / 2), Y(s.z - s.d / 2), s.w * scale, s.d * scale);
-if (s.border) { ctx.strokeStyle = s.border; ctx.lineWidth = s.enterable ? 1.5 : 1; ctx.strokeRect(X(s.x - s.w / 2), Y(s.z - s.d / 2), s.w * scale, s.d * scale); }
-});
-sausageRefillZones.forEach(rz => { ctx.fillStyle = '#facc15'; ctx.beginPath(); ctx.arc(X(rz.x), Y(rz.z), 3.2, 0, Math.PI * 2); ctx.fill(); });
-ctx.fillStyle = 'rgba(120,130,120,.55)'; ctx.fillRect(X(-138), Y(-590), 508 * scale, 420 * scale);
-ctx.fillStyle = 'rgba(139,125,86,.6)'; ctx.fillRect(X(-560), Y(-172), 364 * scale, 344 * scale);
-ctx.fillStyle = 'rgba(79,138,63,.85)'; ctx.beginPath(); ctx.arc(X(-480), Y(-45), 70 * scale, 0, 6.3); ctx.fill();
-ctx.strokeStyle = '#e9c33a'; ctx.lineWidth = 2; ctx.beginPath();
-for (let q = 0; q <= 274; q += 6) { const x = -196 - q; q ? ctx.lineTo(X(x), Y(ahRz(x))) : ctx.moveTo(X(x), Y(ahRz(x))); }
-ctx.stroke();
-ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2; ctx.beginPath();
-for (let z = -176; z > -584; z -= 8) { z === -176 ? ctx.moveTo(X(riverX(z)), Y(z)) : ctx.lineTo(X(riverX(z)), Y(z)); }
-ctx.stroke();
-ctx.strokeStyle = '#e9c33a'; ctx.lineWidth = 2; ctx.beginPath();
-for (let z = -170; z > -584; z -= 8) { const px = X(roadC(z)), py = Y(z); z === -170 ? ctx.moveTo(px, py) : ctx.lineTo(px, py); }
-ctx.stroke();
-if (aura.hospitalSpawn) {
-const hx = aura.hospitalSpawn.x + 14, hz = aura.hospitalSpawn.z + 7.4;
-ctx.fillStyle = '#fff'; ctx.fillRect(X(hx) - 5, Y(hz) - 5, 10, 10);
-ctx.fillStyle = '#dc2626'; ctx.fillRect(X(hx) - 4, Y(hz) - 1, 8, 2); ctx.fillRect(X(hx) - 1, Y(hz) - 4, 2, 8);
-}
-ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif';
-ctx.fillText('AURA HILLS', X(-470), Y(-150)); ctx.fillText('MOUNTAINS', X(60), Y(-400));
-return cv;
-}
+// ---- 1 & 2. Satellite Top-Down Render & Rotating Minimap + Perimeter N Marker ----
 export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
+  if (!satelliteMapCanvas && renderer && scene) {
+    captureSatelliteSnapshot();
+  }
+
   const ctx = canvasEl.getContext('2d');
   const W = canvasEl.width;
   const H = canvasEl.height;
   ctx.clearRect(0, 0, W, H);
 
-  ctx.fillStyle = '#365e33';
-  ctx.fillRect(0, 0, W, H);
-
   const scale = centerOnPlayer ? 0.65 : 0.38;
-  const cx = W / 2;
-  const cy = H / 2;
-  const refX = centerOnPlayer ? player.x : -29;
-  const refZ = centerOnPlayer ? player.z : -190;
-
-  const toCanvasX = (wx) => cx + (wx - refX) * scale;
-  const toCanvasY = (wz) => cy + (wz - refZ) * scale;
-
-  mapShapes.forEach((s) => {
-    if (s.w > 200 && s.color === '#d97706') {
-      ctx.fillStyle = s.color;
-      ctx.fillRect(toCanvasX(s.x - s.w / 2), toCanvasY(s.z - s.d / 2), s.w * scale, s.d * scale);
-    }
-  });
-
-  ctx.fillStyle = '#1f2937';
-  [-120, -72, -24, 24, 72, 120].forEach((rx) => {
-    ctx.fillRect(toCanvasX(rx - 6), toCanvasY(-174), 12 * scale, 252 * scale);
-  });
-  [-168, -120, -72, -24, 24, 72].forEach((rz) => {
-    ctx.fillRect(toCanvasX(-126), toCanvasY(rz - 6), 252 * scale, 12 * scale);
-  });
-
-  mapShapes.forEach((s) => {
-    if (s.w > 200 && s.color === '#d97706') return;
-    ctx.fillStyle = s.color;
-    ctx.fillRect(toCanvasX(s.x - s.w / 2), toCanvasY(s.z - s.d / 2), s.w * scale, s.d * scale);
-    if (s.border) {
-      ctx.strokeStyle = s.border;
-      ctx.lineWidth = s.enterable ? 1.5 : 1;
-      ctx.strokeRect(toCanvasX(s.x - s.w / 2), toCanvasY(s.z - s.d / 2), s.w * scale, s.d * scale);
-    }
-  });
-
-  vehicles.forEach((v) => {
-    ctx.fillStyle = v.isSupercar ? '#f59e0b' : '#f43f5e';
-    ctx.fillRect(toCanvasX(v.x) - 3.5, toCanvasY(v.z) - 3.5, 7, 7);
-  });
-
-  sausageRefillZones.forEach((rz) => {
-    ctx.fillStyle = '#facc15';
-    ctx.beginPath();
-    ctx.arc(toCanvasX(rz.x), toCanvasY(rz.z), 3.2, 0, Math.PI * 2);
-    ctx.fill();
-  });
-
-  npcs.forEach((npc) => {
-    if (npc.aggro === 'clan' && !npc.asleep) {
-      const clan = CLAN_DEFS[npc.clanId];
-      ctx.fillStyle = clan ? clan.hex : '#ef4444';
-      ctx.beginPath();
-      ctx.arc(toCanvasX(npc.x), toCanvasY(npc.z), 2.8, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  });
 
   if (centerOnPlayer) {
-    const px = cx;
-    const py = cy;
-    const fwdX = -Math.sin(player.yaw);
-    const fwdY = -Math.cos(player.yaw);
+    // ROTATING HUD MINIMAP
+    const cx = W / 2;
+    const cy = H / 2;
+
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(px, py);
-    ctx.arc(px, py, 24, Math.atan2(fwdY, fwdX) - 0.5, Math.atan2(fwdY, fwdX) + 0.5);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(56, 189, 248, 0.25)';
-    ctx.fill();
+    ctx.arc(cx, cy, W / 2, 0, Math.PI * 2);
+    ctx.clip();
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(-player.yaw);
+    ctx.translate(-player.x * scale, -player.z * scale);
+
+    if (satelliteMapCanvas) {
+      const mapW = (MAP_WORLD.maxX - MAP_WORLD.minX) * scale;
+      const mapH = (MAP_WORLD.maxZ - MAP_WORLD.minZ) * scale;
+      ctx.drawImage(satelliteMapCanvas, MAP_WORLD.minX * scale, MAP_WORLD.minZ * scale, mapW, mapH);
+    } else {
+      mapShapes.forEach((s) => {
+        ctx.fillStyle = s.color;
+        ctx.fillRect((s.x - s.w / 2) * scale, (s.z - s.d / 2) * scale, s.w * scale, s.d * scale);
+      });
+    }
+
+    vehicles.forEach((v) => {
+      ctx.fillStyle = v.isSupercar ? '#f59e0b' : '#f43f5e';
+      ctx.fillRect(v.x * scale - 3.5, v.z * scale - 3.5, 7, 7);
+    });
+
+    sausageRefillZones.forEach((rz) => {
+      ctx.fillStyle = '#facc15';
+      ctx.beginPath();
+      ctx.arc(rz.x * scale, rz.z * scale, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    npcs.forEach((npc) => {
+      if (npc.aggro === 'clan' && !npc.asleep) {
+        const clan = CLAN_DEFS[npc.clanId];
+        ctx.fillStyle = clan ? clan.hex : '#ef4444';
+        ctx.beginPath();
+        ctx.arc(npc.x * scale, npc.z * scale, 2.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+
+    ctx.restore();
+
+    // Player cone straight UP at center
+    ctx.save();
+    ctx.translate(cx, cy);
     ctx.beginPath();
-    ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, 22, -Math.PI / 2 - 0.42, -Math.PI / 2 + 0.42);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.35)';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(0, 0, 4.5, 0, Math.PI * 2);
     ctx.fillStyle = '#38bdf8';
     ctx.fill();
     ctx.strokeStyle = '#ffffff';
@@ -329,12 +468,78 @@ export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
     ctx.stroke();
     ctx.restore();
 
+    ctx.restore(); // end circular clip
+
+    // Perimeter North (N) Indicator
+    const R = W / 2 - 11;
+    const nAngle = -Math.PI / 2 - player.yaw;
+    const nx = cx + Math.cos(nAngle) * R;
+    const ny = cy + Math.sin(nAngle) * R;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    ctx.strokeStyle = '#ef4444';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(nx, ny, 8.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#ef4444';
+    ctx.font = 'bold 10px Rajdhani, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('N', nx, ny);
+    ctx.restore();
+
     const northEl = document.getElementById('minimap-north');
-    if (northEl) {
-      northEl.style.left = '89px';
-      northEl.style.top = '9px';
-    }
+    if (northEl) northEl.style.display = 'none';
+
   } else {
+    // FULL-SCREEN PHONE MAP (NORTH-UP)
+    const cx = W / 2;
+    const cy = H / 2;
+    const refX = -29;
+    const refZ = -190;
+    const toCanvasX = (wx) => cx + (wx - refX) * scale;
+    const toCanvasY = (wz) => cy + (wz - refZ) * scale;
+
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(0, 0, W, H);
+
+    if (satelliteMapCanvas) {
+      const mapW = (MAP_WORLD.maxX - MAP_WORLD.minX) * scale;
+      const mapH = (MAP_WORLD.maxZ - MAP_WORLD.minZ) * scale;
+      ctx.drawImage(satelliteMapCanvas, toCanvasX(MAP_WORLD.minX), toCanvasY(MAP_WORLD.minZ), mapW, mapH);
+    } else {
+      mapShapes.forEach((s) => {
+        ctx.fillStyle = s.color;
+        ctx.fillRect(toCanvasX(s.x - s.w / 2), toCanvasY(s.z - s.d / 2), s.w * scale, s.d * scale);
+      });
+    }
+
+    vehicles.forEach((v) => {
+      ctx.fillStyle = v.isSupercar ? '#f59e0b' : '#f43f5e';
+      ctx.fillRect(toCanvasX(v.x) - 3.5, toCanvasY(v.z) - 3.5, 7, 7);
+    });
+
+    sausageRefillZones.forEach((rz) => {
+      ctx.fillStyle = '#facc15';
+      ctx.beginPath();
+      ctx.arc(toCanvasX(rz.x), toCanvasY(rz.z), 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    npcs.forEach((npc) => {
+      if (npc.aggro === 'clan' && !npc.asleep) {
+        const clan = CLAN_DEFS[npc.clanId];
+        ctx.fillStyle = clan ? clan.hex : '#ef4444';
+        ctx.beginPath();
+        ctx.arc(toCanvasX(npc.x), toCanvasY(npc.z), 2.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+
     const px = toCanvasX(player.x);
     const py = toCanvasY(player.z);
     ctx.beginPath();
@@ -573,12 +778,12 @@ export function exportSaveFile() {
 }
 
 export function importSaveFromFile(file) {
-if (!file) return;
-if (hooks.mpActive()) {
-pushFeed('SAVE IMPORT IS DISABLED WHILE ONLINE — EXIT THE ROOM FIRST', 'border-l-rose-500');
-return;
-}
-const reader = new FileReader();
+  if (!file) return;
+  if (hooks.mpActive()) {
+    pushFeed('SAVE IMPORT IS DISABLED WHILE ONLINE — EXIT THE ROOM FIRST', 'border-l-rose-500');
+    return;
+  }
+  const reader = new FileReader();
   reader.onload = (ev) => {
     try {
       const data = JSON.parse(ev.target.result);
@@ -630,135 +835,170 @@ const reader = new FileReader();
   reader.readAsText(file);
 }
 
-export function buildAuraUI(){
-  const st=document.createElement('style');st.textContent=`
-  .glass-panel{background:linear-gradient(160deg,rgba(18,24,34,.88),rgba(8,11,17,.9))!important;border:1px solid rgba(255,255,255,.1)!important;border-top:1px solid rgba(245,158,11,.5)!important;box-shadow:0 12px 32px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.06)!important}
-  #ao-stars{position:fixed;top:14px;left:50%;transform:translateX(-50%);display:none;gap:4px;font-size:30px;padding:4px 16px;border-radius:999px;background:rgba(8,11,17,.7);border:1px solid rgba(255,255,255,.15);text-shadow:0 0 12px currentColor;z-index:25}
-  #ao-compass{position:fixed;top:14px;right:208px;padding:6px 14px;font:700 12px Rajdhani,sans-serif;letter-spacing:.15em;color:#e2e8f0;border-radius:8px;background:rgba(8,11,17,.72);border:1px solid rgba(255,255,255,.12);z-index:25}
-  #ao-vig{position:fixed;inset:0;pointer-events:none;z-index:5;background:radial-gradient(ellipse at center,transparent 58%,rgba(0,0,0,.42) 100%)}`;
+export function buildAuraUI() {
+  const st = document.createElement('style');
+  st.textContent = `
+    .glass-panel{background:linear-gradient(160deg,rgba(18,24,34,.88),rgba(8,11,17,.9))!important;border:1px solid rgba(255,255,255,.1)!important;border-top:1px solid rgba(245,158,11,.5)!important;box-shadow:0 12px 32px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.06)!important}
+    #ao-stars{position:fixed;top:14px;left:50%;transform:translateX(-50%);display:none;gap:4px;font-size:30px;padding:4px 16px;border-radius:999px;background:rgba(8,11,17,.7);border:1px solid rgba(255,255,255,.15);text-shadow:0 0 12px currentColor;z-index:25}
+    #ao-compass{position:fixed;top:14px;right:208px;padding:6px 14px;font:700 12px Rajdhani,sans-serif;letter-spacing:.15em;color:#e2e8f0;border-radius:8px;background:rgba(8,11,17,.72);border:1px solid rgba(255,255,255,.12);z-index:25}
+    #ao-vig{position:fixed;inset:0;pointer-events:none;z-index:5;background:radial-gradient(ellipse at center,transparent 58%,rgba(0,0,0,.42) 100%)}
+    @keyframes cashFloat {
+      0% { opacity: 1; transform: translateY(0) scale(1); }
+      100% { opacity: 0; transform: translateY(-34px) scale(1.12); }
+    }
+    .cash-popup-item {
+      position: absolute;
+      right: 0;
+      top: -6px;
+      pointer-events: none;
+      font-family: 'Oswald', sans-serif;
+      font-size: 18px;
+      font-weight: 700;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.9);
+      animation: cashFloat 1.1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      z-index: 30;
+    }
+  `;
   document.head.appendChild(st);
-  const hud=document.getElementById('hud');
-  const s=document.createElement('div');s.id='ao-stars';hud.appendChild(s);
-  const c=document.createElement('div');c.id='ao-compass';hud.appendChild(c);
-  const v=document.createElement('div');v.id='ao-vig';document.body.appendChild(v);
-  const tip=document.createElement('div');tip.id='ao-tip';tip.style.cssText='position:fixed;bottom:150px;left:50%;transform:translateX(-50%);padding:6px 14px;border-radius:8px;background:rgba(8,11,17,.85);border:1px solid #f59e0b;font:700 13px Rajdhani,sans-serif;letter-spacing:.1em;display:none;z-index:25';hud.appendChild(tip);
+
+  const hud = document.getElementById('hud');
+  const s = document.createElement('div'); s.id = 'ao-stars'; hud.appendChild(s);
+  const c = document.createElement('div'); c.id = 'ao-compass'; hud.appendChild(c);
+  const v = document.createElement('div'); v.id = 'ao-vig'; document.body.appendChild(v);
+  const tip = document.createElement('div'); tip.id = 'ao-tip'; tip.style.cssText = 'position:fixed;bottom:150px;left:50%;transform:translateX(-50%);padding:6px 14px;border-radius:8px;background:rgba(8,11,17,.85);border:1px solid #f59e0b;font:700 13px Rajdhani,sans-serif;letter-spacing:.1em;display:none;z-index:25'; hud.appendChild(tip);
 }
 
-export function renderMapCanvas(cv,center){renderMapCanvasBase(cv,center);
-  const ctx=cv.getContext('2d'),sc=center?.65:.38,rx=center?player.x:-29,rz=center?player.z:-190,X=w=>cv.width/2+(w-rx)*sc,Y=w=>cv.height/2+(w-rz)*sc;
-  ctx.fillStyle='rgba(120,130,120,.55)';ctx.fillRect(X(-138),Y(-170)-420*sc,508*sc,420*sc);
-  ctx.fillStyle='rgba(139,125,86,.6)';ctx.fillRect(X(-560),Y(-172),364*sc,344*sc);
-  ctx.fillStyle='rgba(79,138,63,.85)';ctx.beginPath();ctx.arc(X(-480),Y(-45),70*sc,0,6.3);ctx.fill();
-  ctx.strokeStyle='#e9c33a';ctx.lineWidth=2;ctx.beginPath();for(let q=0;q<=274;q+=6){const x=-196-q;q?ctx.lineTo(X(x),Y(ahRz(x))):ctx.moveTo(X(x),Y(ahRz(x)));}ctx.stroke();
-  ctx.strokeStyle='#38bdf8';ctx.lineWidth=2;ctx.beginPath();for(let z=-176;z>-584;z-=8){z===-176?ctx.moveTo(X(riverX(z)),Y(z)):ctx.lineTo(X(riverX(z)),Y(z));}ctx.stroke();
-  if(aura.hospitalSpawn){const hx=aura.hospitalSpawn.x+14,hz=aura.hospitalSpawn.z+7.4;ctx.fillStyle='#fff';ctx.fillRect(X(hx)-5,Y(hz)-5,10,10);ctx.fillStyle='#dc2626';ctx.fillRect(X(hx)-4,Y(hz)-1,8,2);ctx.fillRect(X(hx)-1,Y(hz)-4,2,8);}
-  ctx.fillStyle='#fff';ctx.font='bold 10px sans-serif';ctx.fillText('AURA HILLS',X(-470),Y(-150));ctx.fillText('MOUNTAINS',X(60),Y(-400));
-  ctx.strokeStyle='#e9c33a';ctx.lineWidth=2;ctx.beginPath();for(let z=-170;z>-584;z-=8){const px=X(roadC(z)),py=Y(z);z===-170?ctx.moveTo(px,py):ctx.lineTo(px,py);}ctx.stroke();
-  const f=(x,z,col,r)=>{ctx.fillStyle=col;ctx.beginPath();ctx.arc(X(x),Y(z),r,0,6.3);ctx.fill();};
-  if(!under()){AO.cops.forEach(c=>f(c.x,c.z,'#3b82f6',3));AO.cars.forEach(c=>f(c.x,c.z,Math.sin(performance.now()/120)>0?'#ef4444':'#3b82f6',4.5));manholes.forEach(m=>f(m[0],m[1],'#34d399',2));}
-  hooks.drawMapOverlay(ctx,cv,center);
-hooks.drawAircraftMapOverlay(cv,center);
-hooks.mpDrawMap(ctx,X,Y);
+export function renderMapCanvas(cv, center) {
+  renderMapCanvasBase(cv, center);
+  const ctx = cv.getContext('2d');
+  const sc = center ? 0.65 : 0.38;
+  const rx = center ? player.x : -29;
+  const rz = center ? player.z : -190;
+  const X = (w) => cv.width / 2 + (w - rx) * sc;
+  const Y = (w) => cv.height / 2 + (w - rz) * sc;
+
+  if (!center) {
+    ctx.fillStyle = 'rgba(120,130,120,.55)'; ctx.fillRect(X(-138), Y(-170) - 420 * sc, 508 * sc, 420 * sc);
+    ctx.fillStyle = 'rgba(139,125,86,.6)'; ctx.fillRect(X(-560), Y(-172), 364 * sc, 344 * sc);
+    ctx.fillStyle = 'rgba(79,138,63,.85)'; ctx.beginPath(); ctx.arc(X(-480), Y(-45), 70 * sc, 0, 6.3); ctx.fill();
+    ctx.strokeStyle = '#e9c33a'; ctx.lineWidth = 2; ctx.beginPath(); for (let q = 0; q <= 274; q += 6) { const x = -196 - q; q ? ctx.lineTo(X(x), Y(ahRz(x))) : ctx.moveTo(X(x), Y(ahRz(x))); } ctx.stroke();
+    ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2; ctx.beginPath(); for (let z = -176; z > -584; z -= 8) { z === -176 ? ctx.moveTo(X(riverX(z)), Y(z)) : ctx.lineTo(X(riverX(z)), Y(z)); } ctx.stroke();
+    if (aura.hospitalSpawn) { const hx = aura.hospitalSpawn.x + 14, hz = aura.hospitalSpawn.z + 7.4; ctx.fillStyle = '#fff'; ctx.fillRect(X(hx) - 5, Y(hz) - 5, 10, 10); ctx.fillStyle = '#dc2626'; ctx.fillRect(X(hx) - 4, Y(hz) - 1, 8, 2); ctx.fillRect(X(hx) - 1, Y(hz) - 4, 2, 8); }
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif'; ctx.fillText('AURA HILLS', X(-470), Y(-150)); ctx.fillText('MOUNTAINS', X(60), Y(-400));
+    ctx.strokeStyle = '#e9c33a'; ctx.lineWidth = 2; ctx.beginPath(); for (let z = -170; z > -584; z -= 8) { const px = X(roadC(z)), py = Y(z); z === -170 ? ctx.moveTo(px, py) : ctx.lineTo(px, py); } ctx.stroke();
+
+    const f = (x, z, col, r) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(x), Y(z), r, 0, 6.3); ctx.fill(); };
+    if (!under()) {
+      AO.cops.forEach((c) => f(c.x, c.z, '#3b82f6', 3));
+      AO.cars.forEach((c) => f(c.x, c.z, Math.sin(performance.now() / 120) > 0 ? '#ef4444' : '#3b82f6', 4.5));
+      manholes.forEach((m) => f(m[0], m[1], '#34d399', 2));
+    }
+  }
+
+  hooks.drawMapOverlay(ctx, cv, center);
+  hooks.drawAircraftMapOverlay(cv, center);
+  hooks.mpDrawMap(ctx, X, Y);
 }
+
 /** Attach all DOM / window listeners. Call once from main.js (never from Studio). */
 export function initUI() {
-buildAuraUI();
+  buildAuraUI();
 
-document.getElementById('btn-start-play').onclick = () => {
-  sfx.unlock();
-  sfx.uiClick();
-  setScreen('playing');
-  triggerMeteorLanding();
-  if (canvas.requestPointerLock) {
-    try {
-      if (!gameState.settings.mobileControls || navigator.maxTouchPoints === 0) {
-        const p = canvas.requestPointerLock();
-        if (p && p.catch) p.catch(() => {});
-      }
-    } catch (_) {}
-  }
-};
-
-document.getElementById('btn-start-settings').onclick = () => {
-  sfx.unlock();
-  sfx.uiClick();
-  openSettingsModal();
-};
-
-document.getElementById('btn-start-import').onclick = () => {
-  sfx.unlock();
-  sfx.uiClick();
-  document.getElementById('save-file-input').click();
-};
-
-document.getElementById('btn-pause-resume').onclick = () => { sfx.uiClick(); setScreen('playing'); };
-
-document.getElementById('btn-pause-settings').onclick = () => { sfx.uiClick(); openSettingsModal(); };
-
-document.getElementById('btn-pause-save').onclick = () => { sfx.uiClick(); exportSaveFile(); };
-
-document.getElementById('btn-pause-import').onclick = () => {
-  sfx.uiClick();
-  document.getElementById('save-file-input').click();
-};
-
-document.getElementById('btn-pause-exit').onclick = () => {
-sfx.uiClick();
-if (gameState.inCar) exitCurrentCar(true);
-hooks.mpShutdown(); // host: host_bye + migration; guest: bye + clean disconnect
-meteorDrop.active = false;
-meteorGroup.visible = false;
-meteorReticle.visible = false;
-document.getElementById('meteor-aim-banner').style.display = 'none';
-setScreen('start');
-};
-
-document.getElementById('btn-settings-close').onclick = () => { sfx.uiClick(); closeSettingsModal(); };
-
-document.getElementById('setting-sens').oninput = (e) => {
-  gameState.settings.sensitivity = parseFloat(e.target.value);
-  document.getElementById('setting-sens-val').textContent = `${gameState.settings.sensitivity.toFixed(2)}x`;
-};
-
-document.querySelectorAll('.gfx-choice').forEach((btn) => {
-  btn.onclick = () => {
+  document.getElementById('btn-start-play').onclick = () => {
+    sfx.unlock();
     sfx.uiClick();
-    applyGraphicsTier(btn.dataset.gfx);
-    syncSettingsButtons();
+    setScreen('playing');
+    triggerMeteorLanding();
+    if (canvas.requestPointerLock) {
+      try {
+        if (!gameState.settings.mobileControls || navigator.maxTouchPoints === 0) {
+          const p = canvas.requestPointerLock();
+          if (p && p.catch) p.catch(() => {});
+        }
+      } catch (_) {}
+    }
   };
-});
+
+  document.getElementById('btn-start-settings').onclick = () => {
+    sfx.unlock();
+    sfx.uiClick();
+    openSettingsModal();
+  };
+
+  document.getElementById('btn-start-import').onclick = () => {
+    sfx.unlock();
+    sfx.uiClick();
+    document.getElementById('save-file-input').click();
+  };
+
+  document.getElementById('btn-pause-resume').onclick = () => { sfx.uiClick(); setScreen('playing'); };
+
+  document.getElementById('btn-pause-settings').onclick = () => { sfx.uiClick(); openSettingsModal(); };
+
+  document.getElementById('btn-pause-save').onclick = () => { sfx.uiClick(); exportSaveFile(); };
+
+  document.getElementById('btn-pause-import').onclick = () => {
+    sfx.uiClick();
+    document.getElementById('save-file-input').click();
+  };
+
+  document.getElementById('btn-pause-exit').onclick = () => {
+    sfx.uiClick();
+    if (gameState.inCar) exitCurrentCar(true);
+    hooks.mpShutdown();
+    meteorDrop.active = false;
+    meteorGroup.visible = false;
+    meteorReticle.visible = false;
+    document.getElementById('meteor-aim-banner').style.display = 'none';
+    setScreen('start');
+  };
+
+  document.getElementById('btn-settings-close').onclick = () => { sfx.uiClick(); closeSettingsModal(); };
+
+  document.getElementById('setting-sens').oninput = (e) => {
+    gameState.settings.sensitivity = parseFloat(e.target.value);
+    document.getElementById('setting-sens-val').textContent = `${gameState.settings.sensitivity.toFixed(2)}x`;
+  };
+
+  document.querySelectorAll('.gfx-choice').forEach((btn) => {
+    btn.onclick = () => {
+      sfx.uiClick();
+      applyGraphicsTier(btn.dataset.gfx);
+      syncSettingsButtons();
+    };
+  });
 
   document.getElementById('btn-setting-sfx').onclick = () => {
-  gameState.settings.sfx = !gameState.settings.sfx;
-  sfx.enabled = gameState.settings.sfx;
-  sfx.uiClick();
-  syncSettingsButtons();
-};
+    gameState.settings.sfx = !gameState.settings.sfx;
+    sfx.enabled = gameState.settings.sfx;
+    sfx.uiClick();
+    syncSettingsButtons();
+  };
 
-document.getElementById('btn-setting-mobile').onclick = () => {
-  gameState.settings.mobileControls = !gameState.settings.mobileControls;
-  sfx.uiClick();
-  syncSettingsButtons();
-  hooks.persistMobilePreference();
-};
+  document.getElementById('btn-setting-mobile').onclick = () => {
+    gameState.settings.mobileControls = !gameState.settings.mobileControls;
+    sfx.uiClick();
+    syncSettingsButtons();
+    hooks.persistMobilePreference();
+  };
 
-document.getElementById('btn-inv-close').onclick = () => { sfx.uiClick(); closeInventoryModal(); };
+  document.getElementById('btn-inv-close').onclick = () => { sfx.uiClick(); closeInventoryModal(); };
 
-document.getElementById('btn-inv-use').onclick = () => useLeftHandItem(gameState.inspectedLeftSlot);
+  document.getElementById('btn-inv-use').onclick = () => useLeftHandItem(gameState.inspectedLeftSlot);
 
-document.getElementById('btn-inv-drop').onclick = () => dropLeftSlot(gameState.inspectedLeftSlot);
+  document.getElementById('btn-inv-drop').onclick = () => dropLeftSlot(gameState.inspectedLeftSlot);
 
-document.getElementById('btn-map-close').onclick = () => { sfx.uiClick(); closeMapModal(); };
+  document.getElementById('btn-map-close').onclick = () => { sfx.uiClick(); closeMapModal(); };
 
-document.getElementById('minimap-box').onclick = () => openMapModal();
+  document.getElementById('minimap-box').onclick = () => openMapModal();
 
-document.getElementById('save-file-input').onchange = (e) => {
-  if (e.target.files && e.target.files[0]) {
-    importSaveFromFile(e.target.files[0]);
-    e.target.value = '';
-  }
-};
+  document.getElementById('save-file-input').onchange = (e) => {
+    if (e.target.files && e.target.files[0]) {
+      importSaveFromFile(e.target.files[0]);
+      e.target.value = '';
+    }
+  };
 }
 
 // Register late-bound implementations for lower layers (see state.js).
-Object.assign(hooks, { updateHUD, cycleRightWeapon, setScreen, openInventoryModal, closeInventoryModal, renderInventoryModal, closeSettingsModal, openMapModal, closeMapModal });
+Object.assign(hooks, { updateHUD, cycleRightWeapon, setScreen, openInventoryModal, closeInventoryModal, renderInventoryModal, closeSettingsModal, openMapModal, closeMapModal, triggerHitmarker });

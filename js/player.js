@@ -70,79 +70,79 @@ export function buildPlayerRigMesh(params = {}) {
   const bodyColor = toHex(params.bodyColor, 0x1e293b);
   const accentColor = toHex(params.accentColor, 0x0f172a);
   const sleeveMat = makeMat(bodyColor);
-const tpRig = new THREE.Group();
-const tpHip = new THREE.Group();
-tpHip.position.y = 0.90;
-tpRig.add(tpHip);
+  const tpRig = new THREE.Group();
+  const tpHip = new THREE.Group();
+  tpHip.position.y = 0.90;
+  tpRig.add(tpHip);
 
-const tpTorso = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.56, 0.24), makeMat(bodyColor));
-tpTorso.position.y = 0.28;
-tpTorso.castShadow = true;
+  const tpTorso = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.56, 0.24), makeMat(bodyColor));
+  tpTorso.position.y = 0.28;
+  tpTorso.castShadow = true;
 
-const tpHead = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.28, 0.26), skinMat);
-tpHead.position.y = 0.72;
-tpHead.castShadow = true;
+  const tpHead = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.28, 0.26), skinMat);
+  tpHead.position.y = 0.72;
+  tpHead.castShadow = true;
 
-const tpHair = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.10, 0.28), makeMat(accentColor));
-tpHair.position.y = 0.85;
-tpHead.add(makeFace(0.26, 0.28, 0.26, -1, { age: 'adult', skin: 0xe2a87e, brow: 0x0f172a, iris: 0x1e40af }));
+  const tpHair = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.10, 0.28), makeMat(accentColor));
+  tpHair.position.y = 0.85;
+  tpHead.add(makeFace(0.26, 0.28, 0.26, -1, { age: 'adult', skin: 0xe2a87e, brow: 0x0f172a, iris: 0x1e40af }));
 
-function createTpArticulatedArm(side) {
-  const shoulderPivot = new THREE.Group();
-  shoulderPivot.position.set(side * 0.31, 0.50, 0);
+  function createTpArticulatedArm(side) {
+    const shoulderPivot = new THREE.Group();
+    shoulderPivot.position.set(side * 0.31, 0.50, 0);
 
-  const upperArm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.27, 0.12), sleeveMat);
-  upperArm.position.y = -0.135;
-  upperArm.castShadow = true;
+    const upperArm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.27, 0.12), sleeveMat);
+    upperArm.position.y = -0.135;
+    upperArm.castShadow = true;
 
-  const elbowPivot = new THREE.Group();
-  elbowPivot.position.set(0, -0.26, 0);
+    const elbowPivot = new THREE.Group();
+    elbowPivot.position.set(0, -0.26, 0);
 
-  const forearm = new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.26, 0.105), skinMat);
-  forearm.position.y = -0.13;
-  forearm.castShadow = true;
+    const forearm = new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.26, 0.105), skinMat);
+    forearm.position.y = -0.13;
+    forearm.castShadow = true;
 
-  elbowPivot.add(forearm);
-  shoulderPivot.add(upperArm, elbowPivot);
-  return { shoulderPivot, elbowPivot };
-}
+    elbowPivot.add(forearm);
+    shoulderPivot.add(upperArm, elbowPivot);
+    return { shoulderPivot, elbowPivot };
+  }
 
-const tpArmLeftRig = createTpArticulatedArm(-1);
-const tpArmRightRig = createTpArticulatedArm(1);
-const tpArmL = tpArmLeftRig.shoulderPivot;
-const tpArmR = tpArmRightRig.shoulderPivot;
-const tpElbowL = tpArmLeftRig.elbowPivot;
-const tpElbowR = tpArmRightRig.elbowPivot;
+  const tpArmLeftRig = createTpArticulatedArm(-1);
+  const tpArmRightRig = createTpArticulatedArm(1);
+  const tpArmL = tpArmLeftRig.shoulderPivot;
+  const tpArmR = tpArmRightRig.shoulderPivot;
+  const tpElbowL = tpArmLeftRig.elbowPivot;
+  const tpElbowR = tpArmRightRig.elbowPivot;
 
-function createTpArticulatedLeg(side) {
-  const hipJoint = new THREE.Group();
-  hipJoint.position.set(side * 0.13, 0.0, 0);
+  function createTpArticulatedLeg(side) {
+    const hipJoint = new THREE.Group();
+    hipJoint.position.set(side * 0.13, 0.0, 0);
 
-  const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.38, 0.15), makeMat(accentColor));
-  thigh.position.y = -0.19;
-  thigh.castShadow = true;
+    const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.38, 0.15), makeMat(accentColor));
+    thigh.position.y = -0.19;
+    thigh.castShadow = true;
 
-  const kneeJoint = new THREE.Group();
-  kneeJoint.position.set(0, -0.37, 0);
+    const kneeJoint = new THREE.Group();
+    kneeJoint.position.set(0, -0.37, 0);
 
-  const shin = new THREE.Mesh(new THREE.BoxGeometry(0.135, 0.37, 0.135), makeMat(accentColor));
-  shin.position.y = -0.185;
-  shin.castShadow = true;
+    const shin = new THREE.Mesh(new THREE.BoxGeometry(0.135, 0.37, 0.135), makeMat(accentColor));
+    shin.position.y = -0.185;
+    shin.castShadow = true;
 
-  kneeJoint.add(shin);
-  hipJoint.add(thigh, kneeJoint);
-  return { hipJoint, kneeJoint };
-}
+    kneeJoint.add(shin);
+    hipJoint.add(thigh, kneeJoint);
+    return { hipJoint, kneeJoint };
+  }
 
-const tpLegLeftRig = createTpArticulatedLeg(-1);
-const tpLegRightRig = createTpArticulatedLeg(1);
-const tpLegL = tpLegLeftRig.hipJoint;
-const tpLegR = tpLegRightRig.hipJoint;
-const tpKneeL = tpLegLeftRig.kneeJoint;
-const tpKneeR = tpLegRightRig.kneeJoint;
+  const tpLegLeftRig = createTpArticulatedLeg(-1);
+  const tpLegRightRig = createTpArticulatedLeg(1);
+  const tpLegL = tpLegLeftRig.hipJoint;
+  const tpLegR = tpLegRightRig.hipJoint;
+  const tpKneeL = tpLegLeftRig.kneeJoint;
+  const tpKneeR = tpLegRightRig.kneeJoint;
 
-tpHip.add(tpTorso, tpHead, tpHair, tpArmL, tpArmR, tpLegL, tpLegR);
-tpRig.visible = false;
+  tpHip.add(tpTorso, tpHead, tpHair, tpArmL, tpArmR, tpLegL, tpLegR);
+  tpRig.visible = false;
   return { tpRig, tpHip, tpTorso, tpHead, tpHair, tpArmL, tpArmR, tpElbowL, tpElbowR, tpLegL, tpLegR, tpKneeL, tpKneeR };
 }
 
@@ -230,9 +230,9 @@ export function triggerRightHandAttack() {
   if (gameState.inCar || player.attackTimer > 0 || meteorDrop.active) return;
   const w = RIGHT_WEAPONS[gameState.activeRightWeapon] || RIGHT_WEAPONS.fists;
   player.attackDuration = w.cooldown;
-player.attackTimer = w.cooldown;
-player.hitApplied = false;
-player._copHit = false;
+  player.attackTimer = w.cooldown;
+  player.hitApplied = false;
+  player._copHit = false;
 
   if (w.isRanged && w.id === 'hotdog_shooter') {
     fireBallisticWiener();
@@ -280,6 +280,7 @@ export function evaluateMeleeHit() {
     }
   }
 }
+
 export function applyPlayerDamage(amount, sourceLabel) {
   if (gameState.damageCooldown > 0) return;
   gameState.damageCooldown = 0.45;
@@ -305,6 +306,8 @@ export function applyPlayerDamage(amount, sourceLabel) {
     player.vy = 0;
     player.grounded = true;
     player.peakAirY = 0.18;
+    player.slideTimer = 0;
+    player.airSlideReady = false;
     const wasted = document.getElementById('wasted-screen');
     if (wasted) {
       const cause = document.getElementById('wasted-cause');
@@ -364,78 +367,87 @@ const _pTxt = new WeakMap(), _pCls = new WeakMap();
 function pText(el, v) { if (el && _pTxt.get(el) !== v) { _pTxt.set(el, v); el.textContent = v; } }
 function pShow(el, on) { if (el && _pCls.get(el) !== on) { _pCls.set(el, on); el.classList.toggle('hidden', !on); } }
 export function updateZoneAndPrompts(force = false) {
-const now = performance.now();
-if (!force && now - _promptT < 100) return;
-_promptT = now;
-let zone = 'SUNNYVALE CITY';
-for (const ez of enterableZones) {
-if (player.x >= ez.minX && player.x <= ez.maxX && player.z >= ez.minZ && player.z <= ez.maxZ && player.y < 5.0) {
-zone = ez.name;
-break;
-}
-}
-if (zone === 'SUNNYVALE CITY') {
-if (player.x >= 164) zone = 'REDROCK DESERT';
-else if ((player.x >= 140 && player.x <= 164) || (player.z >= 87 && player.z <= 109 && player.y > 2.2)) zone = 'I-88 INTERSTATE FREEWAY';
-else if (biomeAt(player.x, player.z) !== 'city') zone = { alpine: 'FROSTPINE ALPINE', woods: 'EMERALD WOODS', cove: 'SUNSET COVE' }[biomeAt(player.x, player.z)];
-else if (Math.abs(player.x) < 17 && Math.abs(player.z) < 17) zone = 'CENTRAL PLAZA';
-else if (player.z < -72) zone = 'DOWNTOWN SKYSCRAPER DISTRICT';
-else if (player.x < -22 && player.z < -22) zone = 'COMMERCIAL DISTRICT';
-else if (player.x > 22 && player.z < -22) zone = 'BRICKWOOD APARTMENTS';
-else if (player.x > 22 && player.z > 22) zone = 'HARBOR CONTAINER YARD';
-else zone = 'SUBURBAN NEIGHBORHOOD';
-}
-gameState.zoneName = zone;
-const promptEl = document.getElementById('interact-prompt');
-const mantleEl = document.getElementById('mantle-prompt');
-const keyEl = document.getElementById('interact-key');
-const textEl = document.getElementById('interact-text');
-if (meteorDrop.active) { pShow(promptEl, false); pShow(mantleEl, false); return; }
-if (gameState.inCar) { pShow(promptEl, true); pText(keyEl, 'F'); pText(textEl, 'EXIT VEHICLE'); pShow(mantleEl, false); return; }
-let nearRefill = null;
-for (const zoneObj of sausageRefillZones) {
-if (Math.hypot(player.x - zoneObj.x, player.z - zoneObj.z) < 3.1 && Math.abs(player.y - zoneObj.y) < 1.8) { nearRefill = zoneObj; break; }
-}
-if (nearRefill) {
-pShow(promptEl, true); pText(keyEl, 'E'); pText(textEl, `REFILL SAUSAGES (${gameState.hotdogAmmo}/${MAX_HOTDOG_AMMO})`);
-} else {
-const elev = getNearestElevatorPad();
-if (elev) {
-pShow(promptEl, true); pText(keyEl, 'F');
-pText(textEl, elev.toRoof ? `RIDE ELEVATOR TO ROOF (${elev.sk.name})` : 'RIDE ELEVATOR TO LOBBY');
-} else {
-const nearCar = getNearestVehicle(4.2);
-let nearNpc = null;
-for (const npc of npcs) {
-if (!npc.spawned || npc.asleep) continue;
-if (Math.hypot(player.x - npc.x, player.z - npc.z) < 2.5 && Math.abs(player.y - 0.18) < 1.8) { nearNpc = npc; break; }
-}
-if (nearCar) { pShow(promptEl, true); pText(keyEl, 'F'); pText(textEl, `DRIVE ${nearCar.v.name}`); }
-else if (nearNpc) { pShow(promptEl, true); pText(keyEl, 'E'); pText(textEl, `TALK TO ${nearNpc.name}`); }
-else { pShow(promptEl, false); }
-}
-}
-pShow(mantleEl, !!findMantleTarget());
+  const now = performance.now();
+  if (!force && now - _promptT < 100) return;
+  _promptT = now;
+  let zone = 'SUNNYVALE CITY';
+  for (const ez of enterableZones) {
+    if (player.x >= ez.minX && player.x <= ez.maxX && player.z >= ez.minZ && player.z <= ez.maxZ && player.y < 5.0) {
+      zone = ez.name;
+      break;
+    }
+  }
+  if (zone === 'SUNNYVALE CITY') {
+    if (player.x >= 164) zone = 'REDROCK DESERT';
+    else if ((player.x >= 140 && player.x <= 164) || (player.z >= 87 && player.z <= 109 && player.y > 2.2)) zone = 'I-88 INTERSTATE FREEWAY';
+    else if (biomeAt(player.x, player.z) !== 'city') zone = { alpine: 'FROSTPINE ALPINE', woods: 'EMERALD WOODS', cove: 'SUNSET COVE' }[biomeAt(player.x, player.z)];
+    else if (Math.abs(player.x) < 17 && Math.abs(player.z) < 17) zone = 'CENTRAL PLAZA';
+    else if (player.z < -72) zone = 'DOWNTOWN SKYSCRAPER DISTRICT';
+    else if (player.x < -22 && player.z < -22) zone = 'COMMERCIAL DISTRICT';
+    else if (player.x > 22 && player.z < -22) zone = 'BRICKWOOD APARTMENTS';
+    else if (player.x > 22 && player.z > 22) zone = 'HARBOR CONTAINER YARD';
+    else zone = 'SUBURBAN NEIGHBORHOOD';
+  }
+  gameState.zoneName = zone;
+  const promptEl = document.getElementById('interact-prompt');
+  const mantleEl = document.getElementById('mantle-prompt');
+  const keyEl = document.getElementById('interact-key');
+  const textEl = document.getElementById('interact-text');
+  if (meteorDrop.active) { pShow(promptEl, false); pShow(mantleEl, false); return; }
+  if (gameState.inCar) { pShow(promptEl, true); pText(keyEl, 'F'); pText(textEl, 'EXIT VEHICLE'); pShow(mantleEl, false); return; }
+  let nearRefill = null;
+  for (const zoneObj of sausageRefillZones) {
+    if (Math.hypot(player.x - zoneObj.x, player.z - zoneObj.z) < 3.1 && Math.abs(player.y - zoneObj.y) < 1.8) { nearRefill = zoneObj; break; }
+  }
+  if (nearRefill) {
+    pShow(promptEl, true); pText(keyEl, 'E'); pText(textEl, `REFILL SAUSAGES (${gameState.hotdogAmmo}/${MAX_HOTDOG_AMMO})`);
+  } else {
+    const elev = getNearestElevatorPad();
+    if (elev) {
+      pShow(promptEl, true); pText(keyEl, 'F');
+      pText(textEl, elev.toRoof ? `RIDE ELEVATOR TO ROOF (${elev.sk.name})` : 'RIDE ELEVATOR TO LOBBY');
+    } else {
+      const nearCar = getNearestVehicle(4.2);
+      let nearNpc = null;
+      for (const npc of npcs) {
+        if (!npc.spawned || npc.asleep) continue;
+        if (Math.hypot(player.x - npc.x, player.z - npc.z) < 2.5 && Math.abs(player.y - 0.18) < 1.8) { nearNpc = npc; break; }
+      }
+      if (nearCar) { pShow(promptEl, true); pText(keyEl, 'F'); pText(textEl, `DRIVE ${nearCar.v.name}`); }
+      else if (nearNpc) { pShow(promptEl, true); pText(keyEl, 'E'); pText(textEl, `TALK TO ${nearNpc.name}`); }
+      else { pShow(promptEl, false); }
+    }
+  }
+  pShow(mantleEl, !!findMantleTarget());
 }
 
 function stepParticles(dt) {
-for (let i = particleBursts.length - 1; i >= 0; i--) {
-const pt = particleBursts[i];
-pt.life -= dt;
-pt.vy -= 14 * dt;
-pt.mesh.position.x += pt.vx * dt;
-pt.mesh.position.y += pt.vy * dt;
-pt.mesh.position.z += pt.vz * dt;
-pt.mesh.scale.setScalar(Math.max(0.01, pt.life));
-if (pt.life <= 0) {
-worldRoot.remove(pt.mesh);
-particleBursts.splice(i, 1);
+  for (let i = particleBursts.length - 1; i >= 0; i--) {
+    const pt = particleBursts[i];
+    pt.life -= dt;
+    pt.vy -= 14 * dt;
+    pt.mesh.position.x += pt.vx * dt;
+    pt.mesh.position.y += pt.vy * dt;
+    pt.mesh.position.z += pt.vz * dt;
+    pt.mesh.scale.setScalar(Math.max(0.01, pt.life));
+    if (pt.life <= 0) {
+      worldRoot.remove(pt.mesh);
+      particleBursts.splice(i, 1);
+    }
+  }
 }
-}
-}
+
 export function stepSimulation(dt, elapsed) {
   if (gameState.damageCooldown > 0) gameState.damageCooldown -= dt;
   if (gameState.speedBoostTimer > 0) gameState.speedBoostTimer -= dt;
+
+  // Health Regeneration
+  if (gameState.hp > 0 && gameState.hp < gameState.maxHp) {
+    const regenRate = gameState.damageCooldown > 0 ? 0 : 3.5;
+    if (regenRate > 0) {
+      gameState.hp = Math.min(gameState.maxHp, gameState.hp + regenRate * dt);
+    }
+  }
 
   if (meteorDrop.active) {
     meteorDrop.timer += dt;
@@ -572,10 +584,10 @@ export function stepSimulation(dt, elapsed) {
     }
 
     stepParticles(dt);
-updateZoneAndPrompts();
-hooks.updateHUD();
-return;
-}
+    updateZoneAndPrompts();
+    hooks.updateHUD();
+    return;
+  }
 
   if (meteorDrop.shockwaveMesh) {
     meteorDrop.shockwaveLife -= dt;
@@ -662,12 +674,43 @@ return;
         player.peakAirY = player.y;
       }
     } else {
+      // Input key checks for Crouch & Jump
+      const crouchInput = Boolean(keys['KeyC'] || keys['ControlLeft']);
+      if (!crouchInput) {
+        player.crouchJumped = false;
+      }
+
+      // Jump input while crouching -> jump & uncrouch immediately
+      if (keys['Space'] && (player.grounded || player.coyote > 0) && !player.mantle?.active) {
+        player.vy = 7.5;
+        player.grounded = false;
+        player.coyote = 0;
+        if (player.crouching || player.slideTimer > 0) {
+          player.crouching = false;
+          player.crouchJumped = true;
+          player.slideTimer = 0;
+        }
+      } else if (crouchInput && !player.crouchJumped) {
+        player.crouching = true;
+      } else if (!crouchInput) {
+        player.crouching = false;
+      }
+
       const moveFwd = (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0) - (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0);
       const moveRight = (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0) - (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0);
 
-      const wantsSprint = (keys['ShiftLeft'] || keys['ShiftRight']) && moveFwd > 0 && !player.crouching && !gameState.isAiming && gameState.stamina > 2;
+      // Sprinting and Stamina Latch
+      const shiftHeld = Boolean(keys['ShiftLeft'] || keys['ShiftRight']);
+      if (!shiftHeld) {
+        player.sprintExhausted = false;
+      }
+
+      const wantsSprint = shiftHeld && !player.sprintExhausted && moveFwd > 0 && !player.crouching && !gameState.isAiming && gameState.stamina > 0;
       if (wantsSprint) {
         gameState.stamina = Math.max(0, gameState.stamina - 8.5 * dt);
+        if (gameState.stamina <= 0) {
+          player.sprintExhausted = true;
+        }
         player.sprintCycle += dt * 15.5;
       } else {
         // Crouching replenishes stamina 3x quicker!
@@ -698,6 +741,41 @@ return;
       const grip = player.grounded ? surfaceGrip(player.x, player.z) * (len > 0.001 ? 1 : 1.25) : (len > 0.001 ? 2.2 : 0.4);
       player.pvx = (player.pvx || 0) + (tvx - (player.pvx || 0)) * Math.min(1, grip * dt);
       player.pvz = (player.pvz || 0) + (tvz - (player.pvz || 0)) * Math.min(1, grip * dt);
+
+      // Crouch Slide from Air (Jump/Cliff) vs Flat Ground
+      const horizSpeed = Math.hypot(player.pvx || 0, player.pvz || 0);
+
+      if (!player.grounded) {
+        if (player.crouching && horizSpeed > 1.8) {
+          player.airSlideReady = true;
+          player.airSlideSpeed = Math.max(horizSpeed * 1.3, 7.5);
+          player.airSlideDirX = (player.pvx || 0) / horizSpeed;
+          player.airSlideDirZ = (player.pvz || 0) / horizSpeed;
+        }
+      } else {
+        if (player.crouching && player.airSlideReady) {
+          player.slideTimer = 0.65;
+          player.slideVx = player.airSlideDirX * player.airSlideSpeed;
+          player.slideVz = player.airSlideDirZ * player.airSlideSpeed;
+          player.airSlideReady = false;
+          sfx.mantle();
+          spawnParticles(player.x, player.y + 0.1, player.z, 0xd1d5db, 10, 4.0);
+        } else if (!player.crouching) {
+          player.airSlideReady = false;
+        }
+      }
+
+      if (player.slideTimer > 0) {
+        player.slideTimer -= dt;
+        player.pvx = player.slideVx;
+        player.pvz = player.slideVz;
+        player.slideVx *= Math.max(0, 1 - dt * 2.2);
+        player.slideVz *= Math.max(0, 1 - dt * 2.2);
+        if (player.grounded && Math.random() < 0.35) {
+          spawnParticles(player.x, player.y + 0.05, player.z, 0x9ca3af, 2, 1.5);
+        }
+      }
+
       vx = player.pvx; vz = player.pvz;
 
       const nextX = player.x + vx * dt;
@@ -737,7 +815,7 @@ return;
     const targetEye = player.crouching ? 1.12 : 1.62;
     player.eyeHeight += (targetEye - player.eyeHeight) * Math.min(1, dt * 14);
     const movingSpeed = (keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD']) && player.grounded;
-    const isSprintingNow = (keys['ShiftLeft'] || keys['ShiftRight']) && (keys['KeyW'] || keys['ArrowUp']) && !player.crouching && !gameState.isAiming && gameState.stamina > 2 && movingSpeed;
+    const isSprintingNow = (keys['ShiftLeft'] || keys['ShiftRight']) && (keys['KeyW'] || keys['ArrowUp']) && !player.crouching && !gameState.isAiming && gameState.stamina > 0 && movingSpeed && !player.sprintExhausted;
     const bobY = movingSpeed ? Math.abs(Math.sin(player.walkCycle)) * (isSprintingNow ? 0.085 : 0.045) : 0;
 
     let swingPitch = 0;
@@ -800,7 +878,9 @@ return;
       fpRoot.visible = false;
       tpRig.visible = true;
       tpRig.position.set(player.x, player.y + bobY - player.landingDip, player.z);
-      tpRig.rotation.y = player.yaw;
+
+      // Rotate playerMesh.rotation.y by + Math.PI (180 degrees) so character faces forward
+      tpRig.rotation.y = player.yaw + Math.PI;
 
       tpHip.rotation.x = 0;
       tpTorso.rotation.y = 0;
@@ -813,7 +893,16 @@ return;
       tpKneeL.rotation.x = 0;
       tpKneeR.rotation.x = 0;
 
-      if (!player.grounded) {
+      if (player.slideTimer > 0) {
+        // Sliding posture animation
+        tpHip.rotation.x = -0.48;
+        tpLegL.rotation.x = 0.85;
+        tpKneeL.rotation.x = 0.12;
+        tpLegR.rotation.x = -0.65;
+        tpKneeR.rotation.x = 0.95;
+        tpArmL.rotation.x = -0.45;
+        tpArmR.rotation.x = -0.45;
+      } else if (!player.grounded) {
         // 3RD-PERSON JUMP ANIMATION (Rising Leap vs Mid-Air Landing Prep)
         const airBlend = Math.max(-1, Math.min(1, player.vy / 6.5));
         if (airBlend > 0.1) {
@@ -936,38 +1025,37 @@ return;
   }
 
   for (let i = worldPickups.length - 1; i >= 0; i--) {
-  const p = worldPickups[i];
-  p.phase += dt * 2.8;
-  p.group.rotation.y += dt * 1.8;
-  p.group.position.y = p.baseY + Math.sin(p.phase) * 0.12;
-  if (Math.hypot(player.x - p.x, player.z - p.z) < 1.35 && Math.abs(player.y - p.y) < 1.8) {
-    if (hooks.mpIsGuest()) {
-      // Host validates and grants; removal arrives as pickup_taken.
-      if (!p.asked) { p.asked = true; hooks.mpWorldEvent({ t: 'pickup_take', netId: p.netId }); }
-      continue;
-    }
-    if (p.type === 'right') {
-      if (!gameState.rightWeapons.includes(p.id)) gameState.rightWeapons.push(p.id);
-      gameState.activeRightWeapon = p.id;
-      if (p.id === 'hotdog_shooter') gameState.hotdogAmmo = MAX_HOTDOG_AMMO;
-      sfx.pickup();
-      syncEquippedMeshes();
-      pushFeed(`EQUIPPED ${RIGHT_WEAPONS[p.id].name.toUpperCase()}`, 'border-l-amber-400');
-      hooks.mpWorldEvent({ t: 'pickup_taken', netId: p.netId });
-      worldRoot.remove(p.group);
-      freeGeo(p.group);
-      worldPickups.splice(i, 1);
-    } else if (addLeftItemToBag(p.id, 1)) {
-      sfx.pickup();
-      syncEquippedMeshes();
-      pushFeed(`COLLECTED ${LEFT_ITEMS[p.id].name.toUpperCase()}`, 'border-l-sky-400');
-      hooks.mpWorldEvent({ t: 'pickup_taken', netId: p.netId });
-      worldRoot.remove(p.group);
-      freeGeo(p.group);
-      worldPickups.splice(i, 1);
+    const p = worldPickups[i];
+    p.phase += dt * 2.8;
+    p.group.rotation.y += dt * 1.8;
+    p.group.position.y = p.baseY + Math.sin(p.phase) * 0.12;
+    if (Math.hypot(player.x - p.x, player.z - p.z) < 1.35 && Math.abs(player.y - p.y) < 1.8) {
+      if (hooks.mpIsGuest()) {
+        if (!p.asked) { p.asked = true; hooks.mpWorldEvent({ t: 'pickup_take', netId: p.netId }); }
+        continue;
+      }
+      if (p.type === 'right') {
+        if (!gameState.rightWeapons.includes(p.id)) gameState.rightWeapons.push(p.id);
+        gameState.activeRightWeapon = p.id;
+        if (p.id === 'hotdog_shooter') gameState.hotdogAmmo = MAX_HOTDOG_AMMO;
+        sfx.pickup();
+        syncEquippedMeshes();
+        pushFeed(`EQUIPPED ${RIGHT_WEAPONS[p.id].name.toUpperCase()}`, 'border-l-amber-400');
+        hooks.mpWorldEvent({ t: 'pickup_taken', netId: p.netId });
+        worldRoot.remove(p.group);
+        freeGeo(p.group);
+        worldPickups.splice(i, 1);
+      } else if (addLeftItemToBag(p.id, 1)) {
+        sfx.pickup();
+        syncEquippedMeshes();
+        pushFeed(`COLLECTED ${LEFT_ITEMS[p.id].name.toUpperCase()}`, 'border-l-sky-400');
+        hooks.mpWorldEvent({ t: 'pickup_taken', netId: p.netId });
+        worldRoot.remove(p.group);
+        freeGeo(p.group);
+        worldPickups.splice(i, 1);
+      }
     }
   }
-}
 
   stepParticles(dt);
 
@@ -982,19 +1070,19 @@ return;
   updateSkyscraperInteriors();
   updateNPCs(dt, elapsed);
 
- const sunY = Math.max(0, player.y);
-const shadowMoved = !aura._shadowAt
-|| Math.hypot(player.x - aura._shadowAt.x, player.z - aura._shadowAt.z) > 8
-|| Math.abs(sunY - aura._shadowAt.y) > 6;
-const shadowStale = performance.now() - (aura._shadowT || 0) > 200;
-if (shadowMoved || shadowStale) {
-sunLight.position.set(player.x + 78, sunY + 130, player.z + 52);
-sunLight.target.position.set(player.x, sunY, player.z);
-sunLight.target.updateMatrixWorld();
-renderer.shadowMap.needsUpdate = true;
-aura._shadowAt = { x: player.x, y: sunY, z: player.z };
-aura._shadowT = performance.now();
-}
+  const sunY = Math.max(0, player.y);
+  const shadowMoved = !aura._shadowAt
+    || Math.hypot(player.x - aura._shadowAt.x, player.z - aura._shadowAt.z) > 8
+    || Math.abs(sunY - aura._shadowAt.y) > 6;
+  const shadowStale = performance.now() - (aura._shadowT || 0) > 200;
+  if (shadowMoved || shadowStale) {
+    sunLight.position.set(player.x + 78, sunY + 130, player.z + 52);
+    sunLight.target.position.set(player.x, sunY, player.z);
+    sunLight.target.updateMatrixWorld();
+    renderer.shadowMap.needsUpdate = true;
+    aura._shadowAt = { x: player.x, y: sunY, z: player.z };
+    aura._shadowT = performance.now();
+  }
 
   updateZoneAndPrompts();
   hooks.updateHUD();
@@ -1050,10 +1138,10 @@ export function applyLevelParams(data = levelData) {
   const p = data.params;
   for (const id of Object.keys(p.weapons || {})) {
     if (RIGHT_WEAPONS[id]) {
-const w = p.weapons[id];
-if (Number.isFinite(w.damage)) RIGHT_WEAPONS[id].damage = w.damage;
-if (Number.isFinite(w.cooldown)) RIGHT_WEAPONS[id].cooldown = w.cooldown;
-if (Number.isFinite(w.reach)) RIGHT_WEAPONS[id].reach = w.reach;
+      const w = p.weapons[id];
+      if (Number.isFinite(w.damage)) RIGHT_WEAPONS[id].damage = w.damage;
+      if (Number.isFinite(w.cooldown)) RIGHT_WEAPONS[id].cooldown = w.cooldown;
+      if (Number.isFinite(w.reach)) RIGHT_WEAPONS[id].reach = w.reach;
     }
   }
   gameState.maxHp = p.player.maxHp;

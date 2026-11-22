@@ -1,10 +1,10 @@
 // =============================================================================
-// engine.js — Three.js scene, camera, renderer (initEngine), lighting, sky, procedural PBR textures, makeMat() and the graphics tier controller.
+// engine.js — Three.js scene, camera, renderer (initEngine), lighting, sky, procedural PBR textures, makeMat() and graphics tier controller.
 // =============================================================================
 import * as THREE from 'three';
 import { gameState } from './state.js';
 
-export let PIXEL_RENDER_SCALE = 0.75;
+export const PIXEL_RENDER_SCALE = 0.75;
 
 export let canvas = null;
 export let renderer = null;
@@ -201,7 +201,50 @@ for (let i = 0; i < 18; i++) {
 skyGroup.visible = true;
 scene.add(skyGroup);
 
+// PS3-Era Motion Blur & Camera FOV Kick Controller State
+const prevCamQuat = new THREE.Quaternion();
+let turnSpeedSmooth = 0;
+let motionBlurOverlayEl = null;
+const BASE_FOV = 72;
+
 export function updateSunLensFlare() {
+  // ---- Camera Rotation Speed Tracking & Dynamic FOV Kick / CSS Blur Overlay ----
+  camera.getWorldQuaternion(camera.quaternion);
+  const angleDiff = prevCamQuat.angleTo(camera.quaternion);
+  prevCamQuat.copy(camera.quaternion);
+
+  const rawTurnSpeed = Math.min(1.0, angleDiff * 16.0);
+  turnSpeedSmooth += (rawTurnSpeed - turnSpeedSmooth) * 0.18;
+
+  // Dynamic FOV Kick on fast camera turns
+  const targetFov = BASE_FOV + turnSpeedSmooth * 6.5;
+  if (Math.abs(camera.fov - targetFov) > 0.01) {
+    camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, 0.15);
+    camera.updateProjectionMatrix();
+  }
+
+  // Lightweight CSS Edge Blur & Vignette Overlay (#ps3-motion-blur)
+  if (!motionBlurOverlayEl && typeof document !== 'undefined') {
+    motionBlurOverlayEl = document.getElementById('ps3-motion-blur');
+    if (!motionBlurOverlayEl) {
+      motionBlurOverlayEl = document.createElement('div');
+      motionBlurOverlayEl.id = 'ps3-motion-blur';
+      motionBlurOverlayEl.style.cssText =
+        'position:fixed;inset:0;pointer-events:none;z-index:1;opacity:0;transition:opacity 0.08s ease-out;' +
+        'box-shadow:inset 0 0 90px rgba(0,0,0,0.55);' +
+        'backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);' +
+        'mask-image:radial-gradient(circle, transparent 45%, black 90%);' +
+        '-webkit-mask-image:radial-gradient(circle, transparent 45%, black 90%);';
+      document.body.appendChild(motionBlurOverlayEl);
+    }
+  }
+
+  if (motionBlurOverlayEl) {
+    const blurOpacity = Math.min(0.85, turnSpeedSmooth * 1.25);
+    motionBlurOverlayEl.style.opacity = blurOpacity.toFixed(2);
+  }
+
+  // ---- Sun Lens Flare logic ----
   const flare = document.getElementById('sun-lens-flare');
   if (!flare) return;
   if (!skyGroup.visible) {
@@ -530,7 +573,6 @@ export let animatedWaterTex = null;
 export function makeMat(hex, opts = {}) {
   const usePhysical = opts.clearcoat !== undefined || opts.isCarMetal;
 
-  // Optimized PBR Roughness & Emissive contrast tuning under ACES Filmic
   const defaultRoughness = opts.roughness ?? (opts.isCarMetal ? 0.35 : (opts.metalness > 0.4 ? 0.45 : 0.72));
   const emissiveVal = opts.emissive ?? 0x000000;
   const defaultEmissiveIntensity = opts.emissiveIntensity ?? (emissiveVal ? 2.5 : 0);
