@@ -19,13 +19,86 @@ function clampMeteorPosition(x, z) {
   };
 }
 
+// Procedural woven cloth textures (shared across clothing materials only)
+const clothTextures = (() => {
+  const size = 128;
+
+  const weaveCanvas = document.createElement('canvas');
+  weaveCanvas.width = size;
+  weaveCanvas.height = size;
+  const wCtx = weaveCanvas.getContext('2d');
+
+  const bumpCanvas = document.createElement('canvas');
+  bumpCanvas.width = size;
+  bumpCanvas.height = size;
+  const bCtx = bumpCanvas.getContext('2d');
+
+  const wImg = wCtx.createImageData(size, size);
+  const bImg = bCtx.createImageData(size, size);
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const idx = (y * size + x) * 4;
+      // Tight twill/canvas cross-weave pattern + subtle organic fiber grain
+      const warp = Math.sin((x / 4) * Math.PI * 2);
+      const weft = Math.sin((y / 4) * Math.PI * 2);
+      const twill = Math.sin(((x + y) / 8) * Math.PI * 2) * 0.35;
+      const grain = (Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1;
+      const thread = (warp * 0.4 + weft * 0.4 + twill) * 0.5 + (grain - 0.5) * 0.18;
+
+      // Albedo stays bright (222..255) so material.color tints cleanly without darkening
+      const albedoVal = Math.max(215, Math.min(255, Math.round(238 + thread * 17)));
+      wImg.data[idx] = albedoVal;
+      wImg.data[idx + 1] = albedoVal;
+      wImg.data[idx + 2] = albedoVal;
+      wImg.data[idx + 3] = 255;
+
+      // Higher-contrast height value for bump/roughness maps
+      const bumpVal = Math.max(0, Math.min(255, Math.round(128 + thread * 95)));
+      bImg.data[idx] = bumpVal;
+      bImg.data[idx + 1] = bumpVal;
+      bImg.data[idx + 2] = bumpVal;
+      bImg.data[idx + 3] = 255;
+    }
+  }
+
+  wCtx.putImageData(wImg, 0, 0);
+  bCtx.putImageData(bImg, 0, 0);
+
+  const map = new THREE.CanvasTexture(weaveCanvas);
+  map.wrapS = THREE.RepeatWrapping;
+  map.wrapT = THREE.RepeatWrapping;
+  map.repeat.set(3, 3);
+  if ('colorSpace' in map && THREE.SRGBColorSpace) map.colorSpace = THREE.SRGBColorSpace;
+  map.needsUpdate = true;
+
+  const bumpMap = new THREE.CanvasTexture(bumpCanvas);
+  bumpMap.wrapS = THREE.RepeatWrapping;
+  bumpMap.wrapT = THREE.RepeatWrapping;
+  bumpMap.repeat.set(3, 3);
+  bumpMap.needsUpdate = true;
+
+  return { map, bumpMap };
+})();
+
+function makeClothMat(color) {
+  const mat = makeMat(color);
+  mat.map = clothTextures.map;
+  mat.bumpMap = clothTextures.bumpMap;
+  mat.bumpScale = 0.018;
+  mat.roughnessMap = clothTextures.bumpMap;
+  mat.roughness = Math.max(mat.roughness ?? 0.85, 0.88);
+  mat.needsUpdate = true;
+  return mat;
+}
+
 export const fpRoot = new THREE.Group();
 
 camera.add(fpRoot);
 
 export const skinMat = makeMat(0xe2a87e);
 
-export const sleeveMat = makeMat(0x1e293b);
+export const sleeveMat = makeClothMat(0x1e293b);
 
 export function createFirstPersonArm(side) {
   const pivot = new THREE.Group();
@@ -69,13 +142,14 @@ export function buildPlayerRigMesh(params = {}) {
   const toHex = (c, d) => (c === undefined || c === null || c === '') ? d : (typeof c === 'number' ? c : new THREE.Color(c).getHex());
   const bodyColor = toHex(params.bodyColor, 0x1e293b);
   const accentColor = toHex(params.accentColor, 0x0f172a);
-  const sleeveMat = makeMat(bodyColor);
+  const shirtClothMat = makeClothMat(bodyColor);
+  const pantsClothMat = makeClothMat(accentColor);
   const tpRig = new THREE.Group();
   const tpHip = new THREE.Group();
   tpHip.position.y = 0.90;
   tpRig.add(tpHip);
 
-  const tpTorso = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.56, 0.24), makeMat(bodyColor));
+  const tpTorso = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.56, 0.24), shirtClothMat);
   tpTorso.position.y = 0.28;
   tpTorso.castShadow = true;
 
@@ -91,7 +165,7 @@ export function buildPlayerRigMesh(params = {}) {
     const shoulderPivot = new THREE.Group();
     shoulderPivot.position.set(side * 0.31, 0.50, 0);
 
-    const upperArm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.27, 0.12), sleeveMat);
+    const upperArm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.27, 0.12), shirtClothMat);
     upperArm.position.y = -0.135;
     upperArm.castShadow = true;
 
@@ -118,14 +192,14 @@ export function buildPlayerRigMesh(params = {}) {
     const hipJoint = new THREE.Group();
     hipJoint.position.set(side * 0.13, 0.0, 0);
 
-    const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.38, 0.15), makeMat(accentColor));
+    const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.38, 0.15), pantsClothMat);
     thigh.position.y = -0.19;
     thigh.castShadow = true;
 
     const kneeJoint = new THREE.Group();
     kneeJoint.position.set(0, -0.37, 0);
 
-    const shin = new THREE.Mesh(new THREE.BoxGeometry(0.135, 0.37, 0.135), makeMat(accentColor));
+    const shin = new THREE.Mesh(new THREE.BoxGeometry(0.135, 0.37, 0.135), pantsClothMat);
     shin.position.y = -0.185;
     shin.castShadow = true;
 
