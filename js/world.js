@@ -2826,8 +2826,10 @@ export function buildAuraSkylineAndHighway(){
 export const entityObjects = new Map();
 export const studioObjects = new Map();
 const studioObjectBaseTransforms = new Map();
+const studioDeletedObjects = new Map();
 
 function applyObjectTransform(object, transform) {
+  if (!transform || transform.deleted) return;
   object.position.fromArray(transform.position);
   object.rotation.fromArray(transform.rotation);
   object.scale.fromArray(transform.scale);
@@ -2843,28 +2845,46 @@ function registerStudioObjectTree(root, rootPath, data = levelData) {
       studioObjectBaseTransforms.set(path, { position: object.position.toArray(), rotation: object.rotation.toArray(), scale: object.scale.toArray() });
     }
     const saved = data.worldTransforms && data.worldTransforms[path];
-    if (saved) applyObjectTransform(object, saved);
+    if (saved && !saved.deleted) applyObjectTransform(object, saved);
     object.children.forEach((child, index) => visit(child, `${path}/${index}`));
   };
   visit(root, rootPath);
 }
 
 export function applyStudioWorldTransforms(data = levelData) {
-  for (const [path, object] of studioObjects) {
+  for (const [path, entry] of [...studioDeletedObjects.entries()]) {
+    const saved = data.worldTransforms && data.worldTransforms[path];
+    if (!saved || !saved.deleted) {
+      if (entry.parent && entry.object) entry.parent.add(entry.object);
+      studioDeletedObjects.delete(path);
+      if (entry.object) registerStudioObjectTree(entry.object, path, data);
+    }
+  }
+  for (const [path, object] of [...studioObjects.entries()]) {
+    const saved = data.worldTransforms && data.worldTransforms[path];
+    if (saved && saved.deleted) {
+      removeEntityObject(path);
+      continue;
+    }
     const base = studioObjectBaseTransforms.get(path);
     if (base) applyObjectTransform(object, base);
-    const saved = data.worldTransforms && data.worldTransforms[path];
     if (saved) applyObjectTransform(object, saved);
   }
 }
 
 function registerGeneratedWorldObjects(data = levelData) {
   studioObjects.clear();
+  studioDeletedObjects.clear();
   let staticIndex = 0;
   for (const root of worldRoot.children) {
     if (root.userData.studioSelectable === false) continue;
     const entityId = root.userData.entityId;
     registerStudioObjectTree(root, entityId ? `entity:${entityId}` : `static:${staticIndex++}`, data);
+  }
+  if (data.worldTransforms) {
+    for (const [path, saved] of Object.entries(data.worldTransforms)) {
+      if (saved && saved.deleted) removeEntityObject(path);
+    }
   }
 }
 
@@ -3031,12 +3051,48 @@ if (register) {
 }
 break;
     }
-    case 'road': {
-object = makeRoadMesh(entity);
-object.position.set(x, y, z); object.rotation.set(rot[0], rot[1], rot[2]); object.scale.set(scale[0], scale[1], scale[2]);
-worldRoot.add(object);
-break;
+                    case 'road': {
+      object = makeRoadMesh(entity);
+      object.position.set(x, y, z);
+      object.rotation.set(rot, rot, rot);
+      object.scale.set(scale, scale, scale);
+      worldRoot.add(object);
+      if (register) {
+        object.updateMatrixWorld(true);
+        const bounds = new THREE.Box3().setFromObject(object);
+        const tiltMag = Math.hypot(rot || 0, rot || 0);
+        if (tiltMag === 0) {
+          record = addWorldBox(bounds.min.x, bounds.max.x, bounds.min.y, bounds.max.y, bounds.min.z, bounds.max.z, 'entity_road', true);
+        } else {
+          const halfW = (entity.width || 10) * 0.5;
+          const halfL = (entity.length || 20) * 0.5;
+          const pNegX = new THREE.Vector3(-halfW, 0, 0).applyMatrix4(object.matrixWorld);
+          const pPosX = new THREE.Vector3(halfW, 0, 0).applyMatrix4(object.matrixWorld);
+          const pNegZ = new THREE.Vector3(0, 0, -halfL).applyMatrix4(object.matrixWorld);
+          const pPosZ = new THREE.Vector3(0, 0, halfL).applyMatrix4(object.matrixWorld);
+          const useXAxis = Math.abs(pPosX.y - pNegX.y) >= Math.abs(pPosZ.y - pNegZ.y);
+          const pMin = useXAxis ? (pNegX.x < pPosX.x ? pNegX : pPosX) : (pNegZ.z < pPosZ.z ? pNegZ : pPosZ);
+          const pMax = useXAxis ? (pNegX.x < pPosX.x ? pPosX : pNegX) : (pNegZ.z < pPosZ.z ? pPosZ : pNegZ);
+          const axis = useXAxis ? 'x' : 'z';
+          const dir = pMax.y >= pMin.y ? 1 : -1;
+          addDriveableRamp({
+            minX: bounds.min.x, maxX: bounds.max.x,
+            minZ: bounds.min.z, maxZ: bounds.max.z,
+            startY: pMin.y + 0.08,
+            endY: pMax.y + 0.08,
+            axis,
+            dir
+          });
+          record = { minX: bounds.min.x, maxX: bounds.max.x, minZ: bounds.min.z, maxZ: bounds.max.z };
+        }
+      }
+      break;
     }
+
+
+
+
+
     case 'ramp': {
 object = makeRampMesh(entity.color);
 object.position.set(x, y, z); object.rotation.set(rot[0], rot[1], rot[2]); object.scale.set(scale[0], scale[1], scale[2]);
@@ -3091,13 +3147,65 @@ export function spawnLevelEntities(data = levelData, opts = {}) {
 /** Remove an entity's visuals (Studio). Collision records are only created in-game, so nothing else to undo. */
 export function removeEntityObject(id) {
   const rec = entityObjects.get(id);
-  if (!rec) return;
-  if (rec.object && rec.object.parent) rec.object.parent.remove(rec.object);
-  for (const path of studioObjects.keys()) if (path === `entity:${id}` || path.startsWith(`entity:${id}/`)) {
-    studioObjects.delete(path);
-    studioObjectBaseTransforms.delete(path);
+  const sRec = studioObjects.get(id);
+  if (!rec && !sRec) return;
+
+  const targetObj = (rec && rec.object) || (sRec && (sRec.object || sRec));
+  const objBox = new THREE.Box3();
+  if (targetObj) {
+    targetObj.updateMatrixWorld(true);
+    objBox.setFromObject(targetObj);
   }
-  entityObjects.delete(id);
+
+    if (targetObj) {
+    targetObj.traverse((child) => {
+      const sIdx = sculptableTerrainMeshes.indexOf(child);
+      if (sIdx !== -1) sculptableTerrainMeshes.splice(sIdx, 1);
+    });
+  }
+
+
+  if (rec && rec.record) {
+    const recIdx = worldBoxes.indexOf(rec.record);
+    if (recIdx !== -1) worldBoxes.splice(recIdx, 1);
+  }
+  if (!objBox.isEmpty()) {
+    const eps = 0.6;
+    for (let i = worldBoxes.length - 1; i >= 0; i--) {
+      const b = worldBoxes[i];
+      if (
+        b.minX >= objBox.min.x - eps && b.maxX <= objBox.max.x + eps &&
+        b.minZ >= objBox.min.z - eps && b.maxZ <= objBox.max.z + eps &&
+        b.minY >= objBox.min.y - eps && b.maxY <= objBox.max.y + eps
+      ) {
+        worldBoxes.splice(i, 1);
+      }
+    }
+  }
+
+  if (rec) {
+    if (rec.object && rec.object.parent) rec.object.parent.remove(rec.object);
+    for (const path of [...studioObjects.keys()]) {
+      if (path === `entity:${id}` || path.startsWith(`entity:${id}/`)) {
+        studioObjects.delete(path);
+        studioObjectBaseTransforms.delete(path);
+      }
+    }
+    entityObjects.delete(id);
+  }
+
+  if (sRec) {
+    const sObj = sRec.object || sRec;
+    if (sObj && sObj.parent) {
+      studioDeletedObjects.set(id, { object: sObj, parent: sObj.parent });
+      sObj.parent.remove(sObj);
+    }
+    for (const path of [...studioObjects.keys()]) {
+      if (path === id || path.startsWith(`${id}/`)) {
+        studioObjects.delete(path);
+      }
+    }
+  }
 }
 
 /** Re-apply an entity's transform to its live 3D object (Studio gizmo / inspector edits). */
@@ -3108,19 +3216,780 @@ export function updateEntityTransform(entity) {
   o.position.set(entity.pos[0], entity.pos[1] + (ENTITY_Y_OFFSET[entity.type] || 0), entity.pos[2]);
   o.rotation.set(entity.rot[0], entity.rot[1], entity.rot[2]);
   o.scale.set(entity.scale[0], entity.scale[1], entity.scale[2]);
+  o.updateMatrixWorld(true);
+
+  if (rec.record && 'minX' in rec.record && 'maxY' in rec.record) {
+    const bb = new THREE.Box3().setFromObject(o);
+    rec.record.minX = bb.min.x;
+    rec.record.maxX = bb.max.x;
+    rec.record.minY = bb.min.y;
+    rec.record.maxY = bb.max.y;
+    rec.record.minZ = bb.min.z;
+    rec.record.maxZ = bb.max.z;
+  }
 }
+
 
 /** Show every proximity-LOD interior (Studio wants to see everything at once). */
 export function revealAllLods() {
   buildingLods.forEach((e) => { e.group.visible = true; e.active = true; });
   (aura.culls || []).forEach((c) => { c.g.visible = true; });
 }
+// ============================================================================
+// NORTHERN EXPANSION: I-88 OCEAN BRIDGE & LOS AURA METROPOLIS
+// (Santa Aura Boardwalk, Downtown Los Aura, LAX-Style Airport & Speedway)
+// ============================================================================
+export function buildLosAuraNorthExpansion(register = true) {
+  const grp = new THREE.Group();
+  grp.userData.studioName = 'Los Aura Northern Expansion';
+  worldRoot.add(grp);
 
-/**
- * Build the complete world in the exact order of the original game:
- * static city/freeway/desert/biomes/landmarks -> data-driven entities -> Aura Hills overhaul.
- * Used identically by index.html (register=true) and studio.html (register=false).
- */
+  // Increase camera far plane so the ocean bridge and Downtown Los Aura skyline are visible from afar
+  camera.far = 1150;
+  camera.updateProjectionMatrix();
+
+  // Shared Materials
+  const oceanMat = makeMat(0x0ea5e9, {
+    texType: 'water',
+    repeatX: 28,
+    repeatY: 16,
+    roughness: 0.08,
+    metalness: 0.3,
+    transparent: true,
+    opacity: 0.88
+  });
+  const grassMat = makeMat(0x5a9a4e, { texType: 'grass', repeatX: 72, repeatY: 60, roughness: 0.94 });
+  const sandMat = makeMat(0xf2d9a0, { texType: 'sand', repeatX: 48, repeatY: 12, roughness: 0.96 });
+  const asphaltNS = makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 48, roughness: 0.86, bumpScale: 0.015 });
+  const asphaltEW = makeMat(0x313946, { texType: 'asphalt', repeatX: 48, repeatY: 2, roughness: 0.86, bumpScale: 0.015 });
+  const fwyMat = makeMat(0x1f2937, { texType: 'asphalt', repeatX: 4, repeatY: 75, roughness: 0.84, bumpScale: 0.015 });
+  const runwayMat = makeMat(0x1e293b, { texType: 'asphalt', repeatX: 6, repeatY: 40, roughness: 0.85 });
+  const tarmacMat = makeMat(0x64748b, { texType: 'concrete', repeatX: 24, repeatY: 24, roughness: 0.88 });
+  const concreteMat = makeMat(0xd1d5db, { texType: 'concrete', repeatX: 18, repeatY: 2, roughness: 0.88 });
+  const sidewalkMat = makeMat(0xcbd5e1, { texType: 'sidewalk', repeatX: 12, repeatY: 12, roughness: 0.85 });
+  const plazaMat = makeMat(0x94a3b8, { texType: 'cobblestone', repeatX: 14, repeatY: 14, roughness: 0.82 });
+  const woodDeckMat = makeMat(0x926c44, { texType: 'wood', repeatX: 40, repeatY: 4, roughness: 0.82 });
+  const steelMat = makeMat(0xe2e8f0, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.18, flatShading: false });
+  const bridgeRedMat = makeMat(0xdc2626, { metalness: 0.65, roughness: 0.32 });
+  const yellowMat = makeMat(0xfacc15, { roughness: 0.55 });
+  const whiteMat = makeMat(0xf8fafc, { roughness: 0.55 });
+  const redCurbMat = makeMat(0xef4444, { roughness: 0.6 });
+
+  const addBoxMesh = (w, h, d, mat, x, y, z, cast = true, receive = true) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    m.castShadow = cast;
+    m.receiveShadow = receive;
+    grp.add(m);
+    return m;
+  };
+
+  // ==========================================================================
+  // 1. OCEAN STRAIT EXTENSION (z = 208..380) & NORTHERN LANDMASS (z = 380..930)
+  // ==========================================================================
+  // Extend the Far North Ocean up to the new city's southern shoreline at z = 380
+  const straitWater = new THREE.Mesh(new THREE.PlaneGeometry(760, 62), oceanMat);
+  straitWater.rotation.x = -Math.PI / 2;
+  straitWater.position.set(120, 0.20, 349);
+  straitWater.receiveShadow = true;
+  grp.add(straitWater);
+  waterZones.push({ minX: -260, maxX: 500, minZ: 318, maxZ: 380 });
+  mapShapes.push({ x: 120, z: 294, w: 760, d: 172, color: '#0284c7', border: '#38bdf8', enterable: false });
+
+  // Shoreline surf foam along z = 380.3
+  const surfFoam = new THREE.Mesh(
+    new THREE.PlaneGeometry(740, 2.2),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.58 })
+  );
+  surfFoam.rotation.x = -Math.PI / 2;
+  surfFoam.position.set(120, 0.215, 380.3);
+  grp.add(surfFoam);
+
+  // Main New Northern Landmass (x = -250..490, z = 380..930 -> 740m x 550m)
+  const northLandGeo = new THREE.PlaneGeometry(740, 550, 92, 68);
+  northLandGeo.rotateX(-Math.PI / 2);
+  const northLand = new THREE.Mesh(northLandGeo, grassMat);
+  northLand.position.set(120, 0.18, 655);
+  northLand.receiveShadow = true;
+  registerSculptableTerrain(northLand);
+  grp.add(northLand);
+  mapShapes.unshift({ x: 120, z: 655, w: 740, d: 550, color: '#4d7c0f', border: '#365314', enterable: false });
+
+  // ==========================================================================
+  // 2. I-88 OCEAN SUSPENSION BRIDGE (x = 152, z = 186..394) & NORTH FREEWAY
+  // ==========================================================================
+  const bridgeY = 14.0;
+  const rampRun = 30.0;
+
+  // South Approach Ramp (z = 186..216, climbs from y = 0.08 to y = 14.0)
+  const sRampAngle = Math.atan2(bridgeY - 0.08, rampRun);
+  const sRampHyp = Math.hypot(rampRun, bridgeY - 0.08);
+  const southBridgeRamp = new THREE.Mesh(new THREE.BoxGeometry(22, 0.45, sRampHyp), fwyMat);
+  southBridgeRamp.position.set(152, (bridgeY + 0.08) / 2 - 0.2, 201);
+  southBridgeRamp.rotation.x = -sRampAngle;
+  southBridgeRamp.castShadow = true;
+  southBridgeRamp.receiveShadow = true;
+  grp.add(southBridgeRamp);
+  addDriveableRamp({ minX: 141, maxX: 163, minZ: 186, maxZ: 216, startY: 0.08, endY: bridgeY, axis: 'z', dir: 1 });
+
+  // Elevated Main Bridge Span (z = 216..364, length = 148m, height = 14.0m)
+  addBoxMesh(22, 0.65, 148, fwyMat, 152, bridgeY - 0.325, 290);
+  addWorldBox(141, 163, bridgeY - 0.65, bridgeY, 216, 364, 'ocean_bridge_deck', true);
+
+  // Bridge Center Double-Yellow & Side Jersey Barriers
+  addBoxMesh(0.24, 0.06, 148, yellowMat, 151.7, bridgeY + 0.02, 290, false);
+  addBoxMesh(0.24, 0.06, 148, yellowMat, 152.3, bridgeY + 0.02, 290, false);
+  [141.35, 162.65].forEach((bx) => {
+    addBoxMesh(0.65, 1.15, 148, concreteMat, bx, bridgeY + 0.575, 290);
+    addWorldBox(bx - 0.35, bx + 0.35, bridgeY, bridgeY + 1.15, 216, 364, 'bridge_rail', true);
+  });
+
+  // North Descent Ramp (z = 364..394, descends from y = 14.0 to y = 0.26)
+  const nRampAngle = Math.atan2(bridgeY - 0.26, rampRun);
+  const nRampHyp = Math.hypot(rampRun, bridgeY - 0.26);
+  const northBridgeRamp = new THREE.Mesh(new THREE.BoxGeometry(22, 0.45, nRampHyp), fwyMat);
+  northBridgeRamp.position.set(152, (bridgeY + 0.26) / 2 - 0.2, 379);
+  northBridgeRamp.rotation.x = nRampAngle;
+  northBridgeRamp.castShadow = true;
+  northBridgeRamp.receiveShadow = true;
+  grp.add(northBridgeRamp);
+  addDriveableRamp({ minX: 141, maxX: 163, minZ: 364, maxZ: 394, startY: bridgeY, endY: 0.26, axis: 'z', dir: 1 });
+
+  // Twin Suspension Bridge Towers (z = 248 and z = 332) + Main Cables & Suspender Ropes
+  const towerZs = [248, 332];
+  const towerTopY = 48.0;
+  towerZs.forEach((tz) => {
+    [140.4, 163.6].forEach((tx) => {
+      // Concrete marine pier footing
+      addBoxMesh(3.4, bridgeY + 1.0, 4.4, concreteMat, tx, (bridgeY + 1.0) / 2, tz);
+      addWorldBox(tx - 1.7, tx + 1.7, 0, bridgeY + 1.0, tz - 2.2, tz + 2.2, 'bridge_pier', false);
+      // Steel suspension pylon
+      addBoxMesh(1.6, towerTopY, 2.0, bridgeRedMat, tx, towerTopY / 2, tz);
+      addWorldBox(tx - 0.85, tx + 0.85, bridgeY, towerTopY, tz - 1.05, tz + 1.05, 'bridge_tower', false);
+      // Aviation warning beacon at peak
+      const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.32, 8, 8), new THREE.MeshBasicMaterial({ color: 0xef4444 }));
+      beacon.position.set(tx, towerTopY + 0.4, tz);
+      aviationBeacons.push(beacon);
+      grp.add(beacon);
+    });
+    // Cross-bracing portals above deck
+    addBoxMesh(24.8, 1.8, 1.6, bridgeRedMat, 152, 26.0, tz);
+    addBoxMesh(24.8, 2.2, 1.8, bridgeRedMat, 152, 44.5, tz);
+  });
+
+  // Main Catenary Suspension Cables & Vertical Suspender Hangers
+  const cableCurveY = (z) => {
+    if (z <= 248) {
+      const t = Math.max(0, (z - 216) / 32);
+      return bridgeY + 1.2 + (towerTopY - bridgeY - 2.0) * (t * t);
+    }
+    if (z >= 332) {
+      const t = Math.max(0, (364 - z) / 32);
+      return bridgeY + 1.2 + (towerTopY - bridgeY - 2.0) * (t * t);
+    }
+    const u = (z - 290) / 42; // -1..1 between towers
+    return bridgeY + 4.5 + (towerTopY - bridgeY - 5.3) * (u * u);
+  };
+
+  [140.4, 163.6].forEach((cx) => {
+    const pts = [];
+    for (let z = 216; z <= 364; z += 4) pts.push(new THREE.Vector3(cx, cableCurveY(z), z));
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 44, 0.24, 8, false), bridgeRedMat);
+    grp.add(tube);
+
+    for (let z = 222; z <= 358; z += 6) {
+      const topY = cableCurveY(z);
+      const h = topY - bridgeY;
+      if (h > 0.6) addBoxMesh(0.08, h, 0.08, steelMat, cx, bridgeY + h / 2, z, false);
+    }
+  });
+
+  // Welcome Gantry Sign at North End of Bridge (z = 362)
+  addBoxMesh(0.45, 7.5, 0.45, steelMat, 141.5, bridgeY + 3.75, 362);
+  addBoxMesh(0.45, 7.5, 0.45, steelMat, 162.5, bridgeY + 3.75, 362);
+  addBoxMesh(22, 0.4, 0.4, steelMat, 152, bridgeY + 7.2, 362);
+  createNeonSign(grp, 'WELCOME TO LOS AURA • DOWNTOWN / LAX / SPEEDWAY', 152, bridgeY + 6.4, 361.6, '#065f46', '#f8fafc', 17.5, 1.55);
+
+  mapShapes.push({ x: 152, z: 290, w: 22, d: 208, color: '#dc2626', border: '#facc15', enterable: false });
+
+  // Continued North I-88 4-Lane Interstate (x = 152, z = 394..910)
+  addBoxMesh(22, 0.08, 516, fwyMat, 152, 0.22, 652, false);
+  addBoxMesh(0.24, 0.10, 514, yellowMat, 151.7, 0.23, 652, false);
+  addBoxMesh(0.24, 0.10, 514, yellowMat, 152.3, 0.23, 652, false);
+  mapShapes.push({ x: 152, z: 652, w: 22, d: 516, color: '#334155', border: '#f59e0b', enterable: false });
+
+  // Freeway Barriers with Interchange Openings (at z = 428, 468, 564, 660, 738)
+  [
+    { x: 141.2, z1: 396, z2: 420 },
+    { x: 141.2, z1: 436, z2: 460 },
+    { x: 141.2, z1: 476, z2: 556 },
+    { x: 141.2, z1: 572, z2: 652 },
+    { x: 141.2, z1: 668, z2: 730 },
+    { x: 141.2, z1: 746, z2: 908 },
+    { x: 162.8, z1: 396, z2: 554 },
+    { x: 162.8, z1: 574, z2: 908 }
+  ].forEach((seg) => {
+    const len = seg.z2 - seg.z1;
+    const midZ = (seg.z1 + seg.z2) / 2;
+    addBoxMesh(0.6, 1.05, len, concreteMat, seg.x, 0.74, midZ);
+    addWorldBox(seg.x - 0.32, seg.x + 0.32, 0.22, 1.28, seg.z1, seg.z2, 'north_fwy_barrier', true);
+  });
+
+  // ==========================================================================
+  // 3. SANTA AURA BEACH & BOARDWALK (x = -230..136, z = 380..446)
+  // ==========================================================================
+  // Golden Sandy Beach Strip
+  addBoxMesh(366, 0.06, 28, sandMat, -47, 0.21, 394, false);
+  mapShapes.push({ x: -47, z: 394, w: 366, d: 28, color: '#fcd34d', border: '#f59e0b', enterable: false });
+
+  // Elevated Wooden Oceanfront Boardwalk Promenade (z = 406..420, x = -220..134)
+  addBoxMesh(354, 0.22, 14, woodDeckMat, -43, 0.29, 413, false);
+  addWorldBox(-220, 134, 0.18, 0.40, 406, 420, 'boardwalk_deck', true);
+  mapShapes.push({ x: -43, z: 413, w: 354, d: 14, color: '#b45309', border: '#fef08a', enterable: false });
+
+  // Boardwalk Coastal Avenue (z = 428, x = -220..142) connecting to I-88 Freeway
+  addBoxMesh(362, 0.06, 12, asphaltEW, -39, 0.21, 428, false);
+  mapShapes.push({ x: -39, z: 428, w: 362, d: 12, color: '#334155', border: '#facc15', enterable: false });
+
+  // Santa Aura Pier Jutting South Over the Ocean (x = -42, z = 324..406)
+  addBoxMesh(12, 0.26, 82, woodDeckMat, -42, 0.42, 365);
+  addWorldBox(-48, -36, 0.18, 0.55, 324, 406, 'santa_aura_pier', true);
+  mapShapes.push({ x: -42, z: 365, w: 12, d: 82, color: '#92400e', border: '#f59e0b', enterable: false });
+
+  for (let pz = 328; pz <= 402; pz += 10) {
+    [-5.2, 5.2].forEach((ox) => {
+      const piling = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 1.8, 8), makeMat(0x57534e));
+      piling.position.set(-42 + ox, -0.3, pz);
+      grp.add(piling);
+    });
+  }
+
+  // Pier Entrance Archway & Neon Sign
+  addBoxMesh(0.45, 5.2, 0.45, bridgeRedMat, -47.2, 3.0, 405.5);
+  addBoxMesh(0.45, 5.2, 0.45, bridgeRedMat, -36.8, 3.0, 405.5);
+  createNeonSign(grp, 'SANTA AURA PIER & BOARDWALK', -42, 5.4, 405.5, '#1e1b4b', '#38bdf8', 11.2, 1.35);
+
+  // Iconic Pier Ferris Wheel at (x = -42, z = 352)
+  const wheelGroup = new THREE.Group();
+  wheelGroup.position.set(-42, 14.5, 352);
+  const wheelRadius = 11.5;
+  const rimMat = new THREE.MeshBasicMaterial({ color: 0xf43f5e });
+  const rimInnerMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+  const wheelRim1 = new THREE.Mesh(new THREE.TorusGeometry(wheelRadius, 0.22, 10, 32), rimMat);
+  wheelRim1.position.z = -1.2;
+  const wheelRim2 = wheelRim1.clone();
+  wheelRim2.position.z = 1.2;
+  const innerRing = new THREE.Mesh(new THREE.TorusGeometry(wheelRadius * 0.62, 0.14, 8, 24), rimInnerMat);
+  innerRing.position.z = 0;
+  wheelGroup.add(wheelRim1, wheelRim2, innerRing);
+
+  const gondolaMat = makeMat(0xfacc15, { metalness: 0.4, roughness: 0.4 });
+  for (let i = 0; i < 12; i++) {
+    const ang = (i / 12) * Math.PI * 2;
+    const sx = Math.cos(ang) * wheelRadius;
+    const sy = Math.sin(ang) * wheelRadius;
+    const spoke = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, wheelRadius * 2, 6), steelMat);
+    spoke.rotation.z = ang + Math.PI / 2;
+    wheelGroup.add(spoke);
+
+    const pod = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.3, 2.0), gondolaMat);
+    pod.position.set(sx, sy, 0);
+    wheelGroup.add(pod);
+  }
+  // A-Frame Support Legs for Ferris Wheel
+  [-2.2, 2.2].forEach((lz) => {
+    [-1, 1].forEach((dir) => {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.32, 15.5, 8), steelMat);
+      leg.position.set(dir * 3.8, -7.2, lz);
+      leg.rotation.z = dir * 0.46;
+      wheelGroup.add(leg);
+    });
+  });
+  grp.add(wheelGroup);
+
+  // Boardwalk Attractions: Hotdog Store, Surf/Arcade Shops, Beach Umbrellas & Palms
+  buildHotdogStore(-18, 439);
+  buildWalkInHouse({ x: -72, z: 439, w: 11.5, d: 9.0, wallColor: 0x38bdf8, roofColor: 0xf43f5e, label: 'SANTA AURA ARCADE' });
+  buildWalkInHouse({ x: 38, z: 439, w: 11.5, d: 9.0, wallColor: 0xfef08a, roofColor: 0x0284c7, label: 'PACIFIC SURF & GEAR' });
+
+  [[-165, 392, 0xef4444], [-125, 390, 0x3b82f6], [-85, 393, 0xfacc15], [15, 391, 0x22c55e], [65, 392, 0xec4899], [105, 390, 0xf97316]].forEach(([ux, uz, col]) => {
+    addBoxMesh(0.08, 2.4, 0.08, whiteMat, ux, 1.35, uz, false);
+    const umbrella = new THREE.Mesh(new THREE.ConeGeometry(1.6, 0.6, 8), makeMat(col));
+    umbrella.position.set(ux, 2.65, uz);
+    grp.add(umbrella);
+  });
+
+  for (let px = -205; px <= 125; px += 30) {
+    if (Math.abs(px + 42) > 12) createTree(px, 421.5, 1.05);
+  }
+
+  // ==========================================================================
+  // 4. DOWNTOWN LOS AURA — MIMICKING DOWNTOWN LOS ANGELES (x = -120..124, z = 468..668)
+  // ==========================================================================
+  const dtNsRoads = [-108, -60, -12, 36, 84, 124];
+  const dtEwRoads = [468, 516, 564, 612, 660];
+
+  dtNsRoads.forEach((rx) => {
+    addBoxMesh(12, 0.06, 204, asphaltNS, rx, 0.21, 564, false);
+    mapShapes.push({ x: rx, z: 564, w: 12, d: 204, color: '#334155', border: '#475569', enterable: false });
+  });
+  dtEwRoads.forEach((rz) => {
+    addBoxMesh(244, 0.06, 12, asphaltEW, 8, 0.21, rz, false);
+    mapShapes.push({ x: 8, z: rz, w: 244, d: 12, color: '#334155', border: '#475569', enterable: false });
+  });
+
+  // Downtown Connector Roads to I-88 Freeway at z = 468, 564, 660
+  [468, 564, 660].forEach((cz) => {
+    addBoxMesh(22, 0.06, 12, asphaltEW, 135, 0.21, cz, false);
+  });
+
+  // Downtown Blocks (5 x 4 Grid)
+  const dtBlockX = [-84, -36, 12, 60, 104];
+  const dtBlockZ = [492, 540, 588, 636];
+  dtBlockX.forEach((bx) => {
+    const bw = bx === 104 ? 28 : 36;
+    dtBlockZ.forEach((bz) => {
+      addBoxMesh(bw, 0.12, 36, sidewalkMat, bx, 0.24, bz, false);
+      addBoxMesh(bw - 4, 0.14, 32, plazaMat, bx, 0.25, bz, false);
+      buildKnockableLamppost(bx - bw / 2 + 1.2, bz - 16.8);
+      buildKnockableLamppost(bx + bw / 2 - 1.2, bz + 16.8);
+    });
+  });
+
+  // 4A. US AURA BANK TOWER (Library Tower / US Bank Tower mimic) at (-36, 540) — Tallest in Game (98m)
+  buildSkyscraper({
+    x: -36, z: 540, w: 18.0, d: 18.0, h: 86,
+    glassHex: 0x38bdf8, frameHex: 0xe2e8f0,
+    name: 'US AURA TOWER', hasHelipad: true
+  });
+  // Iconic Tiered Cylindrical Crown & Glowing Ring
+  const usCrown1 = new THREE.Mesh(
+    new THREE.CylinderGeometry(7.2, 8.2, 7.0, 16),
+    makeMat(0xbae6fd, { metalness: 0.9, roughness: 0.12, emissive: 0x0284c7, emissiveIntensity: 0.25 })
+  );
+  usCrown1.position.set(-36, 89.8, 540);
+  const usCrown2 = new THREE.Mesh(
+    new THREE.CylinderGeometry(5.2, 6.2, 5.0, 16),
+    makeMat(0xf8fafc, { metalness: 0.85, roughness: 0.2 })
+  );
+  usCrown2.position.set(-36, 95.8, 540);
+  const usGlowBand = new THREE.Mesh(
+    new THREE.TorusGeometry(6.3, 0.25, 8, 24),
+    new THREE.MeshBasicMaterial({ color: 0x38bdf8 })
+  );
+  usGlowBand.rotation.x = Math.PI / 2;
+  usGlowBand.position.set(-36, 93.4, 540);
+  grp.add(usCrown1, usCrown2, usGlowBand);
+
+  // 4B. WILSHIRE GRAND SAIL TOWER (Wilshire Grand Center mimic) at (12, 540)
+  buildSkyscraper({
+    x: 12, z: 540, w: 16.5, d: 15.0, h: 80,
+    glassHex: 0x0284c7, frameHex: 0x0f172a,
+    name: 'WILSHIRE GRAND', hasHelipad: false
+  });
+  // Angled Glass Sail Fin + Illuminated Spire
+  const sailGeo = new THREE.BoxGeometry(15.5, 11.0, 1.4);
+  const sailMesh = new THREE.Mesh(
+    sailGeo,
+    makeMat(0x7dd3fc, { metalness: 0.95, roughness: 0.08, emissive: 0x38bdf8, emissiveIntensity: 0.35 })
+  );
+  sailMesh.position.set(12, 85.0, 540);
+  sailMesh.rotation.z = 0.24;
+  const wilshireSpire = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.42, 18.0, 8), steelMat);
+  wilshireSpire.position.set(17.5, 93.0, 540);
+  grp.add(sailMesh, wilshireSpire);
+
+  // 4C. AON & GAS COMPANY FINANCIAL TOWERS at (-84, 540) and (60, 540)
+  buildSkyscraper({
+    x: -84, z: 540, w: 15.5, d: 15.5, h: 72,
+    glassHex: 0x1e3a8a, frameHex: 0xf8fafc,
+    name: 'AON AURA CENTER', hasHelipad: true
+  });
+  buildSkyscraper({
+    x: 60, z: 540, w: 16.0, d: 16.0, h: 68,
+    glassHex: 0x0f766e, frameHex: 0x1e293b,
+    name: 'SOCAL GAS TOWER', hasHelipad: false
+  });
+  // Signature blue notched crown on Gas Company Tower
+  addBoxMesh(14.5, 5.5, 12.0, makeMat(0x0284c7, { emissive: 0x0369a1, emissiveIntensity: 0.3 }), 60, 71.0, 540);
+
+  // 4D. AURA CITY HALL (Los Angeles City Hall mimic) at (-36, 636)
+  buildSkyscraper({
+    x: -36, z: 636, w: 18.0, d: 18.0, h: 52,
+    glassHex: 0xe2e8f0, frameHex: 0xf8fafc,
+    name: 'LOS AURA CITY HALL', hasHelipad: false
+  });
+  // Classic Art Deco Stepped Tower & Pyramidal Lantern Cap
+  addBoxMesh(12.5, 8.0, 12.5, whiteMat, -36, 56.2, 636);
+  addBoxMesh(8.0, 6.0, 8.0, whiteMat, -36, 63.2, 636);
+  const cityHallPyramid = new THREE.Mesh(new THREE.ConeGeometry(5.8, 5.5, 4), makeMat(0xfef08a, { emissive: 0xfacc15, emissiveIntensity: 0.35 }));
+  cityHallPyramid.rotation.y = Math.PI / 4;
+  cityHallPyramid.position.set(-36, 68.9, 636);
+  grp.add(cityHallPyramid);
+
+  // 4E. WALT AURA CONCERT HALL (Walt Disney Concert Hall mimic) at (-84, 588)
+  const hallGroup = new THREE.Group();
+  hallGroup.position.set(-84, 0.30, 588);
+  const hallBase = new THREE.Mesh(new THREE.BoxGeometry(24, 6.5, 22), makeMat(0xf8fafc, { texType: 'marble' }));
+  hallBase.position.y = 3.25;
+  hallBase.castShadow = true;
+  hallGroup.add(hallBase);
+
+  const sailSpecs = [
+    { w: 14, h: 15, d: 0.55, x: -3.5, y: 10.5, z: 4.5, rx: 0.32, ry: 0.25, rz: -0.28 },
+    { w: 15, h: 17, d: 0.55, x: 3.8, y: 11.5, z: 2.0, rx: -0.25, ry: -0.35, rz: 0.30 },
+    { w: 13, h: 14, d: 0.55, x: 0.0, y: 10.0, z: -4.8, rx: -0.35, ry: 0.15, rz: -0.20 },
+    { w: 11, h: 12, d: 0.55, x: -6.5, y: 8.8, z: -2.5, rx: 0.20, ry: 0.45, rz: 0.34 }
+  ];
+  sailSpecs.forEach((s) => {
+    const sail = new THREE.Mesh(new THREE.BoxGeometry(s.w, s.h, s.d), steelMat);
+    sail.position.set(s.x, s.y, s.z);
+    sail.rotation.set(s.rx, s.ry, s.rz);
+    sail.castShadow = true;
+    hallGroup.add(sail);
+  });
+  createNeonSign(hallGroup, 'WALT AURA CONCERT HALL', 0, 5.2, 11.2, '#0f172a', '#38bdf8', 11.5, 1.15);
+  grp.add(hallGroup);
+  addWorldBox(-96, -72, 0.30, 7.0, 577, 599, 'concert_hall', true);
+  mapShapes.push({ x: -84, z: 588, w: 24, d: 22, color: '#e2e8f0', border: '#38bdf8', enterable: false });
+
+  // 4F. AURA ARENA & LA LIVE ENTERTAINMENT PLAZA at (60, 492)
+  const arenaGroup = new THREE.Group();
+  arenaGroup.position.set(60, 0.30, 492);
+  const arenaBowl = new THREE.Mesh(
+    new THREE.CylinderGeometry(14.5, 13.0, 14.0, 24),
+    makeMat(0x1e293b, { metalness: 0.75, roughness: 0.25 })
+  );
+  arenaBowl.position.y = 7.0;
+  arenaBowl.castShadow = true;
+  const arenaRoof = new THREE.Mesh(
+    new THREE.CylinderGeometry(11.5, 14.8, 3.2, 24),
+    makeMat(0x38bdf8, { metalness: 0.85, roughness: 0.18, emissive: 0x0284c7, emissiveIntensity: 0.22 })
+  );
+  arenaRoof.position.y = 15.6;
+  const ledRibbon = new THREE.Mesh(
+    new THREE.CylinderGeometry(14.65, 14.65, 1.8, 24, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xa855f7, side: THREE.DoubleSide })
+  );
+  ledRibbon.position.y = 10.5;
+  arenaGroup.add(arenaBowl, arenaRoof, ledRibbon);
+  createNeonSign(arenaGroup, 'AURA ARENA • LOS AURA LIVE', 0, 4.5, 14.8, '#1e1b4b', '#facc15', 13.5, 1.35);
+  grp.add(arenaGroup);
+  addWorldBox(46, 74, 0.30, 17.2, 478, 506, 'aura_arena', true);
+  mapShapes.push({ x: 60, z: 492, w: 28, d: 28, color: '#4f46e5', border: '#facc15', enterable: false });
+
+  // 4G. Additional Downtown Towers, Reserve Bank, Dealership & Grand Central Market
+  buildReserveBank(12, 492);
+  buildCarDealership(-36, 492);
+  buildHotdogStore(-12, 588); // Grand Central Market Food Hall
+  buildSkyscraper({ x: 12, z: 636, w: 15.0, d: 15.0, h: 62, glassHex: 0x2563eb, frameHex: 0x0f172a, name: 'FIGUEROA AT WILSHIRE', hasHelipad: true });
+  buildSkyscraper({ x: 60, z: 588, w: 14.5, d: 14.5, h: 58, glassHex: 0x0d9488, frameHex: 0x1e293b, name: 'BUNKER HILL PLAZA', hasHelipad: false });
+  buildSkyscraper({ x: 60, z: 636, w: 14.5, d: 14.5, h: 54, glassHex: 0x0369a1, frameHex: 0x0f172a, name: 'BROADWAY TRADE CENTER', hasHelipad: true });
+  buildSkyscraper({ x: 104, z: 540, w: 13.5, d: 14.5, h: 50, glassHex: 0x4f46e5, frameHex: 0x1e293b, name: 'ARTS DISTRICT TOWER', hasHelipad: false });
+  buildSkyscraper({ x: 104, z: 588, w: 13.5, d: 14.5, h: 46, glassHex: 0x0284c7, frameHex: 0x0f172a, name: 'LITTLE TOKYO PLAZA', hasHelipad: true });
+
+  // ==========================================================================
+  // 5. LOS AURA INTERNATIONAL AIRPORT — LAX-STYLE (x = 180..468, z = 435..695)
+  // ==========================================================================
+  // Airport Tarmac Apron
+  addBoxMesh(288, 0.06, 260, tarmacMat, 324, 0.21, 565, false);
+  mapShapes.push({ x: 324, z: 565, w: 288, d: 260, color: '#475569', border: '#94a3b8', enterable: false });
+
+  // Airport Access Road from I-88 Freeway (z = 564, x = 162..236)
+  addBoxMesh(74, 0.08, 14, asphaltEW, 199, 0.22, 564, false);
+  createNeonSign(grp, 'LAX • LOS AURA INTL AIRPORT', 186, 6.2, 555.5, '#0f172a', '#38bdf8', 13.0, 1.5);
+
+  // 5A. Iconic LAX Jet-Age Theme Building (Crossed Parabolic Arches) at (216, 564)
+  const themeGroup = new THREE.Group();
+  themeGroup.position.set(216, 0.24, 564);
+  const coreShaft = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 3.4, 15.0, 14), whiteMat);
+  coreShaft.position.y = 7.5;
+  const observationSaucer = new THREE.Mesh(
+    new THREE.CylinderGeometry(8.5, 6.8, 2.6, 20),
+    makeMat(0x38bdf8, { metalness: 0.85, roughness: 0.15, emissive: 0x0284c7, emissiveIntensity: 0.3 })
+  );
+  observationSaucer.position.y = 10.2;
+  const saucerRoof = new THREE.Mesh(new THREE.ConeGeometry(8.8, 2.2, 20), whiteMat);
+  saucerRoof.position.y = 12.6;
+  themeGroup.add(coreShaft, observationSaucer, saucerRoof);
+
+  // Two Crossed Parabolic Arches
+  [0, Math.PI / 2].forEach((rotY) => {
+    const archPts = [];
+    for (let t = -1; t <= 1.001; t += 0.1) {
+      archPts.push(new THREE.Vector3(t * 16.5, (1 - t * t) * 18.5, 0));
+    }
+    const archCurve = new THREE.CatmullRomCurve3(archPts);
+    const archMesh = new THREE.Mesh(new THREE.TubeGeometry(archCurve, 28, 0.55, 8, false), whiteMat);
+    archMesh.rotation.y = rotY;
+    archMesh.castShadow = true;
+    themeGroup.add(archMesh);
+  });
+  grp.add(themeGroup);
+  addWorldBox(212.5, 219.5, 0.24, 15.2, 560.5, 567.5, 'lax_theme_bldg', false);
+
+  // 5B. Walk-In Main Airport Terminal Concourse (x = 248, z = 472..658)
+  const termX = 248, termZ = 565, termW = 18, termD = 186, termH = 8.5;
+  const glassFacadeMat = makeMat(0x0ea5e9, { metalness: 0.9, roughness: 0.12, emissive: 0x0284c7, emissiveIntensity: 0.18 });
+  addBoxMesh(termW, termH, termD, whiteMat, termX, 0.24 + termH / 2, termZ);
+  addBoxMesh(termW + 0.3, 4.2, termD - 6, glassFacadeMat, termX, 0.24 + termH * 0.55, termZ, false);
+  addBoxMesh(termW + 1.4, 0.6, termD + 2, makeMat(0x1e293b), termX, 0.24 + termH + 0.3, termZ);
+  addWorldBox(termX - termW / 2, termX + termW / 2, 0.24, 0.24 + termH + 0.6, termZ - termD / 2, termZ + termD / 2, 'airport_terminal', true);
+  createNeonSign(grp, 'LOS AURA INTL • TERMINALS 1 - 4', termX - termW / 2 - 0.2, 6.8, termZ, '#090d14', '#facc15', 16.0, 1.45);
+  mapShapes.push({ x: termX, z: termZ, w: termW, d: termD, color: '#f8fafc', border: '#0284c7', enterable: false });
+
+  // 5C. Air Traffic Control (ATC) Tower at (272, 565)
+  addBoxMesh(5.2, 34.0, 5.2, whiteMat, 272, 17.24, 565);
+  const atcCab = new THREE.Mesh(
+    new THREE.CylinderGeometry(5.4, 3.8, 4.6, 12),
+    makeMat(0x10b981, { metalness: 0.85, roughness: 0.15, emissive: 0x059669, emissiveIntensity: 0.28 })
+  );
+  atcCab.position.set(272, 36.2, 565);
+  const atcRoof = new THREE.Mesh(new THREE.CylinderGeometry(5.8, 5.8, 0.7, 12), whiteMat);
+  atcRoof.position.set(272, 38.8, 565);
+  const atcBeacon = new THREE.Mesh(new THREE.SphereGeometry(0.35, 8, 8), new THREE.MeshBasicMaterial({ color: 0xef4444 }));
+  atcBeacon.position.set(272, 41.2, 565);
+  aviationBeacons.push(atcBeacon);
+  grp.add(atcCab, atcRoof, atcBeacon);
+  addWorldBox(269.4, 274.6, 0.24, 39.2, 562.4, 567.6, 'atc_tower', false);
+
+  // 5D. Dual Parallel Runways (x = 336 and x = 394, z = 445..685)
+  const runwayXs = [336, 394];
+  const rwEdgePositions = [];
+  runwayXs.forEach((rx) => {
+    addBoxMesh(22, 0.08, 240, runwayMat, rx, 0.25, 565, false);
+    mapShapes.push({ x: rx, z: 565, w: 22, d: 240, color: '#0f172a', border: '#f8fafc', enterable: false });
+
+    // Threshold piano-key stripes at South (z = 452) and North (z = 678) ends
+    [452, 678].forEach((tz) => {
+      for (let sx = -8; sx <= 8; sx += 3.2) {
+        addBoxMesh(1.4, 0.09, 7.5, whiteMat, rx + sx, 0.255, tz, false);
+      }
+    });
+
+    // Runway Centerline Dashes & Edge Lights
+    for (let z = 466; z <= 664; z += 12) {
+      addBoxMesh(0.45, 0.09, 5.5, whiteMat, rx, 0.255, z, false);
+      rwEdgePositions.push([rx - 10.6, 0.42, z], [rx + 10.6, 0.42, z]);
+    }
+  });
+
+  // Instanced Runway Edge Lights
+  const rwLights = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(0.35, 0.35, 0.35),
+    new THREE.MeshBasicMaterial({ color: 0x38bdf8 }),
+    rwEdgePositions.length
+  );
+  const dm = new THREE.Object3D();
+  rwEdgePositions.forEach(([x, y, z], i) => {
+    dm.position.set(x, y, z);
+    dm.updateMatrix();
+    rwLights.setMatrixAt(i, dm.matrix);
+  });
+  rwLights.instanceMatrix.needsUpdate = true;
+  grp.add(rwLights);
+
+  // 5E. Parked Commercial Jetliners at Terminal Gates & Open Aircraft Hangars
+  const spawnParkedJet = (jx, jz, yaw, stripeHex) => {
+    const jet = new THREE.Group();
+    jet.position.set(jx, 0.25, jz);
+    jet.rotation.y = yaw;
+
+    // Fuselage + Nose Cone
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(2.1, 2.1, 24, 14), whiteMat);
+    body.rotation.x = Math.PI / 2;
+    body.position.y = 3.2;
+    body.castShadow = true;
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(2.1, 4.8, 14), whiteMat);
+    nose.rotation.x = Math.PI / 2;
+    nose.position.set(0, 3.2, 14.4);
+    // Swept Main Wings
+    const wingL = new THREE.Mesh(new THREE.BoxGeometry(14.5, 0.35, 4.2), steelMat);
+    wingL.position.set(-7.5, 2.8, 1.0);
+    wingL.rotation.y = 0.26;
+    const wingR = wingL.clone();
+    wingR.position.x = 7.5;
+    wingR.rotation.y = -0.26;
+    // Vertical Tail Fin + Horizontal Stabilizers
+    const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.45, 5.8, 3.8), makeMat(stripeHex));
+    tailFin.position.set(0, 6.2, -10.2);
+    tailFin.rotation.x = -0.25;
+    const hStab = new THREE.Mesh(new THREE.BoxGeometry(8.4, 0.25, 2.2), steelMat);
+    hStab.position.set(0, 3.4, -10.8);
+    // Twin Under-Wing Jet Engines
+    [-5.5, 5.5].forEach((ex) => {
+      const eng = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.78, 3.4, 12), makeMat(0x334155, { metalness: 0.85 }));
+      eng.rotation.x = Math.PI / 2;
+      eng.position.set(ex, 1.9, 2.2);
+      jet.add(eng);
+    });
+    jet.add(body, nose, wingL, wingR, tailFin, hStab);
+    grp.add(jet);
+    addWorldBox(jx - 3.0, jx + 3.0, 0.25, 5.5, jz - 12, jz + 12, 'parked_jet', false);
+  };
+
+  spawnParkedJet(282, 502, -Math.PI / 2, 0xdc2626);
+  spawnParkedJet(282, 622, -Math.PI / 2, 0x0284c7);
+
+  // Two Drive-Through Steel Aircraft Hangars on East Apron (x = 442, z = 500 and z = 630)
+  [500, 630].forEach((hz) => {
+    const hw = 26, hd = 28, hh = 11;
+    addBoxMesh(hw, hh, 0.6, steelMat, 442, 0.25 + hh / 2, hz - hd / 2);
+    addBoxMesh(hw, hh, 0.6, steelMat, 442, 0.25 + hh / 2, hz + hd / 2);
+    addBoxMesh(0.6, hh, hd, steelMat, 442 + hw / 2, 0.25 + hh / 2, hz);
+    addBoxMesh(hw + 0.8, 0.6, hd + 0.8, makeMat(0x334155), 442, 0.25 + hh + 0.3, hz);
+    addWorldBox(442 - hw / 2, 442 + hw / 2, 0.25, 0.25 + hh, hz - hd / 2, hz - hd / 2 + 0.6, 'hangar_wall', false);
+    addWorldBox(442 - hw / 2, 442 + hw / 2, 0.25, 0.25 + hh, hz + hd / 2 - 0.6, hz + hd / 2, 'hangar_wall', false);
+    addWorldBox(442 + hw / 2 - 0.6, 442 + hw / 2, 0.25, 0.25 + hh, hz - hd / 2, hz + hd / 2, 'hangar_wall', false);
+    addWorldBox(442 - hw / 2, 442 + hw / 2, 0.25 + hh, 0.25 + hh + 0.6, hz - hd / 2, hz + hd / 2, 'hangar_roof', true);
+    mapShapes.push({ x: 442, z: hz, w: hw, d: hd, color: '#94a3b8', border: '#1e293b', enterable: true });
+  });
+
+  // ==========================================================================
+  // 6. LOS AURA MOTOR SPEEDWAY — RACETRACK (x = -225..125, z = 708..905)
+  // ==========================================================================
+  // Racetrack Connector Road from I-88 Freeway (z = 738, x = 40..142) & Downtown North (-12, z = 666..732)
+  addBoxMesh(102, 0.08, 16, asphaltEW, 91, 0.22, 738, false);
+  addBoxMesh(14, 0.08, 66, asphaltNS, -12, 0.22, 699, false);
+
+  // High-Speed Oval / Grand Prix Circuit:
+  // Two 180m Straights (x = -140..40 at z = 738 and z = 876) + Two 180-deg Hairpins (R = 69m, track width = 18m)
+  const trackCenterZ = 807;
+  const trackRadius = 69;
+  const trackW = 18;
+  const straightLen = 180;
+  const straightMidX = -50; // -140 to +40
+
+  // South Main Straight (z = 738) & North Backstretch (z = 876)
+  addBoxMesh(straightLen, 0.08, trackW, runwayMat, straightMidX, 0.23, 738, false);
+  addBoxMesh(straightLen, 0.08, trackW, runwayMat, straightMidX, 0.23, 876, false);
+  mapShapes.push({ x: straightMidX, z: 738, w: straightLen, d: trackW, color: '#1e293b', border: '#ef4444', enterable: false });
+  mapShapes.push({ x: straightMidX, z: 876, w: straightLen, d: trackW, color: '#1e293b', border: '#ef4444', enterable: false });
+
+  // Outer Concrete Retaining Barriers along Both Straights
+  addBoxMesh(straightLen, 1.1, 0.7, concreteMat, straightMidX, 0.78, 728.6);
+  addWorldBox(-140, 40, 0.22, 1.35, 728.2, 729.0, 'track_wall_s', true);
+  addBoxMesh(straightLen, 1.1, 0.7, concreteMat, straightMidX, 0.78, 885.4);
+  addWorldBox(-140, 40, 0.22, 1.35, 885.0, 885.8, 'track_wall_n', true);
+
+  // Smooth Segmented East (center x = 40) & West (center x = -140) Hairpin Turns
+  const turnSteps = 32;
+  [
+    { cx: 40, startAng: -Math.PI / 2, endAng: Math.PI / 2 },
+    { cx: -140, startAng: Math.PI / 2, endAng: (3 * Math.PI) / 2 }
+  ].forEach(({ cx, startAng, endAng }) => {
+    for (let i = 0; i < turnSteps; i++) {
+      const a0 = startAng + (i / turnSteps) * (endAng - startAng);
+      const a1 = startAng + ((i + 1) / turnSteps) * (endAng - startAng);
+      const aMid = (a0 + a1) / 2;
+      const segLen = Math.abs(a1 - a0) * (trackRadius + trackW / 2) + 1.2;
+
+      const tx = cx + Math.cos(aMid) * trackRadius;
+      const tz = trackCenterZ + Math.sin(aMid) * trackRadius;
+      const seg = new THREE.Mesh(new THREE.BoxGeometry(trackW, 0.08, segLen), runwayMat);
+      seg.position.set(tx, 0.23, tz);
+      seg.rotation.y = -aMid;
+      seg.receiveShadow = true;
+      grp.add(seg);
+
+      // Red/White FIA Apex Curbing on Inside Edge
+      const innerR = trackRadius - trackW / 2 + 0.6;
+      const curb = new THREE.Mesh(
+        new THREE.BoxGeometry(1.1, 0.11, segLen * 0.95),
+        i % 2 === 0 ? redCurbMat : whiteMat
+      );
+      curb.position.set(cx + Math.cos(aMid) * innerR, 0.24, trackCenterZ + Math.sin(aMid) * innerR);
+      curb.rotation.y = -aMid;
+      grp.add(curb);
+
+      // Outer Safety Barrier Wall
+      const outerR = trackRadius + trackW / 2 + 0.4;
+      const wx = cx + Math.cos(aMid) * outerR;
+      const wz = trackCenterZ + Math.sin(aMid) * outerR;
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.1, segLen), i % 2 === 0 ? redCurbMat : whiteMat);
+      wall.position.set(wx, 0.78, wz);
+      wall.rotation.y = -aMid;
+      grp.add(wall);
+      addWorldBox(wx - 1.2, wx + 1.2, 0.22, 1.35, wz - 1.2, wz + 1.2, 'track_turn_wall', true);
+    }
+    mapShapes.push({ x: cx, z: trackCenterZ, w: 78, d: 156, color: '#1e293b', border: '#ef4444', enterable: false });
+  });
+
+  // Start / Finish Checkered Line, Starting Grid & Overhead Gantry at (-50, 738)
+  for (let row = 0; row < 2; row++) {
+    for (let col = 0; col < 8; col++) {
+      const sq = new THREE.Mesh(
+        new THREE.BoxGeometry(1.1, 0.10, 2.2),
+        (row + col) % 2 === 0 ? whiteMat : makeMat(0x090d14)
+      );
+      sq.position.set(-51.1 + row * 1.1, 0.24, 730.2 + col * 2.2);
+      grp.add(sq);
+    }
+  }
+  addBoxMesh(0.5, 7.6, 0.5, steelMat, -50, 4.0, 728.8);
+  addBoxMesh(0.5, 7.6, 0.5, steelMat, -50, 4.0, 747.2);
+  addBoxMesh(0.5, 0.5, 19.0, steelMat, -50, 7.6, 738);
+  createNeonSign(grp, 'LOS AURA MOTOR SPEEDWAY', -50, 6.8, 738, '#090d14', '#ef4444', 14.5, 1.45);
+
+  // Pit Lane & Pit Garages along South Infield (z = 752..764)
+  addBoxMesh(120, 0.07, 8, asphaltEW, -50, 0.225, 752, false);
+  addBoxMesh(120, 0.75, 0.5, concreteMat, -50, 0.60, 747.6);
+  addWorldBox(-110, 10, 0.22, 0.98, 747.3, 747.9, 'pit_wall', true);
+  addBoxMesh(96, 4.8, 10, makeMat(0x334155, { texType: 'corrugated', metalness: 0.7 }), -50, 2.64, 761);
+  addWorldBox(-98, -2, 0.24, 5.04, 756, 766, 'pit_garages', true);
+  createNeonSign(grp, 'PIT LANE & TEAM GARAGES', -50, 4.4, 755.8, '#1e293b', '#facc15', 14.0, 1.1);
+
+  // Main Spectator Grandstand Bleachers South of Straightaway (z = 716, x = -115..15)
+  for (let tier = 0; tier < 5; tier++) {
+    const ty = 0.6 + tier * 1.1;
+    const tz = 723 - tier * 1.8;
+    addBoxMesh(130, 1.0, 1.8, tier % 2 === 0 ? steelMat : makeMat(0x2563eb), -50, ty, tz);
+    addWorldBox(-115, 15, 0.22, ty + 0.5, tz - 0.9, tz + 0.9, 'grandstand_tier', true);
+  }
+  addBoxMesh(132, 0.4, 11, makeMat(0x0f172a), -50, 7.6, 719);
+  mapShapes.push({ x: -50, z: 719, w: 132, d: 11, color: '#2563eb', border: '#f8fafc', enterable: false });
+
+  // Infield Stunt Park Ramps & Walk-In Motorsport Showroom
+  const stuntRampW = new THREE.Mesh(new THREE.BoxGeometry(10, 0.35, 18), makeMat(0xf59e0b));
+  stuntRampW.position.set(-20, 1.65, 812);
+  stuntRampW.rotation.z = -Math.atan2(3.0, 18);
+  grp.add(stuntRampW);
+  addDriveableRamp({ minX: -29, maxX: -11, minZ: 807, maxZ: 817, startY: 0.22, endY: 3.2, axis: 'x', dir: 1 });
+
+  const stuntRampE = new THREE.Mesh(new THREE.BoxGeometry(10, 0.35, 18), makeMat(0xf59e0b));
+  stuntRampE.position.set(8, 1.65, 812);
+  stuntRampE.rotation.z = Math.atan2(3.0, 18);
+  grp.add(stuntRampE);
+  addDriveableRamp({ minX: -1, maxX: 17, minZ: 807, maxZ: 817, startY: 3.2, endY: 0.22, axis: 'x', dir: 1 });
+
+  buildCarDealership(-85, 812);
+
+  // Spawn Two Ready-to-Drive Race Cars on the Starting Grid in Gameplay Mode
+  if (register) {
+    buildSportsCar({
+      name: 'LOS AURA GT-R #1',
+      bodyHex: 0xdc2626,
+      accentHex: 0xfacc15,
+      x: -58,
+      z: 734.5,
+      yaw: Math.PI / 2,
+      isCoupe: true,
+      isSupercar: true
+    });
+    buildSportsCar({
+      name: 'PACIFIC APEX #7',
+      bodyHex: 0x0284c7,
+      accentHex: 0xf8fafc,
+      x: -66,
+      z: 741.5,
+      yaw: Math.PI / 2,
+      isCoupe: true,
+      isSupercar: true
+    });
+  }
+}
+
 export function buildWorld(data = levelData, { register = true, afterStatic = null } = {}) {
   sculptableTerrainMeshes.length = 0;
   studioObjects.clear();
@@ -3136,6 +4005,7 @@ export function buildWorld(data = levelData, { register = true, afterStatic = nu
   buildAuraEstates();
   buildAuraSkylineAndHighway();
   buildCriminalHideout();
+  buildLosAuraNorthExpansion(register);
   registerGeneratedWorldObjects(data);
 }
 

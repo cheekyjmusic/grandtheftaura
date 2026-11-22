@@ -533,15 +533,24 @@ function duplicateSelection() {
 }
 
 function deleteSelection() {
-  const ents = state.selections.filter((s) => s.kind === 'entity');
-  if (!ents.length || state.activeTab !== 'world') return;
+  if (state.activeTab !== 'world') return;
+  const targets = state.selections.filter((s) => s.kind === 'entity' || s.kind === 'worldObject' || s.kind === 'worldPart');
+  if (!targets.length) return;
   detachMultiGroup();
-  for (const s of ents) {
-    const i = levelData.entities.findIndex((e) => e.id === s.id);
-    if (i < 0) continue;
-    levelData.entities.splice(i, 1);
-    removeEntityObject(s.id);
-    for (const t of [...state.tabs]) if (t.kind === 'entity' && t.entityId === s.id) closeTab(t.id);
+  for (const s of targets) {
+    if (s.kind === 'entity') {
+      const i = levelData.entities.findIndex((e) => e.id === s.id);
+      if (i < 0) continue;
+      levelData.entities.splice(i, 1);
+      removeEntityObject(s.id);
+      for (const t of [...state.tabs]) if (t.kind === 'entity' && t.entityId === s.id) closeTab(t.id);
+    } else if (s.kind === 'worldObject' || s.kind === 'worldPart') {
+      const path = s.key || s.object?.userData.studioPath;
+      if (!path) continue;
+      levelData.worldTransforms = levelData.worldTransforms || {};
+      levelData.worldTransforms[path] = { deleted: true };
+      removeEntityObject(path);
+    }
   }
   select(null);
   commit();
@@ -796,10 +805,13 @@ function renderWorldObjectInspector(selection) {
     if (boxHelper.visible) boxHelper.update();
   });
   const scaleValues = scale._values;
-  inspectorRefs.transform = { pos, rot, scl: scale, object };
+inspectorRefs.transform = { pos, rot, scl: scale, object };
   setInspector(`World object — ${selection.name}`,
     group('Transform', row('Position', pos), row('Rotation °', rot), row('Scale', scale)),
-    h('p', { class: 'note' }, selection.kind === 'worldPart' ? 'This part belongs to its parent model. Its local transform is saved with the level.' : 'This generated map model and its parts are editable and saved with the level.'));
+    h('p', { class: 'note' }, selection.kind === 'worldPart' ? 'This part belongs to its parent model. Its local transform is saved with the level.' : 'This generated map model and its parts are editable and saved with the level.'),
+    h('div', { class: 'btnrow' },
+      h('button', { class: 'small', onclick: focusSelection }, 'Focus (F)'),
+      h('button', { class: 'small', onclick: deleteSelection }, 'Delete')));
 }
 
 function renderEntityInspector(entity) {
@@ -1289,7 +1301,7 @@ function wireKeyboard(canvas) {
     if (ctrl && e.code === 'KeyY') { e.preventDefault(); redo(); return; }
     if (ctrl && e.code === 'KeyD') { e.preventDefault(); duplicateSelection(); return; }
     if (ctrl) return;
-    if (e.code === 'Delete') { deleteSelection(); return; }
+    if (e.code === 'Delete' || e.code === 'Backspace') { e.preventDefault(); deleteSelection(); return; }
     if (e.code === 'KeyF' && !state.rmbDown) { focusSelection(); return; }
     if (state.rmbDown) return; // WASD/QE belong to fly mode while the right mouse button is held
     if (e.code === 'KeyQ') setTool('select');

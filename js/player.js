@@ -880,7 +880,7 @@ export function stepSimulation(dt, elapsed) {
       tpRig.position.set(player.x, player.y + bobY - player.landingDip, player.z);
 
       // Rotate playerMesh.rotation.y by + Math.PI (180 degrees) so character faces forward
-      tpRig.rotation.y = player.yaw + Math.PI;
+      tpRig.rotation.y = player.yaw;
 
       tpHip.rotation.x = 0;
       tpTorso.rotation.y = 0;
@@ -901,7 +901,9 @@ export function stepSimulation(dt, elapsed) {
         tpLegR.rotation.x = -0.65;
         tpKneeR.rotation.x = 0.95;
         tpArmL.rotation.x = -0.45;
+        tpElbowL.rotation.x = 0.22;
         tpArmR.rotation.x = -0.45;
+        tpElbowR.rotation.x = 0.22;
       } else if (!player.grounded) {
         // 3RD-PERSON JUMP ANIMATION (Rising Leap vs Mid-Air Landing Prep)
         const airBlend = Math.max(-1, Math.min(1, player.vy / 6.5));
@@ -911,24 +913,24 @@ export function stepSimulation(dt, elapsed) {
           tpKneeL.rotation.x = 0.95 * airBlend;
           tpLegR.rotation.x = 0.42 * airBlend;
           tpKneeR.rotation.x = 0.25 * airBlend;
-          tpArmL.rotation.x = -0.95 * airBlend;
+          tpArmL.rotation.x = 0.95 * airBlend;
           tpArmL.rotation.z = -0.22 * airBlend;
-          tpElbowL.rotation.x = -0.45 * airBlend;
-          tpArmR.rotation.x = 0.52 * airBlend;
+          tpElbowL.rotation.x = 0.45 * airBlend;
+          tpArmR.rotation.x = -0.52 * airBlend;
           tpArmR.rotation.z = 0.22 * airBlend;
-          tpElbowR.rotation.x = -0.45 * airBlend;
+          tpElbowR.rotation.x = 0.45 * airBlend;
         } else {
           tpHip.rotation.x = -0.08;
           tpLegL.rotation.x = -0.34;
           tpKneeL.rotation.x = 0.42;
           tpLegR.rotation.x = -0.18;
           tpKneeR.rotation.x = 0.30;
-          tpArmL.rotation.x = -0.48;
+          tpArmL.rotation.x = 0.48;
           tpArmL.rotation.z = -0.38;
-          tpElbowL.rotation.x = -0.35;
-          tpArmR.rotation.x = -0.48;
+          tpElbowL.rotation.x = 0.35;
+          tpArmR.rotation.x = 0.48;
           tpArmR.rotation.z = 0.38;
-          tpElbowR.rotation.x = -0.35;
+          tpElbowR.rotation.x = 0.35;
         }
       } else if (isSprintingNow) {
         // 3RD-PERSON OLYMPIC SPRINTER ANIMATION
@@ -945,13 +947,13 @@ export function stepSimulation(dt, elapsed) {
         tpLegR.rotation.x = oppStride * 1.12;
         tpKneeR.rotation.x = Math.max(0.12, -oppStride * 1.15 + 0.35);
 
-        tpArmL.rotation.x = -stride * 1.18 - 0.15;
+        tpArmL.rotation.x = -stride * 1.18 + 0.15;
         tpArmL.rotation.z = -0.08;
-        tpElbowL.rotation.x = -1.52;
+        tpElbowL.rotation.x = 1.52;
 
-        tpArmR.rotation.x = -oppStride * 1.18 - 0.15;
+        tpArmR.rotation.x = -oppStride * 1.18 + 0.15;
         tpArmR.rotation.z = 0.08;
-        tpElbowR.rotation.x = -1.52;
+        tpElbowR.rotation.x = 1.52;
       } else {
         const legSwing = movingSpeed ? Math.sin(player.walkCycle) * 0.58 : 0;
         tpLegL.rotation.x = legSwing;
@@ -959,31 +961,31 @@ export function stepSimulation(dt, elapsed) {
         tpLegR.rotation.x = -legSwing;
         tpKneeR.rotation.x = movingSpeed ? Math.max(0, legSwing * 0.55) : 0;
 
-        tpArmL.rotation.x = -legSwing * 0.65 - leftRaise * 3.5;
-        tpElbowL.rotation.x = movingSpeed ? -0.22 : -0.08;
+        tpArmL.rotation.x = -legSwing * 0.65 + leftRaise * 3.5;
+        tpElbowL.rotation.x = movingSpeed ? 0.22 : 0.08;
         tpArmR.rotation.x = legSwing * 0.65;
-        tpElbowR.rotation.x = movingSpeed ? -0.22 : -0.08;
+        tpElbowR.rotation.x = movingSpeed ? 0.22 : 0.08;
       }
 
       if (gameState.activeRightWeapon === 'hotdog_shooter') {
-        tpArmR.rotation.set(-1.48 + swingPitch, 0, 0);
-        tpElbowR.rotation.x = -0.18;
+        tpArmR.rotation.set(1.48 + swingPitch, 0, 0);
+        tpElbowR.rotation.x = 0.18;
       } else if (player.attackTimer > 0) {
         const t = 1 - player.attackTimer / player.attackDuration;
         const hookArc = Math.sin(t * Math.PI);
         if (gameState.activeRightWeapon === 'fists') {
           if (player.punchCombo === 0) {
-            tpArmR.rotation.set(-1.35 * hookArc, 0, -0.78 * hookArc);
-            tpElbowR.rotation.x = -0.85 * hookArc;
+            tpArmR.rotation.set(1.35 * hookArc, 0, -0.78 * hookArc);
+            tpElbowR.rotation.x = 0.85 * hookArc;
             tpTorso.rotation.y = 0.48 * hookArc;
           } else {
-            tpArmL.rotation.set(-1.35 * hookArc, 0, 0.78 * hookArc);
-            tpElbowL.rotation.x = -0.85 * hookArc;
+            tpArmL.rotation.set(1.35 * hookArc, 0, 0.78 * hookArc);
+            tpElbowL.rotation.x = 0.85 * hookArc;
             tpTorso.rotation.y = -0.48 * hookArc;
           }
         } else {
-          tpArmR.rotation.x = swingPitch * 1.4;
-          tpElbowR.rotation.x = -0.35;
+          tpArmR.rotation.x = -swingPitch * 1.4;
+          tpElbowR.rotation.x = 0.35;
         }
       }
 
