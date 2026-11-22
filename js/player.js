@@ -7,7 +7,7 @@ import { MAX_HOTDOG_AMMO, SFY, WORLD_BOUNDS, aura, aviationBeacons, biomeAt, cli
 import { AT, camera, hemiLight, makeMat, meteorCore, meteorGroup, meteorReticle, renderer, scene, skyGroup, sunLight, uLight, worldRoot } from './engine.js';
 import { applyModelPreset } from './assets.js';
 import { sfx } from './audio.js';
-import { LEFT_ITEMS, RIGHT_WEAPONS, addLeftItemToBag, buildLeftItemMesh, buildRightWeaponMesh, fireBallisticWiener, freeGeo, spawnParticles, spawnWorldPickup, updateProjectileWieners } from './items.js';
+import { LEFT_ITEMS, RIGHT_WEAPONS, addLeftItemToBag, buildLeftItemMesh, buildRightWeaponMesh, destroyCrate, destroyBarrel, fireBallisticWiener, freeGeo, spawnParticles, spawnWorldPickup, updateProjectileWieners } from './items.js';
 import { GEAR_CAPS_MPH, exitCurrentCar, getNearestVehicle, stepVehicleDriving, suspFrame } from './vehicles.js';
 import { knockOverLamppost, updateBiomeAtmosphere, updateBuildingLods, updateLampposts, updateSkyscraperInteriors } from './world.js';
 import { clearWantedLevel, copFrame, damageNpc, makeFace, pp, ratFrame, reviveRats, setFaceMood, updateNPCs, updatePickpocket } from './npcs.js';
@@ -251,7 +251,7 @@ export function evaluateMeleeHit() {
   const fwdX = -Math.sin(player.yaw);
   const fwdZ = -Math.cos(player.yaw);
   const reach = w.reach;
-
+  const guest = hooks.mpIsGuest();
   for (let i = smashableCrates.length - 1; i >= 0; i--) {
     const c = smashableCrates[i];
     const dx = c.x - player.x;
@@ -260,90 +260,26 @@ export function evaluateMeleeHit() {
     if (dist <= reach && Math.abs(c.y - player.y) < 1.6) {
       const dot = dist > 0.01 ? (dx * fwdX + dz * fwdZ) / dist : 1;
       if (dot > 0.45) {
-        c.hp -= w.damage;
         sfx.hit();
         spawnParticles(c.x, c.y + 0.55, c.z, 0xd97706, 8, 4.5);
-        if (c.hp <= 0) {
-          sfx.smash();
-          spawnParticles(c.x, c.y + 0.55, c.z, 0x92400e, 14, 6.5);
-          worldRoot.remove(c.mesh);
-          freeGeo(c.mesh);
-          const idx = worldBoxes.indexOf(c.box);
-          if (idx !== -1) worldBoxes.splice(idx, 1);
-          if (c.loot) spawnWorldPickup(c.loot.type, c.loot.id, c.x, c.y, c.z);
-          smashableCrates.splice(i, 1);
-          pushFeed('CRATE SMASHED!', 'border-l-amber-400');
-        }
-        return;
-      }
-    }
-  }
-
-  for (let i = hazardBarrels.length - 1; i >= 0; i--) {
-    const b = hazardBarrels[i];
-    const dx = b.x - player.x;
-    const dz = b.z - player.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist <= reach && Math.abs(b.y - player.y) < 1.6) {
-      const dot = dist > 0.01 ? (dx * fwdX + dz * fwdZ) / dist : 1;
-      if (dot > 0.45) {
-        b.hp -= w.damage;
-        sfx.hit();
-        spawnParticles(b.x, b.y + 0.6, b.z, 0xef4444, 8, 5);
-        if (b.hp <= 0) {
-          sfx.smash();
-          spawnParticles(b.x, b.y + 0.6, b.z, 0xf97316, 18, 8.5);
-          worldRoot.remove(b.mesh);
-          freeGeo(b.mesh);
-          const idx = worldBoxes.indexOf(b.box);
-          if (idx !== -1) worldBoxes.splice(idx, 1);
-          hazardBarrels.splice(i, 1);
-          if (Math.hypot(player.x - b.x, player.z - b.z) < 4.2) {
-            applyPlayerDamage(24, 'EXPLOSIVE BARREL');
+        if (guest) {
+          hooks.mpWorldEvent({ t: 'crate_hit', netId: c.netId, a: w.damage });
+        } else {
+          c.hp -= w.damage;
+          if (c.hp <= 0) {
+            sfx.smash();
+            spawnParticles(c.x, c.y + 0.55, c.z, 0x92400e, 14, 6.5);
+            const lootRec = destroyCrate(c, true);
+            hooks.mpWorldEvent({ t: 'crate_dead', netId: c.netId, x: c.x, y: c.y, z: c.z,
+              loot: lootRec ? { netId: lootRec.netId, type: lootRec.type, id: lootRec.id, x: lootRec.x, y: lootRec.y, z: lootRec.z } : null });
+            pushFeed('CRATE SMASHED!', 'border-l-amber-400');
           }
-          pushFeed('HAZARD BARREL DETONATED!', 'border-l-orange-500');
-        }
-        return;
-      }
-    }
-  }
-
-  for (const lp of lampPosts) {
-    if (lp.state !== 'standing') continue;
-    const dx = lp.x - player.x;
-    const dz = lp.z - player.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist <= reach + 0.3 && Math.abs(0.18 - player.y) < 1.8) {
-      const dot = dist > 0.01 ? (dx * fwdX + dz * fwdZ) / dist : 1;
-      if (dot > 0.45) {
-        knockOverLamppost(lp, Math.atan2(fwdX, fwdZ), 7.5);
-        pushFeed('LAMPPOST KNOCKED OVER!', 'border-l-amber-400');
-        return;
-      }
-    }
-  }
-
-  for (let i = 0; i < npcs.length; i++) {
-const npc = npcs[i];
-if (!npc.spawned || npc.asleep) continue;
-const dx = npc.x - player.x;
-    const dz = npc.z - player.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist <= reach && Math.abs(0.18 - player.y) < 1.6) {
-      const dot = dist > 0.01 ? (dx * fwdX + dz * fwdZ) / dist : 1;
-      if (dot > 0.45) {
-        damageNpc(npc, w.damage, Math.atan2(fwdX, fwdZ));
-        sfx.hit();
-        spawnParticles(npc.x, 1.2, npc.z, 0xfacc15, 6, 4.0);
-        if (!npc.asleep) {
-          pushFeed(`STRUCK ${npc.name}`, 'border-l-amber-400');
         }
         return;
       }
     }
   }
 }
-
 export function applyPlayerDamage(amount, sourceLabel) {
   if (gameState.damageCooldown > 0) return;
   gameState.damageCooldown = 0.45;
@@ -351,10 +287,14 @@ export function applyPlayerDamage(amount, sourceLabel) {
   sfx.damage();
   flashEdge('rgba(239, 68, 68, 0.48)');
   pushFeed(`-${Math.round(amount)} HP (${sourceLabel})`, 'border-l-rose-500');
-
   if (gameState.hp <= 0) {
     if (gameState.inCar) exitCurrentCar(true);
-    clearWantedLevel();
+    if (hooks.mpIsGuest()) {
+      hooks.mpWorldEvent({ t: 'died' }); // host clears the shared wanted level
+    } else {
+      clearWantedLevel();
+      hooks.mpWorldEvent({ t: 'player_died' });
+    }
     gameState.hp = gameState.maxHp;
     gameState.stamina = 100;
     gameState.cash = Math.max(0, gameState.cash - 50);
@@ -996,36 +936,38 @@ return;
   }
 
   for (let i = worldPickups.length - 1; i >= 0; i--) {
-    const p = worldPickups[i];
-    p.phase += dt * 2.8;
-    p.group.rotation.y += dt * 1.8;
-    p.group.position.y = p.baseY + Math.sin(p.phase) * 0.12;
-
-    if (Math.hypot(player.x - p.x, player.z - p.z) < 1.35 && Math.abs(player.y - p.y) < 1.8) {
-      if (p.type === 'right') {
-        if (!gameState.rightWeapons.includes(p.id)) {
-          gameState.rightWeapons.push(p.id);
-        }
-        gameState.activeRightWeapon = p.id;
-        if (p.id === 'hotdog_shooter') {
-          gameState.hotdogAmmo = MAX_HOTDOG_AMMO;
-        }
-        sfx.pickup();
-        syncEquippedMeshes();
-        pushFeed(`EQUIPPED ${RIGHT_WEAPONS[p.id].name.toUpperCase()}`, 'border-l-amber-400');
-        worldRoot.remove(p.group);
-        freeGeo(p.group);
-        worldPickups.splice(i, 1);
-      } else if (addLeftItemToBag(p.id, 1)) {
-        sfx.pickup();
-        syncEquippedMeshes();
-        pushFeed(`COLLECTED ${LEFT_ITEMS[p.id].name.toUpperCase()}`, 'border-l-sky-400');
-        worldRoot.remove(p.group);
-        freeGeo(p.group);
-        worldPickups.splice(i, 1);
-      }
+  const p = worldPickups[i];
+  p.phase += dt * 2.8;
+  p.group.rotation.y += dt * 1.8;
+  p.group.position.y = p.baseY + Math.sin(p.phase) * 0.12;
+  if (Math.hypot(player.x - p.x, player.z - p.z) < 1.35 && Math.abs(player.y - p.y) < 1.8) {
+    if (hooks.mpIsGuest()) {
+      // Host validates and grants; removal arrives as pickup_taken.
+      if (!p.asked) { p.asked = true; hooks.mpWorldEvent({ t: 'pickup_take', netId: p.netId }); }
+      continue;
+    }
+    if (p.type === 'right') {
+      if (!gameState.rightWeapons.includes(p.id)) gameState.rightWeapons.push(p.id);
+      gameState.activeRightWeapon = p.id;
+      if (p.id === 'hotdog_shooter') gameState.hotdogAmmo = MAX_HOTDOG_AMMO;
+      sfx.pickup();
+      syncEquippedMeshes();
+      pushFeed(`EQUIPPED ${RIGHT_WEAPONS[p.id].name.toUpperCase()}`, 'border-l-amber-400');
+      hooks.mpWorldEvent({ t: 'pickup_taken', netId: p.netId });
+      worldRoot.remove(p.group);
+      freeGeo(p.group);
+      worldPickups.splice(i, 1);
+    } else if (addLeftItemToBag(p.id, 1)) {
+      sfx.pickup();
+      syncEquippedMeshes();
+      pushFeed(`COLLECTED ${LEFT_ITEMS[p.id].name.toUpperCase()}`, 'border-l-sky-400');
+      hooks.mpWorldEvent({ t: 'pickup_taken', netId: p.netId });
+      worldRoot.remove(p.group);
+      freeGeo(p.group);
+      worldPickups.splice(i, 1);
     }
   }
+}
 
   stepParticles(dt);
 

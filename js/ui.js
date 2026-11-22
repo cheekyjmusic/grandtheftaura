@@ -573,8 +573,12 @@ export function exportSaveFile() {
 }
 
 export function importSaveFromFile(file) {
-  if (!file) return;
-  const reader = new FileReader();
+if (!file) return;
+if (hooks.mpActive()) {
+pushFeed('SAVE IMPORT IS DISABLED WHILE ONLINE — EXIT THE ROOM FIRST', 'border-l-rose-500');
+return;
+}
+const reader = new FileReader();
   reader.onload = (ev) => {
     try {
       const data = JSON.parse(ev.target.result);
@@ -653,7 +657,8 @@ export function renderMapCanvas(cv,center){renderMapCanvasBase(cv,center);
   const f=(x,z,col,r)=>{ctx.fillStyle=col;ctx.beginPath();ctx.arc(X(x),Y(z),r,0,6.3);ctx.fill();};
   if(!under()){AO.cops.forEach(c=>f(c.x,c.z,'#3b82f6',3));AO.cars.forEach(c=>f(c.x,c.z,Math.sin(performance.now()/120)>0?'#ef4444':'#3b82f6',4.5));manholes.forEach(m=>f(m[0],m[1],'#34d399',2));}
   hooks.drawMapOverlay(ctx,cv,center);
-  hooks.drawAircraftMapOverlay(cv,center);
+hooks.drawAircraftMapOverlay(cv,center);
+hooks.mpDrawMap(ctx,X,Y);
 }
 /** Attach all DOM / window listeners. Call once from main.js (never from Studio). */
 export function initUI() {
@@ -698,13 +703,14 @@ document.getElementById('btn-pause-import').onclick = () => {
 };
 
 document.getElementById('btn-pause-exit').onclick = () => {
-  sfx.uiClick();
-  if (gameState.inCar) exitCurrentCar(true);
-  meteorDrop.active = false;
-  meteorGroup.visible = false;
-  meteorReticle.visible = false;
-  document.getElementById('meteor-aim-banner').style.display = 'none';
-  setScreen('start');
+sfx.uiClick();
+if (gameState.inCar) exitCurrentCar(true);
+hooks.mpShutdown(); // host: host_bye + migration; guest: bye + clean disconnect
+meteorDrop.active = false;
+meteorGroup.visible = false;
+meteorReticle.visible = false;
+document.getElementById('meteor-aim-banner').style.display = 'none';
+setScreen('start');
 };
 
 document.getElementById('btn-settings-close').onclick = () => { sfx.uiClick(); closeSettingsModal(); };

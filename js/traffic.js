@@ -95,56 +95,79 @@ function ejectTrafficDriver(vehicle) {
 hooks.onVehicleEnter = ejectTrafficDriver;
 
 export function updateCityTraffic(dt) {
+  const guest = hooks.mpIsGuest();
   for (const vehicle of trafficCars) {
-	if (!vehicle.isTraffic || (gameState.inCar && vehicles[gameState.activeCarIndex] === vehicle)) continue;
-	vehicle.trafficProgress = (vehicle.trafficProgress + vehicle.trafficSpeed * dt) % trafficRouteLength;
-	const point = trafficRoutePoint(vehicle.trafficProgress);
-	vehicle.x = point.x;
-	vehicle.z = point.z;
-	let yawDiff = point.yaw - vehicle.yaw;
-	while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
-	while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
-	vehicle.yaw += yawDiff * Math.min(1, dt * 5);
-	vehicle.root.position.set(vehicle.x, vehicle.y, vehicle.z);
-	vehicle.root.rotation.y = vehicle.yaw;
-	vehicle.wheelSpinners.forEach((wheel) => { wheel.rotation.x += (vehicle.trafficSpeed * dt) / 0.38; });
+    if (guest) {
+      // Positions come from the host car stream; just spin the wheels.
+      vehicle.wheelSpinners.forEach((wheel) => { wheel.rotation.x += ((vehicle.speed || 0) * dt) / 0.38; });
+      continue;
+    }
+    if (!vehicle.isTraffic || (gameState.inCar && vehicles[gameState.activeCarIndex] === vehicle)) continue;
+    const idx = vehicles.indexOf(vehicle);
+    const owner = hooks.mpCarOwner(idx);
+    if (owner && owner !== hooks.mpLocalId()) continue; // a guest is driving it
+    vehicle.trafficProgress = (vehicle.trafficProgress + vehicle.trafficSpeed * dt) % trafficRouteLength;
+    const point = trafficRoutePoint(vehicle.trafficProgress);
+    vehicle.x = point.x;
+    vehicle.z = point.z;
+    let yawDiff = point.yaw - vehicle.yaw;
+    while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
+    while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
+    vehicle.yaw += yawDiff * Math.min(1, dt * 5);
+    vehicle.root.position.set(vehicle.x, vehicle.y, vehicle.z);
+    vehicle.root.rotation.y = vehicle.yaw;
+    vehicle.wheelSpinners.forEach((wheel) => { wheel.rotation.x += (vehicle.trafficSpeed * dt) / 0.38; });
   }
-
   for (let index = ejectedDrivers.length - 1; index >= 0; index--) {
-	const driver = ejectedDrivers[index];
-	driver.timer -= dt;
-	if (driver.timer <= 0) {
-	  scene.remove(driver.mesh);
-	  freeGeo(driver.mesh);
-	  ejectedDrivers.splice(index, 1);
-	  continue;
-	}
-	if (driver.ejectTimer > 0) {
-	  driver.ejectTimer = Math.max(0, driver.ejectTimer - dt);
-	  driver.vy -= 16 * dt;
-	  driver.x += driver.vx * dt;
-	  driver.y += driver.vy * dt;
-	  driver.z += driver.vz * dt;
-	  const progress = 1 - driver.ejectTimer / 0.72;
-	  driver.mesh.rotation.z = Math.sin(progress * Math.PI) * 0.85;
-	  driver.mesh.rotation.x = -0.25 - Math.sin(progress * Math.PI) * 0.45;
-	  driver.mesh.userData.armL.rotation.x = -1.8 + Math.sin(progress * 13) * 0.45;
-	  driver.mesh.userData.armR.rotation.x = -1.8 - Math.sin(progress * 13) * 0.45;
-	  driver.mesh.position.set(driver.x, driver.y, driver.z);
-	  if (driver.ejectTimer <= 0) {
-		driver.y = computeSupportFloor(driver.x, driver.z, driver.y, player.radius) + 0.02;
-		driver.vy = 0;
-		driver.mesh.rotation.set(0, driver.yaw, 0);
-		driver.mesh.userData.armL.rotation.set(0, 0, 0);
-		driver.mesh.userData.armR.rotation.set(0, 0, 0);
-	  }
-	  continue;
-	}
-	driver.x += Math.sin(driver.yaw) * 2.2 * dt;
-	driver.z += Math.cos(driver.yaw) * 2.2 * dt;
-	driver.mesh.position.set(driver.x, driver.y, driver.z);
-	const step = Math.sin((8 - driver.timer) * 9) * 0.45;
-	driver.mesh.userData.legL.rotation.x = step;
-	driver.mesh.userData.legR.rotation.x = -step;
+    const driver = ejectedDrivers[index];
+    driver.timer -= dt;
+    if (driver.timer <= 0) {
+      scene.remove(driver.mesh);
+      freeGeo(driver.mesh);
+      ejectedDrivers.splice(index, 1);
+      continue;
+    }
+    if (driver.ejectTimer > 0) {
+      driver.ejectTimer = Math.max(0, driver.ejectTimer - dt);
+      driver.vy -= 16 * dt;
+      driver.x += driver.vx * dt;
+      driver.y += driver.vy * dt;
+      driver.z += driver.vz * dt;
+      const progress = 1 - driver.ejectTimer / 0.72;
+      driver.mesh.rotation.z = Math.sin(progress * Math.PI) * 0.85;
+      driver.mesh.rotation.x = -0.25 - Math.sin(progress * Math.PI) * 0.45;
+      driver.mesh.userData.armL.rotation.x = -1.8 + Math.sin(progress * 13) * 0.45;
+      driver.mesh.userData.armR.rotation.x = -1.8 - Math.sin(progress * 13) * 0.45;
+      driver.mesh.position.set(driver.x, driver.y, driver.z);
+      if (driver.ejectTimer <= 0) {
+        driver.y = computeSupportFloor(driver.x, driver.z, driver.y, player.radius) + 0.02;
+        driver.vy = 0;
+        driver.mesh.rotation.set(0, driver.yaw, 0);
+        driver.mesh.userData.armL.rotation.set(0, 0, 0);
+        driver.mesh.userData.armR.rotation.set(0, 0, 0);
+      }
+      continue;
+    }
+    driver.x += Math.sin(driver.yaw) * 2.2 * dt;
+    driver.z += Math.cos(driver.yaw) * 2.2 * dt;
+    driver.mesh.position.set(driver.x, driver.y, driver.z);
+    const step = Math.sin((8 - driver.timer) * 9) * 0.45;
+    driver.mesh.userData.legL.rotation.x = step;
+    driver.mesh.userData.legR.rotation.x = -step;
   }
 }
+// Host migration: rebuild route progress from the synced positions so traffic
+// continues from where the old host left it (no teleporting cars).
+export function adoptTrafficProgress() {
+  for (const vehicle of trafficCars) {
+    if (!vehicle.isTraffic) continue;
+    let best = vehicle.trafficProgress || 0, bd = Infinity;
+    for (let d = 0; d < trafficRouteLength; d += 2) {
+      const p = trafficRoutePoint(d);
+      const dist = Math.hypot(p.x - vehicle.x, p.z - vehicle.z);
+      if (dist < bd) { bd = dist; best = d; }
+    }
+    vehicle.trafficProgress = best;
+  }
+}
+Object.assign(hooks, { mpAdoptTraffic: adoptTrafficProgress });

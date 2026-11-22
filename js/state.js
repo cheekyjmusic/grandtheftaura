@@ -32,6 +32,35 @@ export const hooks = {
   damageNpc: noop,
   knockOverLamppost: noop,
   getRightMountWorldPosition: noop,
+  // ---- multiplayer v2 (registered by js/multiplayer.js; offline defaults keep singleplayer identical) ----
+  mpActive: () => false,
+  mpIsHost: () => false,
+  mpIsGuest: () => false,
+  mpLocalId: () => '1',
+  mpTargets: () => [],            // other players: {id,x,y,z,yaw,crouching,inCar,hp,attacking}
+  mpHitPlayer: noop,              // (id, amount, sourceLabel) authority-routed player damage
+  mpAward: noop,                  // (id, cash, itemId?) kill/loot credit
+  mpWorldEvent: noop,             // (ev) apply locally + send/broadcast (see multiplayer.js)
+  mpVehicleImpact: noop,          // (targetCarIdx, impulseX, impulseZ, yawImpulse) car-to-car network RPC
+  mpCarEnter: () => true,         // (idx) -> false when locked or pending host grant
+  mpCarExit: noop,                // (idx)
+  mpCarLocked: () => false,       // (idx) locked by someone else
+  mpCarOwner: () => null,         // (idx) -> owner id | null
+  mpNpcLoot: () => 'local',       // (npc) -> 'local' (award now) | 'pending' (host grant)
+  mpGuestNpcFrame: noop,          // (dt, elapsed) guest-side NPC interpolation/pose
+  mpGuestCopFrame: noop,          // (dt, elapsed) guest-side police rendering
+  mpGuestRatFrame: noop,          // (dt, elapsed) guest-side rat rendering
+  mpMeleeCop: noop,               // guest melee vs remote cops
+  mpMeleeRat: noop,               // guest melee vs remote rats
+  mpJetLocked: () => false,
+  mpJetDigest: () => null,        // local jet state for the world stream
+  mpJetApplyRemote: noop,         // (data|null) render someone else's jet
+  mpSpawnBomb: noop,              // (x,y,z,vx,vy,vz) networked nuke
+  mpFestivalLead: () => 70,
+  mpSetFestivalLead: noop,
+  mpAdoptTraffic: noop,           // new host: rebuild traffic route progress from positions
+  mpDrawMap: noop,                // (ctx, X, Y) remote player dots
+  mpShutdown: noop,               // graceful leave (host_bye / bye)
 };
 
 /** Axis-aligned footprint of an upright box/cylinder (half extents) after the object's yaw + scale. */
@@ -204,7 +233,7 @@ export const WORLD_BOUNDS = Object.freeze({ minX: -710, maxX: 540, minZ: -590, m
 export function computeSupportFloor(x, z, footY, radius) {
   if (footY < -1.0) return sewerFloor(x, z);
   const inJungle = x >= 368 && x <= 533 && z >= -180 && z <= 240;
-let highest = (inJungle ? 1.5 : (x >= 164 ? 0.02 : 0.18)) + terrainHeightOffset(x, z);
+  let highest = (inJungle ? 1.5 : (x >= 164 ? 0.02 : 0.18)) + terrainHeightOffset(x, z);
   if (z < -170 || x < -196 || (x >= -700 && x <= -50 && z >= 108 && z <= 320)) highest = Math.max(highest, terrainH(x, z));
 
   for (let r = 0; r < driveableRamps.length; r++) {
@@ -233,7 +262,7 @@ let highest = (inJungle ? 1.5 : (x >= 164 ? 0.02 : 0.18)) + terrainHeightOffset(
 
 export function collidesHorizontally(nx, nz, footY, bodyH, radius) {
   if (nx < WORLD_BOUNDS.minX + radius || nx > WORLD_BOUNDS.maxX - radius || nz < WORLD_BOUNDS.minZ + radius || nz > WORLD_BOUNDS.maxZ - radius) return true;
-if (nx < -196 && nx > -560 && (nz < -170 + radius || nz > 170 - radius) && !(nx >= -700 && nx <= -50 && nz >= 108 && nz <= 320)) return true;
+  if (nx < -196 && nx > -560 && (nz < -170 + radius || nz > 170 - radius) && !(nx >= -700 && nx <= -50 && nz >= 108 && nz <= 320)) return true;
   if (footY < -1.0 && !sewerOK(nx, nz, radius)) return true;
   if (footY > -0.5) { const th = terrainH(nx, nz); if (th > -90 && th - footY > 1.0) return true; }
   for (let i = 0; i < worldBoxes.length; i++) {
@@ -324,12 +353,13 @@ export function hillsH(x,z){
 export function riverX(z){return roadC(z)-72+14*Math.sin(z*.04);}
 
 export function alpineH(x, z) {
-return 0.02 + Math.max(0, 8 + Math.sin(x * 0.02) * 3 + Math.cos(z * 0.03) * 2);
+  return 0.02 + Math.max(0, 8 + Math.sin(x * 0.02) * 3 + Math.cos(z * 0.03) * 2);
 }
+
 export function terrainBaseH(x,z){
-if(x<-196&&x>-560&&z>-172&&z<172) return hillsH(x,z);
-if(x>=-700&&x<=-50&&z>=108&&z<=320) return alpineH(x,z);
-if(z>-170) return -99;
+  if(x<-196&&x>-560&&z>-172&&z<172) return hillsH(x,z);
+  if(x>=-700&&x<=-50&&z>=108&&z<=320) return alpineH(x,z);
+  if(z>-170) return -99;
   const t=-170-z, env=sstep(0,120,t);
   const wx=x+(fbm(x*.006+9,z*.006)-.5)*90, wz=z+(fbm(x*.006,z*.006+4)-.5)*90;
   const rise=.3+.7*sstep(30,320,t);

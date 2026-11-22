@@ -1335,10 +1335,10 @@ export function knockOverLamppostBase(lp, impactYaw, impactSpeed = 6) {
 }
 
 export function updateLampposts(dt, elapsed) {
+  const guest = hooks.mpIsGuest(); // guests animate falls/flicker; respawn is a host event (lamp_up)
   for (let i = 0; i < lampPosts.length; i++) {
     const lp = lampPosts[i];
     if (lp.state === 'standing') continue;
-
     if (lp.state === 'falling') {
       lp.fallVel += 9.5 * dt;
       lp.fallAngle += lp.fallVel * dt;
@@ -1356,7 +1356,7 @@ export function updateLampposts(dt, elapsed) {
       const isOn = flickerWave > 0.12;
       lp.lampMat.emissiveIntensity = isOn ? 1.8 : 0.0;
       lp.lampMat.color.setHex(isOn ? 0xfef08a : 0x334155);
-
+      if (guest) continue;
       lp.respawnTimer -= dt;
       if (lp.respawnTimer <= 0) {
         const clearOfPlayer = Math.hypot(player.x - lp.x, player.z - lp.z) > 2.2;
@@ -1371,6 +1371,7 @@ export function updateLampposts(dt, elapsed) {
           lp.boxRef.minY = 0.18;
           lp.boxRef.maxY = 4.6;
           spawnParticles(lp.x, 1.0, lp.z, 0x38bdf8, 6, 3.0);
+          hooks.mpWorldEvent({ t: 'lamp_up', i });
         }
       }
     }
@@ -2639,85 +2640,118 @@ export function buildSewer(){
   manholes.forEach(m=>{const c=new THREE.Mesh(cvG,cvM);c.position.set(m[0],.22,m[1]);worldRoot.add(c);manholeCovers.push(c);manholeOpen.push(false);const hd=new THREE.Mesh(holeDiscG,holeDiscM);hd.position.set(m[0],.2,m[1]);hd.visible=false;worldRoot.add(hd);manholeHoles.push(hd);});
 }
 
-export function knockOverLamppost(l, y, s) { knockOverLamppostBase(l, y, s); if (s > 6) crime(.08); }
+export function knockOverLamppost(l, y, s) {
+  if (l.state !== 'standing') return;
+  knockOverLamppostBase(l, y, s);
+  if (s > 6) crime(.08);
+  hooks.mpWorldEvent({ t: 'lamp_hit', i: lampPosts.indexOf(l), yaw: y, speed: s });
+}
 
 export function buildAuraEstates(){
-  const bxG=new THREE.BoxGeometry(1,1,1),M=(c,r,e)=>new THREE.MeshStandardMaterial({color:c,roughness:r==null?.9:r,emissive:e||0,emissiveIntensity:e?1.2:0});
-  const K={wall:M(0xe9e6df),roof:M(0x2b2f36),floor:M(0xd8dde0,.5),glass:M(0x8fb8d6,.15),red:M(0xdc2626),white:M(0xf5f5f5),wood:M(0x6b4a2f),sofa:M(0x394a5e),lamp:M(0xfff7d6,.5,0xfff7d6),gold:M(0xf5c542,.3,0xb8860b),stone:M(0xb9b2a6),drive:M(0x3a3d42),metal:M(0x20242a,.4),blue:M(0x7ec8e3),black:M(0x111111)};
-  const bx=(g,m,x,y,z,a,b,d)=>{const o=new THREE.Mesh(bxG,m);o.position.set(x,y,z);o.scale.set(a,b,d);g.add(o);return o;};
-  const wb=(x,y,z,a,b,d)=>addWorldBox(x-a/2,x+a/2,y-b/2,y+b/2,z-d/2,z+d/2,'solid',false);
-  const culls=[],houses=[],gate={open:false,boxes:[],l1:null,l2:null};aura.culls=culls;
-  // ---- Aura Hills terrain + winding road ----
-  {const X0=-560,X1=-196,Z0=-172,Z1=172,N=114,g=new THREE.PlaneGeometry(X1-X0,Z1-Z0,N,N);g.rotateX(-Math.PI/2);
-    const p=g.attributes.position,col=new Float32Array(p.count*3),H=new Float32Array(p.count),c=new THREE.Color(),c2=new THREE.Color(),st=N+1,dx=(X1-X0)/N,dz=(Z1-Z0)/N;
-    for(let i=0;i<p.count;i++){const x=p.getX(i)+(X0+X1)/2,z=p.getZ(i)+(Z0+Z1)/2,h=terrainBaseH(x,z);H[i]=h;p.setXYZ(i,x,h-.1,z);}
-    for(let i=0;i<p.count;i++){const x=p.getX(i),z=p.getZ(i),h=H[i],cx=i%st,cz=(i/st)|0,il=cx>0?i-1:i,ir=cx<N?i+1:i,iu=cz>0?i-st:i,id=cz<N?i+st:i;
-      const sl=Math.abs(H[ir]-H[il])/(2*dx)+Math.abs(H[id]-H[iu])/(2*dz),n=fbm(x*.06,z*.06,3);
-      c.set(0x5b7d3c).lerp(c2.set(0x8a8f52),n);c.lerp(c2.set(0xa59a76),sstep(40,85,h));
-      c.lerp(c2.set(0x4f8a3f),1-sstep(66,100,Math.hypot(x-AHC.px,z-AHC.pz)));
-      c.lerp(c2.set(0x76705f),sstep(.35,.75,sl));c.multiplyScalar(.9+.2*n);col[i*3]=c.r;col[i*3+1]=c.g;col[i*3+2]=c.b;}
-    g.setAttribute('color',new THREE.BufferAttribute(col,3));g.computeVertexNormals();
-    const tm=new THREE.Mesh(g,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1}));tm.receiveShadow=true;registerSculptableTerrain(tm);worldRoot.add(tm);
-    const pts=[];for(let s=0;s<=274;s+=3){const x=-196-s;pts.push([x,ahRz(x)]);}
-    const ribbon=(w,dy,color)=>{const pos=[],idx=[];pts.forEach((q,k)=>{const a=pts[Math.max(0,k-1)],b=pts[Math.min(pts.length-1,k+1)],tx=b[0]-a[0],tz=b[1]-a[1],l=Math.hypot(tx,tz),nx=-tz/l,nz=tx/l,y=ahRy(q[0])+dy;
-        pos.push(q[0]+nx*w,y,q[1]+nz*w,q[0]-nx*w,y,q[1]-nz*w);if(k){const i=(k-1)*2;idx.push(i,i+1,i+2,i+1,i+3,i+2);}});
-      const rg=new THREE.BufferGeometry();rg.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));rg.setIndex(idx);rg.computeVertexNormals();
-      const m=new THREE.Mesh(rg,new THREE.MeshStandardMaterial({color,roughness:.9,side:THREE.DoubleSide}));m.receiveShadow=true;worldRoot.add(m);};
-    ribbon(4.8,.12,0x2a2d31);ribbon(.12,.16,0xe8c547);}
-  // ---- Gated community ----
-  {const WG=new THREE.Group();worldRoot.add(WG);
-    const seg=(cx,cz,a,d)=>{bx(WG,K.stone,cx,39.7,cz,a,3.4,d);wb(cx,39.7,cz,a,3.4,d);};
-    seg(-480,-85,96,.8);seg(-480,-5,96,.8);seg(-528,-45,.8,80);seg(-432,-67,.8,36);seg(-432,-23,.8,36);
-    gate.l1=bx(WG,K.metal,-431.4,39.5,-47,.3,3,4);gate.l2=bx(WG,K.metal,-431.4,39.5,-43,.3,3,4);
-    gate.boxes.push(wb(-432,39.5,-47,.6,3,4),wb(-432,39.5,-43,.6,3,4));
-    bx(WG,K.stone,-432,41.9,-45,.9,1.4,10);
-    const sg=new THREE.Group();sg.position.set(-431.4,41.9,-45);sg.rotation.y=Math.PI/2;createNeonSign(sg,'AURA ESTATES',0,0,0,'#111827','#fcd34d',7,1.1);worldRoot.add(sg);
-    const HW=15,HD=11,HT=4.2,Y=38.18;
-    [[-508,-68,1],[-508,-22,-1],[-470,-70,1],[-470,-20,-1],[-448,-70,1],[-448,-20,-1]].forEach(([cx,cz,dir],k)=>{
-      const g=new THREE.Group();g.position.set(cx,Y,cz);worldRoot.add(g);const inn=new THREE.Group();g.add(inn);
-      const fz=dir*HD/2,bz=-dir*HD/2,sw=(HW-2.6)/2,wm=k%2?K.wall:K.stone;
-      bx(g,wm,0,HT/2,bz,HW,HT,.4);wb(cx,Y+HT/2,cz+bz,HW,HT,.4);
-      for(const sd of[-1,1]){bx(g,wm,sd*HW/2,HT/2,0,.4,HT,HD);wb(cx+sd*HW/2,Y+HT/2,cz,.4,HT,HD);
-        bx(g,wm,sd*(1.3+sw/2),HT/2,fz,sw,HT,.4);wb(cx+sd*(1.3+sw/2),Y+HT/2,cz+fz,sw,HT,.4);
-        bx(g,K.glass,sd*(1.3+sw/2),2.3,fz+dir*.22,sw*.6,1.6,.05);}
-      bx(g,wm,0,HT-.5,fz,2.6,1,.4);bx(g,K.roof,0,HT+.2,0,HW+1.4,.4,HD+1.4);bx(g,K.drive,0,.05,fz+dir*5.5,4,.1,11);
-      bx(inn,K.wood,0,.02,0,HW-.6,.05,HD-.6);bx(inn,K.sofa,-3,.45,-dir*2.5,4,.9,1.2);bx(inn,K.wood,-3,.3,-dir*.6,2,.6,1);
-      bx(inn,K.black,4,1.4,-dir*(HD/2-.4),3,1.6,.1);bx(inn,K.lamp,0,HT-.2,0,2,.1,2);bx(inn,K.wood,-5,.5,dir*3,1.2,1,2.4);
-      const safe=bx(inn,K.gold,5.5,.5,dir*(HD/2-1.2),.9,.9,.7);
-      houses.push({safe,sx:cx+5.5,sz:cz+dir*(HD/2-1.2),taken:false});culls.push({g:inn,x:cx,z:cz,r:65});});}
-  // ---- Aura General Hospital (placed on the first clear lot) ----
-  {const W=36,D=26,HH=7,T=.5;let hx=0,hz=0,found=false;
-    const clear=(cx,cz)=>{for(let x=-W/2-4;x<=W/2+4;x+=6)for(let z=-D/2-4;z<=D/2+4;z+=6)if(collidesHorizontally(cx+x,cz+z,.2,1.8,1.5))return false;return true;};
-    for(let x=-170;x<=110&&!found;x+=10)for(let z=-140;z<=160;z+=10)if(clear(x,z)){hx=x;hz=z;found=true;break;}
-    if(found){const g=new THREE.Group();g.position.set(hx,.18,hz);worldRoot.add(g);const inn=new THREE.Group();g.add(inn);
-      bx(g,K.white,0,HH/2,-D/2,W,HH,T);wb(hx,HH/2,hz-D/2,W,HH,T);
-      for(const sd of[-1,1]){bx(g,K.white,sd*W/2,HH/2,0,T,HH,D);wb(hx+sd*W/2,HH/2,hz,T,HH,D);
-        const sw=(W-6)/2;bx(g,K.white,sd*(3+sw/2),HH/2,D/2,sw,HH,T);wb(hx+sd*(3+sw/2),HH/2,hz+D/2,sw,HH,T);}
-      bx(g,K.white,0,HH-1,D/2,6,2,T);bx(g,K.roof,0,HH+.25,0,W+1,.5,D+1);bx(g,K.white,0,4.6,D/2+2.5,10,.3,5);
-      bx(g,K.red,-11,4.5,D/2+.3,1,4,.15);bx(g,K.red,-11,4.5,D/2+.3,4,1,.15);bx(g,K.red,11,4.5,D/2+.3,1,4,.15);bx(g,K.red,11,4.5,D/2+.3,4,1,.15);
-      createNeonSign(g,'AURA GENERAL HOSPITAL',0,6.3,D/2+.3,'#ffffff','#dc2626',12,1.4);
-      bx(inn,K.floor,0,.02,0,W-1,.05,D-1);
-      for(let x=-15;x<=15;x+=6)for(const z of[-6,6])bx(inn,K.lamp,x,HH-.3,z,2.4,.1,.8);
-      bx(inn,K.wood,0,.55,6,8,1.1,1.2);bx(inn,K.white,0,1.12,6,8.2,.08,1.4);
-      for(let x=-14;x<=-8;x+=2)bx(inn,K.sofa,x,.4,10,1.2,.8,1);
-      const bed=(x,z)=>{bx(inn,K.white,x,.45,z,1.1,.5,2.3);bx(inn,K.blue,x,.75,z+.3,1.1,.12,1.6);bx(inn,K.white,x,.8,z-.9,.7,.14,.5);};
-      for(const x of[-14,-8,-2,8,13])bed(x,-D/2+3);
-      for(const x of[-11,-5,10.5])bx(inn,K.blue,x,1.3,-D/2+3.2,.05,2.2,2.6);
-      for(const x of[-16,-10,-4,6,11])bx(inn,K.metal,x,1,-D/2+4.2,.06,2,.06);
-      aura.hospitalSpawn={x:hx-14,z:hz-D/2+5.6};culls.push({g:inn,x:hx,z:hz,r:80});}}
-  // ---- I-88 highway upgrade: lighting poles + edge lines ----
-  {const n=30,pg=new THREE.CylinderGeometry(.12,.16,9,8),hg=new THREE.BoxGeometry(2.2,.2,.5),poles=new THREE.InstancedMesh(pg,M(0x6b7280,.6),n),heads=new THREE.InstancedMesh(hg,K.lamp,n),d=new THREE.Object3D();let k=0;
-    for(let i=0;i<15;i++)for(const sd of[-1,1]){const z=-180+i*27,x=sd<0?139.6:164.4;d.position.set(x,4.5,z);d.updateMatrix();poles.setMatrixAt(k,d.matrix);d.position.set(x-sd*1.1,9,z);d.updateMatrix();heads.setMatrixAt(k,d.matrix);k++;}
-    worldRoot.add(poles,heads);const eg=new THREE.Group();worldRoot.add(eg);for(const x of[141.7,162.3])bx(eg,K.white,x,.13,10,.25,.02,400);}
-  aura.ahCull=function(dt){
-    for(let i=0;i<manholeCovers.length;i++){const c=manholeCovers[i],tx=manholes[i][0]+(manholeOpen[i]?1.5:0);c.position.x+=(tx-c.position.x)*Math.min(1,dt*6);manholeHoles[i].visible=manholeOpen[i];}
-    for(const c of culls)c.g.visible=Math.hypot(player.x-c.x,player.z-c.z)<c.r;
-    const go=gate.open?4:0;gate.l1.position.z+=((-47-go)-gate.l1.position.z)*Math.min(1,dt*3);gate.l2.position.z+=((-43+go)-gate.l2.position.z)*Math.min(1,dt*3);
-    if(!under()&&player.x<-196)gameState.zoneName=player.x<-430?'AURA ESTATES':player.x>-350&&player.x<-220&&Math.abs(player.z)<105?'WESTSIDE DISTRICT':'AURA HILLS';};
-  aura.ahHint=function(){if(!gate.open&&Math.hypot(player.x+432,player.z+45)<6)return '[F] FORCE OPEN GATE';for(const h of houses)if(!h.taken&&Math.hypot(player.x-h.sx,player.z-h.sz)<2.4)return '[F] CRACK SAFE';return '';};
-  aura.ahF=function(){
-    if(!gate.open&&Math.hypot(player.x+432,player.z+45)<6){gate.open=true;gate.boxes.forEach(b=>{const k=worldBoxes.indexOf(b);if(k>=0)worldBoxes.splice(k,1);});sfx.mantle();crime(.35);pushFeed('GATE FORCED OPEN — SECURITY ALERTED','border-l-rose-500');return;}
-    for(const h of houses)if(!h.taken&&Math.hypot(player.x-h.sx,player.z-h.sz)<2.4){h.taken=true;h.safe.visible=false;gameState.cash+=600;spawnParticles(h.sx,39.5,h.sz,0xf5c542,14,5);sfx.pickup();crime(.5);pushFeed('SAFE CRACKED +$600','border-l-amber-400');hooks.updateHUD(true);return;}};
+const bxG=new THREE.BoxGeometry(1,1,1),M=(c,r,e)=>new THREE.MeshStandardMaterial({color:c,roughness:r==null?.9:r,emissive:e||0,emissiveIntensity:e?1.2:0});
+const K={wall:M(0xe9e6df),roof:M(0x2b2f36),floor:M(0xd8dde0,.5),glass:M(0x8fb8d6,.15),red:M(0xdc2626),white:M(0xf5f5f5),wood:M(0x6b4a2f),sofa:M(0x394a5e),lamp:M(0xfff7d6,.5,0xfff7d6),gold:M(0xf5c542,.3,0xb8860b),stone:M(0xb9b2a6),drive:M(0x3a3d42),metal:M(0x20242a,.4),blue:M(0x7ec8e3),black:M(0x111111)};
+const bx=(g,m,x,y,z,a,b,d)=>{const o=new THREE.Mesh(bxG,m);o.position.set(x,y,z);o.scale.set(a,b,d);g.add(o);return o;};
+const wb=(x,y,z,a,b,d)=>addWorldBox(x-a/2,x+a/2,y-b/2,y+b/2,z-d/2,z+d/2,'solid',false);
+const culls=[],houses=[],gate={open:false,boxes:[],l1:null,l2:null};aura.culls=culls;
+// ---- Aura Hills terrain + winding road ----
+{const X0=-560,X1=-196,Z0=-172,Z1=172,N=114,g=new THREE.PlaneGeometry(X1-X0,Z1-Z0,N,N);g.rotateX(-Math.PI/2);
+const p=g.attributes.position,col=new Float32Array(p.count*3),H=new Float32Array(p.count),c=new THREE.Color(),c2=new THREE.Color(),st=N+1,dx=(X1-X0)/N,dz=(Z1-Z0)/N;
+for(let i=0;i<p.count;i++){const x=p.getX(i)+(X0+X1)/2,z=p.getZ(i)+(Z0+Z1)/2,h=terrainBaseH(x,z);H[i]=h;p.setXYZ(i,x,h-.1,z);}
+for(let i=0;i<p.count;i++){const x=p.getX(i),z=p.getZ(i),h=H[i],cx=i%st,cz=(i/st)|0,il=cx>0?i-1:i,ir=cx<N?i+1:i,iu=cz>0?i-st:i,id=cz<N?i+st:i;
+const sl=Math.abs(H[ir]-H[il])/(2*dx)+Math.abs(H[id]-H[iu])/(2*dz),n=fbm(x*.06,z*.06,3);
+c.set(0x5b7d3c).lerp(c2.set(0x8a8f52),n);c.lerp(c2.set(0xa59a76),sstep(40,85,h));
+c.lerp(c2.set(0x4f8a3f),1-sstep(66,100,Math.hypot(x-AHC.px,z-AHC.pz)));
+c.lerp(c2.set(0x76705f),sstep(.35,.75,sl));c.multiplyScalar(.9+.2*n);col[i*3]=c.r;col[i*3+1]=c.g;col[i*3+2]=c.b;}
+g.setAttribute('color',new THREE.BufferAttribute(col,3));g.computeVertexNormals();
+const tm=new THREE.Mesh(g,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1}));tm.receiveShadow=true;registerSculptableTerrain(tm);worldRoot.add(tm);
+const pts=[];for(let s=0;s<=274;s+=3){const x=-196-s;pts.push([x,ahRz(x)]);}
+const ribbon=(w,dy,color)=>{const pos=[],idx=[];pts.forEach((q,k)=>{const a=pts[Math.max(0,k-1)],b=pts[Math.min(pts.length-1,k+1)],tx=b[0]-a[0],tz=b[1]-a[1],l=Math.hypot(tx,tz),nx=-tz/l,nz=tx/l,y=ahRy(q[0])+dy;
+pos.push(q[0]+nx*w,y,q[1]+nz*w,q[0]-nx*w,y,q[1]-nz*w);if(k){const i=(k-1)*2;idx.push(i,i+1,i+2,i+1,i+3,i+2);}});
+const rg=new THREE.BufferGeometry();rg.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));rg.setIndex(idx);rg.computeVertexNormals();
+const m=new THREE.Mesh(rg,new THREE.MeshStandardMaterial({color,roughness:.9,side:THREE.DoubleSide}));m.receiveShadow=true;worldRoot.add(m);};
+ribbon(4.8,.12,0x2a2d31);ribbon(.12,.16,0xe8c547);}
+// ---- Gated community ----
+{const WG=new THREE.Group();worldRoot.add(WG);
+const seg=(cx,cz,a,d)=>{bx(WG,K.stone,cx,39.7,cz,a,3.4,d);wb(cx,39.7,cz,a,3.4,d);};
+seg(-480,-85,96,.8);seg(-480,-5,96,.8);seg(-528,-45,.8,80);seg(-432,-67,.8,36);seg(-432,-23,.8,36);
+gate.l1=bx(WG,K.metal,-431.4,39.5,-47,.3,3,4);gate.l2=bx(WG,K.metal,-431.4,39.5,-43,.3,3,4);
+gate.boxes.push(wb(-432,39.5,-47,.6,3,4),wb(-432,39.5,-43,.6,3,4));
+bx(WG,K.stone,-432,41.9,-45,.9,1.4,10);
+const sg=new THREE.Group();sg.position.set(-431.4,41.9,-45);sg.rotation.y=Math.PI/2;createNeonSign(sg,'AURA ESTATES',0,0,0,'#111827','#fcd34d',7,1.1);worldRoot.add(sg);
+const HW=15,HD=11,HT=4.2,Y=38.18;
+[[-508,-68,1],[-508,-22,-1],[-470,-70,1],[-470,-20,-1],[-448,-70,1],[-448,-20,-1]].forEach(([cx,cz,dir],k)=>{
+const g=new THREE.Group();g.position.set(cx,Y,cz);worldRoot.add(g);const inn=new THREE.Group();g.add(inn);
+const fz=dir*HD/2,bz=-dir*HD/2,sw=(HW-2.6)/2,wm=k%2?K.wall:K.stone;
+bx(g,wm,0,HT/2,bz,HW,HT,.4);wb(cx,Y+HT/2,cz+bz,HW,HT,.4);
+for(const sd of[-1,1]){bx(g,wm,sd*HW/2,HT/2,0,.4,HT,HD);wb(cx+sd*HW/2,Y+HT/2,cz,.4,HT,HD);
+bx(g,wm,sd*(1.3+sw/2),HT/2,fz,sw,HT,.4);wb(cx+sd*(1.3+sw/2),Y+HT/2,cz+fz,sw,HT,.4);
+bx(g,K.glass,sd*(1.3+sw/2),2.3,fz+dir*.22,sw*.6,1.6,.05);}
+bx(g,wm,0,HT-.5,fz,2.6,1,.4);bx(g,K.roof,0,HT+.2,0,HW+1.4,.4,HD+1.4);bx(g,K.drive,0,.05,fz+dir*5.5,4,.1,11);
+bx(inn,K.wood,0,.02,0,HW-.6,.05,HD-.6);bx(inn,K.sofa,-3,.45,-dir*2.5,4,.9,1.2);bx(inn,K.wood,-3,.3,-dir*.6,2,.6,1);
+bx(inn,K.black,4,1.4,-dir*(HD/2-.4),3,1.6,.1);bx(inn,K.lamp,0,HT-.2,0,2,.1,2);bx(inn,K.wood,-5,.5,dir*3,1.2,1,2.4);
+const safe=bx(inn,K.gold,5.5,.5,dir*(HD/2-1.2),.9,.9,.7);
+houses.push({safe,sx:cx+5.5,sz:cz+dir*(HD/2-1.2),taken:false});culls.push({g:inn,x:cx,z:cz,r:65});});}
+// ---- Aura General Hospital (placed on the first clear lot) ----
+{const W=36,D=26,HH=7,T=.5;let hx=0,hz=0,found=false;
+const clear=(cx,cz)=>{for(let x=-W/2-4;x<=W/2+4;x+=6)for(let z=-D/2-4;z<=D/2+4;z+=6)if(collidesHorizontally(cx+x,cz+z,.2,1.8,1.5))return false;return true;};
+for(let x=-170;x<=110&&!found;x+=10)for(let z=-140;z<=160;z+=10)if(clear(x,z)){hx=x;hz=z;found=true;break;}
+if(found){const g=new THREE.Group();g.position.set(hx,.18,hz);worldRoot.add(g);const inn=new THREE.Group();g.add(inn);
+bx(g,K.white,0,HH/2,-D/2,W,HH,T);wb(hx,HH/2,hz-D/2,W,HH,T);
+for(const sd of[-1,1]){bx(g,K.white,sd*W/2,HH/2,0,T,HH,D);wb(hx+sd*W/2,HH/2,hz,T,HH,D);
+const sw=(W-6)/2;bx(g,K.white,sd*(3+sw/2),HH/2,D/2,sw,HH,T);wb(hx+sd*(3+sw/2),HH/2,hz+D/2,sw,HH,T);}
+bx(g,K.white,0,HH-1,D/2,6,2,T);bx(g,K.roof,0,HH+.25,0,W+1,.5,D+1);bx(g,K.white,0,4.6,D/2+2.5,10,.3,5);
+bx(g,K.red,-11,4.5,D/2+.3,1,4,.15);bx(g,K.red,-11,4.5,D/2+.3,4,1,.15);bx(g,K.red,11,4.5,D/2+.3,1,4,.15);bx(g,K.red,11,4.5,D/2+.3,4,1,.15);
+createNeonSign(g,'AURA GENERAL HOSPITAL',0,6.3,D/2+.3,'#ffffff','#dc2626',12,1.4);
+bx(inn,K.floor,0,.02,0,W-1,.05,D-1);
+for(let x=-15;x<=15;x+=6)for(const z of[-6,6])bx(inn,K.lamp,x,HH-.3,z,2.4,.1,.8);
+bx(inn,K.wood,0,.55,6,8,1.1,1.2);bx(inn,K.white,0,1.12,6,8.2,.08,1.4);
+for(let x=-14;x<=-8;x+=2)bx(inn,K.sofa,x,.4,10,1.2,.8,1);
+const bed=(x,z)=>{bx(inn,K.white,x,.45,z,1.1,.5,2.3);bx(inn,K.blue,x,.75,z+.3,1.1,.12,1.6);bx(inn,K.white,x,.8,z-.9,.7,.14,.5);};
+for(const x of[-14,-8,-2,8,13])bed(x,-D/2+3);
+for(const x of[-11,-5,10.5])bx(inn,K.blue,x,1.3,-D/2+3.2,.05,2.2,2.6);
+for(const x of[-16,-10,-4,6,11])bx(inn,K.metal,x,1,-D/2+4.2,.06,2,.06);
+aura.hospitalSpawn={x:hx-14,z:hz-D/2+5.6};culls.push({g:inn,x:hx,z:hz,r:80});}}
+// ---- I-88 highway upgrade: lighting poles + edge lines ----
+{const n=30,pg=new THREE.CylinderGeometry(.12,.16,9,8),hg=new THREE.BoxGeometry(2.2,.2,.5),poles=new THREE.InstancedMesh(pg,M(0x6b7280,.6),n),heads=new THREE.InstancedMesh(hg,K.lamp,n),d=new THREE.Object3D();let k=0;
+for(let i=0;i<15;i++)for(const sd of[-1,1]){const z=-180+i*27,x=sd<0?139.6:164.4;d.position.set(x,4.5,z);d.updateMatrix();poles.setMatrixAt(k,d.matrix);d.position.set(x-sd*1.1,9,z);d.updateMatrix();heads.setMatrixAt(k,d.matrix);k++;}
+worldRoot.add(poles,heads);const eg=new THREE.Group();worldRoot.add(eg);for(const x of[141.7,162.3])bx(eg,K.white,x,.13,10,.25,.02,400);}
+aura.ahCull=function(dt){
+for(let i=0;i<manholeCovers.length;i++){const c=manholeCovers[i],tx=manholes[i][0]+(manholeOpen[i]?1.5:0);c.position.x+=(tx-c.position.x)*Math.min(1,dt*6);manholeHoles[i].visible=manholeOpen[i];}
+for(const c of culls)c.g.visible=Math.hypot(player.x-c.x,player.z-c.z)<c.r;
+const go=gate.open?4:0;gate.l1.position.z+=((-47-go)-gate.l1.position.z)*Math.min(1,dt*3);gate.l2.position.z+=((-43+go)-gate.l2.position.z)*Math.min(1,dt*3);
+if(!under()&&player.x<-196)gameState.zoneName=player.x<-430?'AURA ESTATES':player.x>-350&&player.x<-220&&Math.abs(player.z)<105?'WESTSIDE DISTRICT':'AURA HILLS';};
+aura.ahHint=function(){if(!gate.open&&Math.hypot(player.x+432,player.z+45)<6)return '[F] FORCE OPEN GATE';for(const h of houses)if(!h.taken&&Math.hypot(player.x-h.sx,player.z-h.sz)<2.4)return '[F] CRACK SAFE';return '';};
+// Idempotent appliers used by the net layer (events + join digest).
+const applyGate=(open)=>{
+if(!open||gate.open)return;
+gate.open=true;
+gate.boxes.forEach(b=>{const k=worldBoxes.indexOf(b);if(k>=0)worldBoxes.splice(k,1);});
+};
+const applySafe=(i)=>{
+const h=houses[i];if(!h||h.taken)return;
+h.taken=true;h.safe.visible=false;
+spawnParticles(h.sx,39.5,h.sz,0xf5c542,14,5);
+};
+aura.estates={gate,houses,applyGate,applySafe};
+aura.ahF=function(){
+if(!gate.open&&Math.hypot(player.x+432,player.z+45)<6){
+applyGate(true);sfx.mantle();
+if(!hooks.mpIsGuest())crime(.35);
+pushFeed('GATE FORCED OPEN — SECURITY ALERTED','border-l-rose-500');
+hooks.mpWorldEvent({t:'gate'});
+return;}
+for(let i=0;i<houses.length;i++){const h=houses[i];
+if(!h.taken&&Math.hypot(player.x-h.sx,player.z-h.sz)<2.4){
+if(hooks.mpIsGuest()){
+// Host grants the cash; everyone sees the safe open via the event.
+hooks.mpWorldEvent({t:'safe_req',i});
+}else{
+applySafe(i);gameState.cash+=600;sfx.pickup();crime(.5);
+pushFeed('SAFE CRACKED +$600','border-l-amber-400');hooks.updateHUD(true);
+hooks.mpWorldEvent({t:'safe',i});
+}
+return;}};
+};
 }
 
 export function buildAuraSkylineAndHighway(){

@@ -14,7 +14,7 @@ import { buildSewerRats } from './npcs.js';
 import { syncEquippedMeshes, applyLevelParams } from './player.js';
 import { initInput } from './input.js';
 import { initUI, updateHUD, renderMapCanvas } from './ui.js';
-import { initMultiplayer, sendMultiplayerState, updateRemotePlayers } from './multiplayer.js';
+import { initMultiplayer, sendMultiplayerState, updateRemotePlayers, updateRemoteWorld } from './multiplayer.js';
 import { initMobileControls } from './mobile.js';
 import { buildGuatemalanFestival, updateGuatemalanFestival } from './guatemala.js';
 import { buildCityTraffic, updateCityTraffic } from './traffic.js';
@@ -41,17 +41,18 @@ function animate(now) {
     camera.position.set(Math.cos(ang) * 76, 36 + Math.sin(elapsed * 0.4) * 3, Math.sin(ang) * 76 - 24);
     camera.lookAt(0, 6, -32);
   } else if (gameState.screen === 'playing' && windowFocused && !document.hidden) {
-    updateAircraft(dt, elapsed);
-    updateCityTraffic(dt);
-    updateGuatemalanFestival(dt, elapsed);
-    minimapTimer += dt;
-    if (minimapTimer >= 0.05) {
-      minimapTimer = 0;
-      renderMapCanvas(document.getElementById('minimap-canvas'), true);
-    }
-    updateRemotePlayers(dt);
-    sendMultiplayerState(performance.now());
-  }
+updateAircraft(dt, elapsed);
+updateCityTraffic(dt);
+updateGuatemalanFestival(dt, elapsed);
+updateRemoteWorld(dt, elapsed); // guest: interpolate host cars + remote jet
+minimapTimer += dt;
+if (minimapTimer >= 0.05) {
+minimapTimer = 0;
+renderMapCanvas(document.getElementById('minimap-canvas'), true);
+}
+updateRemotePlayers(dt);
+sendMultiplayerState(performance.now());
+}
 
   sfx.updateMusic();
   skyGroup.position.copy(camera.position);

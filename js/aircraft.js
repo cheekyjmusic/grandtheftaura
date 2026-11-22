@@ -253,15 +253,18 @@ function engineAudio(on) {
 
 export function boardJet() {
   if (!nearJet()) return false;
+  if (hooks.mpJetLocked()) { pushFeed('STRIKE JET IS IN USE BY ANOTHER PLAYER', 'border-l-rose-500'); return false; }
   jetState.flying = true; inputState.isPrimaryFireHeld = false; gameState.isAiming = false; player.crouching = false;
   hooks.syncMobileControls(true);
   jetState.sx = jetState.sy = 0; jetState.cameraMode = 0; jetState.cameraQ.copy(jetState.q); jetState.help = 14;
   if (jetState.pos.x > -425 && jetState.pos.x < -356 && Math.abs(jetState.pos.z - AIRFIELD.rz) < 22 && (jetState.nukes < 4 || jetState.hull < 100)) {
-	jetState.nukes = 4; jetState.hull = 100; pushFeed('JET REARMED, REPAIRED & REFUELED', 'border-l-emerald-400');
+    jetState.nukes = 4; jetState.hull = 100; pushFeed('JET REARMED, REPAIRED & REFUELED', 'border-l-emerald-400');
   }
   sfx.unlock(); startEngineAudio();
   const hud = document.getElementById('jet-hud'); if (hud) hud.style.display = 'block';
-  pushFeed('STRIKE JET READY — W/S THROTTLE, A/D ROLL, MOUSE/ARROWS TO FLY', 'border-l-sky-400'); return true;
+  pushFeed('STRIKE JET READY — W/S THROTTLE, A/D ROLL, MOUSE/ARROWS TO FLY', 'border-l-sky-400');
+  hooks.mpWorldEvent({ t: 'jet_board' });
+  return true;
 }
 
 export function endJetFlight() {
@@ -287,20 +290,23 @@ function buildParachute() {
 
 export function leaveJet() {
   if (jetState.ground && jetState.speed < 12) {
-	endJetFlight(); jetState.speed = 0; jetState.throttle = 0;
-	const left = X_LEFT.clone().applyQuaternion(jetState.q); placePlayerAt(jetState.pos.x + left.x * 7, jetState.pos.z + left.z * 7, -left.x, -left.z);
-	pushFeed('EXITED THE STRIKE JET', 'border-l-sky-400');
+    endJetFlight(); jetState.speed = 0; jetState.throttle = 0;
+    const left = X_LEFT.clone().applyQuaternion(jetState.q); placePlayerAt(jetState.pos.x + left.x * 7, jetState.pos.z + left.z * 7, -left.x, -left.z);
+    pushFeed('EXITED THE STRIKE JET', 'border-l-sky-400');
+    hooks.mpWorldEvent({ t: 'jet_exit', eject: false, x: jetState.pos.x, y: jetState.pos.y, z: jetState.pos.z });
   } else {
-	boom(jetState.pos, 0.5); endJetFlight(); jet.visible = false; jetState.dead = 5;
-	chute = chute || buildParachute(); chute.visible = true; chuteActive = true;
-	player.x = jetState.pos.x; player.z = jetState.pos.z; player.y = jetState.pos.y; player.vy = -12; player.pvx = player.pvz = 0; player.grounded = false; player.peakAirY = player.y;
-	jetState.speed = 0; jetState.throttle = 0; pushFeed('EJECTED — PARACHUTE DEPLOYED', 'border-l-sky-400');
+    boom(jetState.pos, 0.5); endJetFlight(); jet.visible = false; jetState.dead = 5;
+    chute = chute || buildParachute(); chute.visible = true; chuteActive = true;
+    player.x = jetState.pos.x; player.z = jetState.pos.z; player.y = jetState.pos.y; player.vy = -12; player.pvx = player.pvz = 0; player.grounded = false; player.peakAirY = player.y;
+    jetState.speed = 0; jetState.throttle = 0; pushFeed('EJECTED — PARACHUTE DEPLOYED', 'border-l-sky-400');
+    hooks.mpWorldEvent({ t: 'jet_exit', eject: true, x: jetState.pos.x, y: jetState.pos.y, z: jetState.pos.z });
   }
 }
 
 function crash(message) {
   boom(jetState.pos, 1); endJetFlight(); jet.visible = false; jetState.dead = 5; hangarSpawn();
   pushFeed(`${message} — EJECTED SAFELY. NEW JET WILL BE READY AT THE BUNKER.`, 'border-l-rose-500');
+  hooks.mpWorldEvent({ t: 'jet_crash', x: jetState.pos.x, y: jetState.pos.y, z: jetState.pos.z });
 }
 
 export function damageJet(amount) { jetState.hull = Math.max(0, jetState.hull - amount * 0.8); flashEdge('rgba(239,68,68,.48)'); if (jetState.hull <= 0) crash('JET DESTROYED'); }
@@ -344,14 +350,30 @@ function fireCannon(dt) {
   sfx.tone(170+Math.random()*50,70,0.07,'square',0.045);
 }
 
+function makeBombMesh() {
+  const group = new THREE.Group(), ol = material(0x3a4234, { metalness: 0.4, roughness: 0.5 });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 2.6, 12), ol); body.rotation.x = Math.PI / 2; group.add(body);
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.38, 1, 12), ol); cone.rotation.x = Math.PI / 2; cone.position.z = 1.8; group.add(cone);
+  return group;
+}
+// Networked nuke: every client simulates the same ballistic bomb; only the host
+// applies NPC/cop/car damage on detonation (everyone gets the explosion FX).
+export function spawnNetBomb(x, y, z, vx, vy, vz) {
+  const group = makeBombMesh();
+  const position = new THREE.Vector3(x, y, z), velocity = new THREE.Vector3(vx, vy, vz);
+  group.position.copy(position);
+  scene.add(group);
+  bombs.push({ mesh: group, position, velocity });
+}
 export function dropNuke() {
-  if(jetState.nukes<=0){pushFeed('OUT OF NUKES — LAND AT THE AURA AIR BUNKER TO REARM','border-l-amber-400');return false;}if(jetState.nukeCooldown>0)return false;
-  jetState.nukes--;jetState.nukeCooldown=1.5;
-  const group=new THREE.Group(),ol=material(0x3a4234,{metalness:0.4,roughness:0.5});
-  const body=new THREE.Mesh(new THREE.CylinderGeometry(0.38,0.38,2.6,12),ol);body.rotation.x=Math.PI/2;group.add(body);
-  const cone=new THREE.Mesh(new THREE.ConeGeometry(0.38,1,12),ol);cone.rotation.x=Math.PI/2;cone.position.z=1.8;group.add(cone);
-  scene.add(group);const position=new THREE.Vector3(0,-1.9,0.6).applyQuaternion(jetState.q).add(jetState.pos),velocity=Z_FORWARD.clone().applyQuaternion(jetState.q).multiplyScalar(jetState.speed);
-  group.position.copy(position);bombs.push({mesh:group,position,velocity});sfx.tone(1700,400,3,'sine',0.05);pushFeed('☢ NUKE AWAY — GET CLEAR!','border-l-red-500');return true;
+  if (jetState.nukes <= 0) { pushFeed('OUT OF NUKES — LAND AT THE AURA AIR BUNKER TO REARM', 'border-l-amber-400'); return false; }
+  if (jetState.nukeCooldown > 0) return false;
+  jetState.nukes--; jetState.nukeCooldown = 1.5;
+  const position = new THREE.Vector3(0, -1.9, 0.6).applyQuaternion(jetState.q).add(jetState.pos);
+  const velocity = Z_FORWARD.clone().applyQuaternion(jetState.q).multiplyScalar(jetState.speed);
+  spawnNetBomb(position.x, position.y, position.z, velocity.x, velocity.y, velocity.z);
+  hooks.mpWorldEvent({ t: 'nuke', x: position.x, y: position.y, z: position.z, vx: velocity.x, vy: velocity.y, vz: velocity.z });
+  sfx.tone(1700, 400, 3, 'sine', 0.05); pushFeed('☢ NUKE AWAY — GET CLEAR!', 'border-l-red-500'); return true;
 }
 
 function boom(position,scale) {
@@ -367,11 +389,24 @@ function detonateBomb(position) {
 }
 
 function updateBombs(dt) {
-  for(const bomb of bombs.slice()){bomb.velocity.y-=18*dt;const movement=bomb.velocity.clone().multiplyScalar(dt),length=movement.length(),direction=movement.clone().normalize();const hit=rayHit(bomb.position,direction,length);
-	if(hit<length){const impactPos=bomb.position.clone().addScaledVector(direction,hit);scene.remove(bomb.mesh);detonateBomb(impactPos);bombs.splice(bombs.indexOf(bomb),1);}
-	else{bomb.position.add(movement);bomb.mesh.position.copy(bomb.position);bomb.mesh.quaternion.setFromUnitVectors(Z_FORWARD,direction);}
+  const authority = !hooks.mpIsGuest();
+  for (const bomb of bombs.slice()) {
+    bomb.velocity.y -= 18 * dt;
+    const movement = bomb.velocity.clone().multiplyScalar(dt), length = movement.length(), direction = movement.clone().normalize();
+    const hit = rayHit(bomb.position, direction, length);
+    if (hit < length) {
+      const impactPos = bomb.position.clone().addScaledVector(direction, hit);
+      scene.remove(bomb.mesh);
+      if (authority) detonateBomb(impactPos);
+      else boom(impactPos, 2.2); // guests: identical FX, host owns the damage
+      bombs.splice(bombs.indexOf(bomb), 1);
+    } else {
+      bomb.position.add(movement);
+      bomb.mesh.position.copy(bomb.position);
+      bomb.mesh.quaternion.setFromUnitVectors(Z_FORWARD, direction);
+    }
   }
-  for(const fx of effects.slice()){fx.time+=dt;const k=fx.time/fx.life;fx.mesh.scale.setScalar(2+22*fx.scale*Math.min(1,k*1.6));fx.mesh.material.opacity=Math.max(0,0.95*(1-k));if(k>=1){scene.remove(fx.mesh);fx.mesh.geometry.dispose();fx.mesh.material.dispose();effects.splice(effects.indexOf(fx),1);}}
+  for (const fx of effects.slice()) { fx.time += dt; const k = fx.time / fx.life; fx.mesh.scale.setScalar(2 + 22 * fx.scale * Math.min(1, k * 1.6)); fx.mesh.material.opacity = Math.max(0, 0.95 * (1 - k)); if (k >= 1) { scene.remove(fx.mesh); fx.mesh.geometry.dispose(); fx.mesh.material.dispose(); effects.splice(effects.indexOf(fx), 1); } }
 }
 
 function jetUpdate(dt) {
@@ -455,29 +490,67 @@ export function initAircraft() {
   window.addEventListener('mouseup',event=>{if(event.button===0)keysJet.M0=false;},true);
   window.addEventListener('mousemove',event=>{if(!jetState.flying||gameState.screen!=='playing')return;event.stopImmediatePropagation();if(document.pointerLockElement===canvas){jetState.sx=clamp(jetState.sx+(event.movementX||0)*0.0026,-1,1);jetState.sy=clamp(jetState.sy-(event.movementY||0)*0.0026*(jetState.inverted?-1:1),-1,1);}},true);
   window.addEventListener('wheel',event=>{if(!jetState.flying||gameState.screen!=='playing')return;event.stopImmediatePropagation();jetState.throttle=clamp(jetState.throttle-Math.sign(event.deltaY)*0.1,0,1);},{capture:true,passive:true});
-  return jetState;
+Object.assign(hooks, {
+mpJetDigest: jetDigest,
+mpJetApplyRemote: applyRemoteJet,
+mpSpawnBomb: spawnNetBomb,
+});
+return jetState;
 }
 
-export function updateAircraft(dt,elapsed,{stepPlayer=true}={}) {
-  if(!initialized)initAircraft();updateBombs(dt);
-  for(const beacon of beaconMeshes)beacon.visible=Math.sin(elapsed*6)>0;
-  if(jetState.dead>0){jetState.dead-=dt;if(jetState.dead<=0){resetJet();pushFeed('A NEW STRIKE JET WAS WHEELED OUT AT THE AURA AIR BUNKER','border-l-sky-400');}}
-  if(!jetState.tipShown&&elapsed>8){jetState.tipShown=true;pushFeed('NEW: PRESS [J] TO WARP TO THE AURA AIR BUNKER (STRIKE JET + NUKES)','border-l-sky-400');}
-  if(!jetState.flying){if(stepPlayer)stepSimulation(dt,elapsed);jetVisuals(elapsed);if(stepPlayer)enhancePerFrame(dt,elapsed);return false;}
-  if(jetState.help>0&&jetState.help<900)jetState.help-=dt;jetUpdate(dt);
-  if(!jetState.flying){if(stepPlayer)stepSimulation(dt,elapsed);jetVisuals(elapsed);return false;}
-  player.x=jetState.pos.x;player.y=jetState.pos.y+3;player.z=jetState.pos.z;player.mantle.active=false;inputState.isPrimaryFireHeld=false;
-  if(stepPlayer){
-    const movementKeys=['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ShiftLeft','ShiftRight','KeyG','KeyC'];
-    const savedKeys=movementKeys.map(code=>keys[code]);
-    movementKeys.forEach(code=>{keys[code]=false;});
-    stepSimulation(dt,elapsed);
-    movementKeys.forEach((code,index)=>{keys[code]=savedKeys[index];});
+export function updateAircraft(dt, elapsed, { stepPlayer = true } = {}) {
+  if (!initialized) initAircraft(); updateBombs(dt);
+  for (const beacon of beaconMeshes) beacon.visible = Math.sin(elapsed * 6) > 0;
+  if (jetState.dead > 0) { jetState.dead -= dt; if (jetState.dead <= 0) { resetJet(); pushFeed('A NEW STRIKE JET WAS WHEELED OUT AT THE AURA AIR BUNKER', 'border-l-sky-400'); } }
+  if (!jetState.tipShown && elapsed > 8) { jetState.tipShown = true; pushFeed('NEW: PRESS [J] TO WARP TO THE AURA AIR BUNKER (STRIKE JET + NUKES)', 'border-l-sky-400'); }
+  if (!jetState.flying) {
+    if (stepPlayer) stepSimulation(dt, elapsed);
+    // Someone else may be flying our shared jet — the net layer poses it.
+    if (!hooks.mpJetRenderRemote()) jetVisuals(elapsed);
+    if (stepPlayer) enhancePerFrame(dt, elapsed);
+    return false;
   }
-  player.x=jetState.pos.x;player.y=jetState.pos.y;player.z=jetState.pos.z;player.vy=0;player.pvx=0;player.pvz=0;player.grounded=true;player.peakAirY=player.y;
-  const forward=Z_FORWARD.clone().applyQuaternion(jetState.q);player.yaw=Math.atan2(-forward.x,-forward.z);player.pitch=0;fpRoot.visible=false;
-  jetVisuals(elapsed);jetCamera(dt);jetHUD(elapsed);engineAudio(true);const crosshair=document.getElementById('crosshair');if(crosshair)crosshair.style.display='none';
-  if(stepPlayer)enhancePerFrame(dt,elapsed);return true;
+  if (jetState.help > 0 && jetState.help < 900) jetState.help -= dt; jetUpdate(dt);
+  if (!jetState.flying) { if (stepPlayer) stepSimulation(dt, elapsed); jetVisuals(elapsed); return false; }
+  player.x = jetState.pos.x; player.y = jetState.pos.y + 3; player.z = jetState.pos.z; player.mantle.active = false; inputState.isPrimaryFireHeld = false;
+  if (stepPlayer) {
+    const movementKeys = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyG', 'KeyC'];
+    const savedKeys = movementKeys.map(code => keys[code]);
+    movementKeys.forEach(code => { keys[code] = false; });
+    stepSimulation(dt, elapsed);
+    movementKeys.forEach((code, index) => { keys[code] = savedKeys[index]; });
+  }
+  player.x = jetState.pos.x; player.y = jetState.pos.y; player.z = jetState.pos.z; player.vy = 0; player.pvx = 0; player.pvz = 0; player.grounded = true; player.peakAirY = player.y;
+  const forward = Z_FORWARD.clone().applyQuaternion(jetState.q); player.yaw = Math.atan2(-forward.x, -forward.z); player.pitch = 0; fpRoot.visible = false;
+  jetVisuals(elapsed); jetCamera(dt); jetHUD(elapsed); engineAudio(true); const crosshair = document.getElementById('crosshair'); if (crosshair) crosshair.style.display = 'none';
+  // Stream our jet to everyone (throttled inside the net layer).
+  hooks.mpWorldEvent({ t: 'jet_xform', x: jetState.pos.x, y: jetState.pos.y, z: jetState.pos.z,
+    qx: jetState.q.x, qy: jetState.q.y, qz: jetState.q.z, qw: jetState.q.w,
+    speed: jetState.speed, throttle: jetState.throttle, ground: jetState.ground, dead: jetState.dead > 0, nukes: jetState.nukes, ab: jetState.afterburner });
+  if (stepPlayer) enhancePerFrame(dt, elapsed); return true;
+}
+// Pose the shared jet from a remote pilot's streamed transform. Returns true when
+// it took over rendering this frame (so local parked visuals don't fight it).
+export function applyRemoteJet(d) {
+  if (!initialized || jetState.flying) return false;
+  if (!d) { if (jetState.dead <= 0) { jet.visible = true; } return false; }
+  if (d.dead) { jet.visible = false; return true; }
+  jet.visible = true;
+  jet.position.set(d.x, d.y, d.z);
+  jet.quaternion.set(d.qx, d.qy, d.qz, d.qw);
+  jet.userData.gear.visible = d.ground || (d.y < 60 && d.speed < 90);
+  jet.userData.bomb.visible = (d.nukes ?? 0) > 0;
+  if (jet.userData.can) jet.userData.can.visible = true;
+  const len = 0.5 + (d.throttle || 0) * 2.2 + (d.ab ? 2.6 : 0);
+  flame.forEach((pivot, i) => pivot.scale.y = Math.max(0.05, len * (i % 2 ? 0.7 : 1) * (0.85 + Math.random() * 0.3)));
+  for (const m of jet.userData.muzzle) m.visible = false;
+  return true;
+}
+export function jetDigest() {
+  return { owner: hooks.mpLocalId(), flying: jetState.flying, dead: jetState.dead > 0,
+    x: jetState.pos.x, y: jetState.pos.y, z: jetState.pos.z,
+    qx: jetState.q.x, qy: jetState.q.y, qz: jetState.q.z, qw: jetState.q.w,
+    speed: jetState.speed, throttle: jetState.throttle, ground: jetState.ground, nukes: jetState.nukes, ab: jetState.afterburner };
 }
 
 export function drawAircraftMapOverlay(canvas,centerOnPlayer) {

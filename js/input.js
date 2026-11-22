@@ -220,7 +220,11 @@ const u = under();
 const mi = nearestManhole(u ? 3.2 : 2.4);
 if (mi >= 0) {
 if (u) { startClimb(1, mi); }
-else if (!manholeOpen[mi]) { manholeOpen[mi] = true; sfx.mantle(); pushFeed('MANHOLE COVER OPENED — [F] TO CLIMB DOWN', 'border-l-amber-400'); }
+else if (!manholeOpen[mi]) {
+manholeOpen[mi] = true; sfx.mantle();
+pushFeed('MANHOLE COVER OPENED — [F] TO CLIMB DOWN', 'border-l-amber-400');
+hooks.mpWorldEvent({ t: 'manhole', i: mi });
+}
 else startClimb(-1, mi);
 } else if (aura.ahF && aura.ahHint && aura.ahHint()) {
 aura.ahF();

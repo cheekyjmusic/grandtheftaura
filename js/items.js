@@ -192,6 +192,15 @@ export function buildPickupMesh(type, id) {
   return g;
 }
 
+// Deterministic network ids: every client builds static entities in the same
+// order, so the shared counter produces identical ids everywhere. Dynamic
+// (loot/drop) pickups are allocated by the HOST only; guests receive the id in
+// the event (opts.netId) and never advance their counter for them. On host
+// migration the digest carries the host's counter (setNetSeq).
+let netSeq = 0;
+export function getNetSeq() { return netSeq; }
+export function setNetSeq(v) { netSeq = Math.max(netSeq, v | 0); }
+
 export function spawnWorldPickup(type, id, x, y, z, opts = {}) {
   const g = buildPickupMesh(type, id);
   g.position.set(x, y + 0.55, z);
@@ -199,11 +208,10 @@ export function spawnWorldPickup(type, id, x, y, z, opts = {}) {
   if (opts.scale) g.scale.set(opts.scale[0], opts.scale[1], opts.scale[2]);
   if (opts.decorate) opts.decorate(g);
   worldRoot.add(g);
-  const rec = { type, id, x, y, z, group: g, baseY: y + 0.55, phase: Math.random() * 6 };
+  const rec = { type, id, x, y, z, group: g, baseY: y + 0.55, phase: Math.random() * 6, netId: opts.netId || ('n' + (netSeq++)) };
   worldPickups.push(rec);
   return rec;
 }
-
 // Smashable wooden crate. pos = floor point under the crate; rot/scale optional (Studio entities).
 export function spawnSmashCrate(x, y, z, loot = null, opts = {}) {
   const holder = new THREE.Group();
@@ -219,11 +227,10 @@ export function spawnSmashCrate(x, y, z, loot = null, opts = {}) {
   worldRoot.add(holder);
   const b = uprightFootprint(holder, 0.53, 0.53, 1.05);
   const box = addWorldBox(b.minX, b.maxX, y, y + b.height, b.minZ, b.maxZ, 'crate', true);
-  const rec = { x, y, z, hp: 35, mesh: holder, box, loot };
+  const rec = { x, y, z, hp: 35, mesh: holder, box, loot, netId: 'n' + (netSeq++) };
   smashableCrates.push(rec);
   return rec;
 }
-
 // Explosive hazard barrel. Same pos/rot/scale convention as crates.
 export function spawnHazardBarrel(x, y, z, opts = {}) {
   const holder = new THREE.Group();
@@ -238,9 +245,54 @@ export function spawnHazardBarrel(x, y, z, opts = {}) {
   worldRoot.add(holder);
   const b = uprightFootprint(holder, 0.44, 0.44, 1.15);
   const box = addWorldBox(b.minX, b.maxX, y, y + b.height, b.minZ, b.maxZ, 'barrel', true);
-  const rec = { x, y, z, hp: 30, mesh: holder, box };
+  const rec = { x, y, z, hp: 30, mesh: holder, box, netId: 'n' + (netSeq++) };
   hazardBarrels.push(rec);
   return rec;
+}
+
+// ---- Shared destruction helpers (used by melee, projectiles and net events) ----
+export function destroyCrate(rec, spawnLoot) {
+  const i = smashableCrates.indexOf(rec);
+  if (i < 0) return null;
+  worldRoot.remove(rec.mesh);
+  freeGeo(rec.mesh);
+  const bi = worldBoxes.indexOf(rec.box);
+  if (bi !== -1) worldBoxes.splice(bi, 1);
+  smashableCrates.splice(i, 1);
+  let lootRec = null;
+  if (spawnLoot && rec.loot) lootRec = spawnWorldPickup(rec.loot.type, rec.loot.id, rec.x, rec.y, rec.z);
+  return lootRec;
+}
+export function destroyBarrel(rec) {
+  const i = hazardBarrels.indexOf(rec);
+  if (i < 0) return false;
+  worldRoot.remove(rec.mesh);
+  freeGeo(rec.mesh);
+  const bi = worldBoxes.indexOf(rec.box);
+  if (bi !== -1) worldBoxes.splice(bi, 1);
+  hazardBarrels.splice(i, 1);
+  return true;
+}
+export function removePickupByNetId(netId) {
+  const i = worldPickups.findIndex((p) => p.netId === netId);
+  if (i < 0) return null;
+  const rec = worldPickups[i];
+  worldRoot.remove(rec.group);
+  freeGeo(rec.group);
+  worldPickups.splice(i, 1);
+  return rec;
+}
+// Visual-only networked wiener (damage is resolved by the host's own copy).
+export function spawnNetWiener(x, y, z, vx, vy, vz, by) {
+  const wGroup = new THREE.Group();
+  wGroup.position.set(x, y, z);
+  const wienerMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.068, 0.34, 5, 8), makeMat(0xb91c1c, { roughness: 0.32 }));
+  wienerMesh.rotation.x = Math.PI / 2;
+  const mustardLine = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.02, 0.32), makeMat(0xfacc15));
+  mustardLine.position.y = 0.068;
+  wGroup.add(wienerMesh, mustardLine);
+  worldRoot.add(wGroup);
+  projectileWieners.push({ mesh: wGroup, x, y, z, vx, vy, vz, life: 3.2, by, net: true });
 }
 
 export function buildRightWeaponMesh(id) {
@@ -344,7 +396,6 @@ export function fireBallisticWiener() {
   }
   gameState.hotdogAmmo--;
   sfx.wienerShot();
-
   const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
   const muzzlePos = new THREE.Vector3();
   if (gameState.thirdPerson || gameState.isAiming) {
@@ -353,7 +404,6 @@ export function fireBallisticWiener() {
     hooks.getRightMountWorldPosition(muzzlePos);
     muzzlePos.addScaledVector(dir, 0.45);
   }
-
   const wGroup = new THREE.Group();
   wGroup.position.copy(muzzlePos);
   const wienerMesh = new THREE.Mesh(
@@ -368,29 +418,25 @@ export function fireBallisticWiener() {
   mustardLine.position.y = 0.068;
   wGroup.add(wienerMesh, mustardLine);
   worldRoot.add(wGroup);
-
   const launchSpeed = gameState.isAiming ? 68.0 : 54.0;
   const vx = dir.x * launchSpeed;
   const vy = dir.y * launchSpeed + 2.8;
   const vz = dir.z * launchSpeed;
-
   projectileWieners.push({
     mesh: wGroup,
-    x: muzzlePos.x,
-    y: muzzlePos.y,
-    z: muzzlePos.z,
-    vx,
-    vy,
-    vz,
-    life: 3.2
+    x: muzzlePos.x, y: muzzlePos.y, z: muzzlePos.z,
+    vx, vy, vz,
+    life: 3.2,
+    by: hooks.mpLocalId()
   });
-
+  // Everyone sees the shot; the host's copy resolves all damage.
+  hooks.mpWorldEvent({ t: 'wiener', x: muzzlePos.x, y: muzzlePos.y, z: muzzlePos.z, vx, vy, vz });
   hooks.updateHUD();
 }
 
 export function updateProjectileWieners(dt) {
   const GRAVITY = 15.8;
-
+  const authority = !hooks.mpIsGuest(); // host + singleplayer resolve damage; guests get FX only
   for (let i = projectileWieners.length - 1; i >= 0; i--) {
     const w = projectileWieners[i];
     w.life -= dt;
@@ -398,75 +444,87 @@ export function updateProjectileWieners(dt) {
     w.x += w.vx * dt;
     w.y += w.vy * dt;
     w.z += w.vz * dt;
-
     w.mesh.position.set(w.x, w.y, w.z);
     w.mesh.lookAt(w.x + w.vx, w.y + w.vy, w.z + w.vz);
-
     let impacted = false;
-
     for (let n = 0; n < npcs.length; n++) {
-const npc = npcs[n];
-if (!npc.spawned || npc.asleep) continue;
+      const npc = npcs[n];
+      if (!npc.spawned || npc.asleep) continue;
       if (Math.hypot(w.x - npc.x, w.z - npc.z) < 0.72 && w.y >= 0.18 && w.y <= 1.95) {
-        hooks.damageNpc(npc, 48, Math.atan2(w.vx, w.vz));
+        if (authority) {
+          hooks.damageNpc(npc, 48, Math.atan2(w.vx, w.vz));
+          if (!npc.asleep) pushFeed(`WIENER HIT ${npc.name}!`, 'border-l-amber-400');
+        }
         sfx.wienerSplat();
         spawnParticles(w.x, w.y, w.z, 0xb91c1c, 8, 5.5);
         spawnParticles(w.x, w.y, w.z, 0xfacc15, 5, 4.5);
-        if (!npc.asleep) {
-          pushFeed(`WIENER HIT ${npc.name}!`, 'border-l-amber-400');
-        }
         impacted = true;
         break;
       }
     }
-
     if (!impacted) {
       for (let c = smashableCrates.length - 1; c >= 0; c--) {
         const cr = smashableCrates[c];
         if (Math.abs(w.x - cr.x) < 0.72 && Math.abs(w.z - cr.z) < 0.72 && w.y >= cr.y && w.y <= cr.y + 1.15) {
-          sfx.smash();
-          spawnParticles(cr.x, cr.y + 0.55, cr.z, 0xd97706, 12, 6.5);
-          worldRoot.remove(cr.mesh);
-          freeGeo(cr.mesh);
-          const wbIdx = worldBoxes.indexOf(cr.box);
-          if (wbIdx !== -1) worldBoxes.splice(wbIdx, 1);
-          if (cr.loot) spawnWorldPickup(cr.loot.type, cr.loot.id, cr.x, cr.y, cr.z);
-          smashableCrates.splice(c, 1);
-          pushFeed('CRATE SMASHED BY WIENER!', 'border-l-amber-400');
+          if (authority) {
+            sfx.smash();
+            spawnParticles(cr.x, cr.y + 0.55, cr.z, 0xd97706, 12, 6.5);
+            const lootRec = destroyCrate(cr, true);
+            hooks.mpWorldEvent({ t: 'crate_dead', netId: cr.netId, x: cr.x, y: cr.y, z: cr.z,
+              loot: lootRec ? { netId: lootRec.netId, type: lootRec.type, id: lootRec.id, x: lootRec.x, y: lootRec.y, z: lootRec.z } : null });
+            pushFeed('CRATE SMASHED BY WIENER!', 'border-l-amber-400');
+          } else {
+            hooks.mpWorldEvent({ t: 'crate_hit', netId: cr.netId, a: 999 });
+            spawnParticles(w.x, w.y, w.z, 0xd97706, 6, 4.5);
+          }
           impacted = true;
           break;
         }
       }
     }
-
     if (!impacted) {
       for (let b = hazardBarrels.length - 1; b >= 0; b--) {
         const br = hazardBarrels[b];
         if (Math.hypot(w.x - br.x, w.z - br.z) < 0.65 && w.y >= br.y && w.y <= br.y + 1.25) {
-          sfx.smash();
-          spawnParticles(br.x, br.y + 0.6, br.z, 0xf97316, 18, 9.0);
-          worldRoot.remove(br.mesh);
-          freeGeo(br.mesh);
-          const wbIdx = worldBoxes.indexOf(br.box);
-          if (wbIdx !== -1) worldBoxes.splice(wbIdx, 1);
-          hazardBarrels.splice(b, 1);
-          pushFeed('HAZARD BARREL DETONATED!', 'border-l-orange-500');
+          if (authority) {
+            sfx.smash();
+            spawnParticles(br.x, br.y + 0.6, br.z, 0xf97316, 18, 9.0);
+            destroyBarrel(br);
+            hooks.mpWorldEvent({ t: 'barrel_dead', netId: br.netId, x: br.x, y: br.y, z: br.z });
+            if (Math.hypot(player.x - br.x, player.z - br.z) < 4.2) hooks.applyPlayerDamage(24, 'EXPLOSIVE BARREL');
+            pushFeed('HAZARD BARREL DETONATED!', 'border-l-orange-500');
+          } else {
+            hooks.mpWorldEvent({ t: 'barrel_hit', netId: br.netId, a: 999 });
+            spawnParticles(w.x, w.y, w.z, 0xf97316, 8, 5);
+          }
           impacted = true;
           break;
         }
       }
     }
-
     if (!impacted) {
       for (const lp of lampPosts) {
         if (lp.state === 'standing' && Math.hypot(w.x - lp.x, w.z - lp.z) < 0.45 && w.y >= 0.18 && w.y <= 4.6) {
-          hooks.knockOverLamppost(lp, Math.atan2(w.vx, w.vz), 8.5);
+          if (authority) hooks.knockOverLamppost(lp, Math.atan2(w.vx, w.vz), 8.5);
+          else hooks.mpWorldEvent({ t: 'lamp_hit', i: lampPosts.indexOf(lp), yaw: Math.atan2(w.vx, w.vz), speed: 8.5 });
           impacted = true;
           break;
         }
       }
     }
-
+    if (!impacted && authority) {
+      // Remote players (host resolves; the victim's client applies via 'hit').
+      for (const t of hooks.mpTargets()) {
+        if (t.inCar) continue;
+        if (Math.hypot(w.x - t.x, w.z - t.z) < 0.75 && w.y >= t.y && w.y <= t.y + 1.95) {
+          hooks.mpHitPlayer(t.id, 48, 'WIENER STRIKE');
+          sfx.wienerSplat();
+          spawnParticles(w.x, w.y, w.z, 0xb91c1c, 8, 5.5);
+          impacted = true;
+          break;
+        }
+      }
+    }
     if (!impacted) {
       if (w.y <= 0.18) {
         impacted = true;
@@ -486,7 +544,6 @@ if (!npc.spawned || npc.asleep) continue;
         }
       }
     }
-
     if (impacted || w.life <= 0) {
       worldRoot.remove(w.mesh);
       freeGeo(w.mesh);
@@ -569,7 +626,14 @@ export function dropLeftSlot(slotIndex) {
   if (!slot) return;
   const fwdX = -Math.sin(player.yaw);
   const fwdZ = -Math.cos(player.yaw);
-  spawnWorldPickup('left', slot.id, player.x + fwdX * 1.4, player.y, player.z + fwdZ * 1.4);
+  const dx = player.x + fwdX * 1.4, dz = player.z + fwdZ * 1.4;
+  if (hooks.mpIsGuest()) {
+    // Host allocates the network id and spawns it for everyone (incl. us).
+    hooks.mpWorldEvent({ t: 'pickup_drop', type: 'left', id: slot.id, x: dx, y: player.y, z: dz });
+  } else {
+    const rec = spawnWorldPickup('left', slot.id, dx, player.y, dz);
+    hooks.mpWorldEvent({ t: 'pickup_spawn', netId: rec.netId, type: 'left', id: slot.id, x: dx, y: player.y, z: dz });
+  }
   slot.count -= 1;
   if (slot.count <= 0) gameState.leftHotbar[slotIndex] = null;
   sfx.uiClick();

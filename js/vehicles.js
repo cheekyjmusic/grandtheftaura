@@ -1,5 +1,6 @@
 // =============================================================================
-// vehicles.js — Vehicle mesh builders, 6-speed manual gearbox, driving physics, suspension and exhaust flame effects.
+// vehicles.js — Vehicle mesh builders, 6-speed manual gearbox, driving physics, 
+// car-to-car collisions, 3D terrain physics, suspension & exhaust flame effects.
 // =============================================================================
 import * as THREE from 'three';
 import { levelData } from './levelData.js';
@@ -16,12 +17,15 @@ export const GEAR_CAPS_MPH = [36, 0, 39, 66, 95, 125, 154, 180];
 
 export const GEAR_RATIO_MULT = [-0.55, 0, 1.0, 0.66, 0.46, 0.34, 0.26, 0.21];
 
+const carCollisionCooldowns = new Map();
+
 export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, accentHex = 0xf8fafc, x = 0, z = 0, yaw = 0, isCoupe = true, isSupercar = false } = {}) {
   const root = new THREE.Group();
   root.userData.studioName = name;
   const carScale = 1.35;
   root.scale.setScalar(carScale);
   root.position.set(x, 0.12, z);
+  root.rotation.order = 'YXZ';
   root.rotation.y = yaw;
 
   const chassis = new THREE.Group();
@@ -269,6 +273,10 @@ export function buildSportsCar(cfg) {
     y: 0.12,
     z,
     yaw,
+    pitch: 0,
+    roll: 0,
+    pitchSway: 0,
+    rollSway: 0,
     speed: 0,
     velX: 0,
     velZ: 0,
@@ -301,6 +309,7 @@ export function getNearestVehicle(maxDist = 5.2) {
   let best = null;
   let bestDist = maxDist;
   vehicles.forEach((v, idx) => {
+    if (hooks.mpCarLocked(idx)) return;
     const d = Math.hypot(player.x - v.x, player.z - v.z);
     if (d < bestDist && Math.abs(player.y - v.y) < 2.2) {
       bestDist = d;
@@ -313,6 +322,7 @@ export function getNearestVehicle(maxDist = 5.2) {
 export function enterVehicle(idx) {
   const v = vehicles[idx];
   if (!v) return;
+  if (!hooks.mpCarEnter(idx)) return;
   hooks.onVehicleEnter(v);
   gameState.inCar = true;
   gameState.activeCarIndex = idx;
@@ -325,7 +335,7 @@ export function enterVehicle(idx) {
   v.cameraYaw = v.yaw + Math.PI;
   v.cameraPitch = 0.25;
   v.cameraLookIdle = 2;
-  v.gearIndex = 2; // Start in 1st Gear
+  v.gearIndex = 2;
   v.rpm = 1100;
   sfx.shift();
   pushFeed(`ENTERED ${v.name} — [I] UPSHIFT • [K] DOWNSHIFT`, 'border-l-amber-400');
@@ -335,9 +345,11 @@ export function enterVehicle(idx) {
 
 export function exitCurrentCar(silent = false) {
   if (!gameState.inCar) return;
-  const v = vehicles[gameState.activeCarIndex];
+  const idx = gameState.activeCarIndex;
+  const v = vehicles[idx];
   gameState.inCar = false;
   gameState.activeCarIndex = -1;
+  hooks.mpCarExit(idx);
   if (v) {
     v.flameL.visible = false;
     v.flameR.visible = false;
@@ -388,7 +400,6 @@ export function shiftVehicleGear(delta) {
       v.rpm = Math.max(1400, v.rpm * 0.68);
     } else if (delta < 0 && next >= 2) {
       v.rpm = Math.min(7950, v.rpm * 1.38 + 900);
-      // Supercar & high-RPM downshift exhaust backfire flames!
       if (v.isSupercar || prevGear >= 4) {
         v.flameTimer = v.isSupercar ? 0.52 : 0.28;
         sfx.backfire();
@@ -406,9 +417,164 @@ export function shiftVehicleGear(delta) {
   }
 }
 
-// Per-frame driving model (6-speed gearbox, grip, collisions, camera). Extracted from the original stepSimulation().
+// 2-Circle Capsule Geometry for Car Body Representation
+function getCarCircles(v) {
+  const scale = v.carScale || 1.35;
+  const d = 0.95 * scale;
+  const r = 0.92 * scale;
+  const fx = Math.sin(v.yaw);
+  const fz = Math.cos(v.yaw);
+  return [
+    { x: v.x + fx * d, z: v.z + fz * d, r, isFront: true },
+    { x: v.x - fx * d, z: v.z - fz * d, r, isFront: false }
+  ];
+}
+
+// Car-to-Car Physics, Angular Spin (PIT / T-bone), & AI Traffic Collision Resolution
+function resolveVehicleCollisions(dt) {
+  const now = performance.now();
+  const numCars = vehicles.length;
+  if (numCars < 2) return;
+
+  for (let i = 0; i < numCars; i++) {
+    const v1 = vehicles[i];
+    if (!v1) continue;
+
+    for (let j = i + 1; j < numCars; j++) {
+      const v2 = vehicles[j];
+      if (!v2) continue;
+
+      const dx = v2.x - v1.x;
+      const dz = v2.z - v1.z;
+      const dist = Math.hypot(dx, dz);
+      const s1 = v1.carScale || 1.35;
+      const s2 = v2.carScale || 1.35;
+      if (dist > (s1 + s2) * 2.2 || dist < 0.0001) continue;
+
+      const circles1 = getCarCircles(v1);
+      const circles2 = getCarCircles(v2);
+
+      let maxOverlap = 0;
+      let colNormalX = 0;
+      let colNormalZ = 0;
+      let contactX = 0;
+      let contactZ = 0;
+
+      for (const c1 of circles1) {
+        for (const c2 of circles2) {
+          const cdx = c2.x - c1.x;
+          const cdz = c2.z - c1.z;
+          const cDist = Math.hypot(cdx, cdz);
+          const minCDist = c1.r + c2.r;
+          if (cDist < minCDist) {
+            const overlap = minCDist - (cDist || 0.001);
+            if (overlap > maxOverlap) {
+              maxOverlap = overlap;
+              colNormalX = cDist > 0.0001 ? cdx / cDist : 1;
+              colNormalZ = cDist > 0.0001 ? cdz / cDist : 0;
+              contactX = c1.x + colNormalX * c1.r;
+              contactZ = c1.z + colNormalZ * c1.r;
+            }
+          }
+        }
+      }
+
+      if (maxOverlap <= 0) continue;
+
+      const m1 = v1.isTank ? 3.5 : (v1.carScale || 1.35);
+      const m2 = v2.isTank ? 3.5 : (v2.carScale || 1.35);
+      const totalMass = m1 + m2;
+
+      const owner1 = hooks.mpCarOwner ? hooks.mpCarOwner(i) : null;
+      const owner2 = hooks.mpCarOwner ? hooks.mpCarOwner(j) : null;
+      const isDriven1 = gameState.inCar && gameState.activeCarIndex === i;
+      const isDriven2 = gameState.inCar && gameState.activeCarIndex === j;
+
+      const w1 = m2 / totalMass;
+      const w2 = m1 / totalMass;
+
+      v1.x -= colNormalX * maxOverlap * w1;
+      v1.z -= colNormalZ * maxOverlap * w1;
+      v2.x += colNormalX * maxOverlap * w2;
+      v2.z += colNormalZ * maxOverlap * w2;
+
+      const vx1 = v1.velX || (Math.sin(v1.yaw) * v1.speed);
+      const vz1 = v1.velZ || (Math.cos(v1.yaw) * v1.speed);
+      const vx2 = v2.velX || (Math.sin(v2.yaw) * v2.speed);
+      const vz2 = v2.velZ || (Math.cos(v2.yaw) * v2.speed);
+
+      const rvx = vx1 - vx2;
+      const rvz = vz1 - vz2;
+      const velAlongNormal = rvx * colNormalX + rvz * colNormalZ;
+
+      if (velAlongNormal > 0) {
+        const restitution = 0.35;
+        const impulseMag = ((1 + restitution) * velAlongNormal) / (1 / m1 + 1 / m2);
+
+        const impulseX = impulseMag * colNormalX;
+        const impulseZ = impulseMag * colNormalZ;
+
+        v1.velX = vx1 - impulseX / m1;
+        v1.velZ = vz1 - impulseZ / m1;
+        v2.velX = vx2 + impulseX / m2;
+        v2.velZ = vz2 + impulseZ / m2;
+
+        const f1x = Math.sin(v1.yaw), f1z = Math.cos(v1.yaw);
+        const f2x = Math.sin(v2.yaw), f2z = Math.cos(v2.yaw);
+        v1.speed = v1.velX * f1x + v1.velZ * f1z;
+        v2.speed = v2.velX * f2x + v2.velZ * f2z;
+
+        const rx1 = contactX - v1.x;
+        const rz1 = contactZ - v1.z;
+        const rx2 = contactX - v2.x;
+        const rz2 = contactZ - v2.z;
+
+        const torque1 = rx1 * (-impulseZ) - rz1 * (-impulseX);
+        const torque2 = rx2 * impulseZ - rz2 * impulseX;
+
+        const inertia1 = m1 * 1.8;
+        const inertia2 = m2 * 1.8;
+
+        const yawImpulse1 = torque1 / inertia1;
+        const yawImpulse2 = torque2 / inertia2;
+
+        v1.yaw += yawImpulse1 * 0.45;
+        v2.yaw += yawImpulse2 * 0.45;
+
+        const pairKey = `${i}_${j}`;
+        const lastHit = carCollisionCooldowns.get(pairKey) || 0;
+        const impactSpeed = Math.abs(velAlongNormal);
+
+        if (now - lastHit > 250 && impactSpeed > 1.8) {
+          carCollisionCooldowns.set(pairKey, now);
+          sfx.hit();
+          const pCount = Math.min(14, Math.max(4, Math.floor(impactSpeed * 1.5)));
+          spawnParticles(contactX, (v1.y + v2.y) * 0.5 + 0.4, contactZ, 0xfbbf24, pCount, 4.5);
+
+          if ((isDriven1 || isDriven2) && impactSpeed > 7.0) {
+            hooks.applyPlayerDamage(Math.min(30, (impactSpeed - 7.0) * 1.6), 'VEHICLE COLLISION');
+          }
+        }
+
+        if (hooks.mpActive && hooks.mpActive()) {
+          if (isDriven1 && owner2 && owner2 !== hooks.mpLocalId()) {
+            hooks.mpVehicleImpact?.(j, impulseX, impulseZ, yawImpulse2);
+          } else if (isDriven2 && owner1 && owner1 !== hooks.mpLocalId()) {
+            hooks.mpVehicleImpact?.(i, -impulseX, -impulseZ, yawImpulse1);
+          }
+        }
+      }
+    }
+  }
+}
+
+// Per-frame driving model (6-speed gearbox, grip, collisions, 3D slope physics & side-roll tipping).
 export function stepVehicleDriving(dt, elapsed) {
+    resolveVehicleCollisions(dt);
+
     const v = vehicles[gameState.activeCarIndex];
+    if (!v) return;
+
     const throttleInput = keys['KeyW'] || keys['ArrowUp'] ? 1 : 0;
     const brakeInput = keys['KeyS'] || keys['ArrowDown'] ? 1 : 0;
     const steerInput = (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0) - (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0);
@@ -419,7 +585,6 @@ export function stepVehicleDriving(dt, elapsed) {
     const gearRatio = GEAR_RATIO_MULT[gIdx];
     const prevSpeed = v.speed;
 
-    // Update Supercar / Backfire Exhaust Flame Effect
     if (v.flameTimer > 0) {
       v.flameTimer -= dt;
       const flOn = v.flameTimer > 0 && Math.sin(elapsed * 65) > -0.35;
@@ -436,11 +601,11 @@ export function stepVehicleDriving(dt, elapsed) {
     }
 
     let onLimiter = false;
-    if (gIdx === 1) {
+    if (gIdx === 1) { // Neutral
       if (throttleInput) v.rpm = Math.min(7900, v.rpm + 6400 * dt);
       else v.rpm = Math.max(880, v.rpm - 4400 * dt);
       v.speed *= Math.max(0, 1 - 0.45 * dt);
-    } else if (gIdx === 0) {
+    } else if (gIdx === 0) { // Reverse
       const targetRpm = 900 + (Math.abs(v.speed) / Math.max(1, gearCapMps)) * 6600;
       v.rpm += (targetRpm - v.rpm) * Math.min(1, dt * 10);
       if (throttleInput) {
@@ -448,7 +613,7 @@ export function stepVehicleDriving(dt, elapsed) {
       } else {
         v.speed *= Math.max(0, 1 - 1.5 * dt);
       }
-    } else {
+    } else { // Forward Gears 1-6
       const speedRatio = Math.max(0, v.speed / Math.max(1, gearCapMps));
       const rawRpm = 900 + speedRatio * 6950;
       v.rpm += (Math.min(8000, rawRpm) - v.rpm) * Math.min(1, dt * 11);
@@ -491,9 +656,13 @@ export function stepVehicleDriving(dt, elapsed) {
 
     const headX = Math.sin(v.yaw);
     const headZ = Math.cos(v.yaw);
+    const sideX = Math.cos(v.yaw);
+    const sideZ = -Math.sin(v.yaw);
+
     const targetVx = headX * v.speed;
     const targetVz = headZ * v.speed;
-    const lateralGrip = handbrake ? (v.isSupercar ? 1.35 : 1.8) : (v.isSupercar ? 8.2 : 6.8);
+    const isTipping = Math.abs(v.roll || 0) > 0.78;
+    const lateralGrip = isTipping ? 0.8 : (handbrake ? (v.isSupercar ? 1.35 : 1.8) : (v.isSupercar ? 8.2 : 6.8));
     const gripMul = Math.min(1, surfaceGrip(v.x, v.z) / 14 + 0.12) * levelData.params.vehicles.gripMultiplier;
     if (isInWater(v.x, v.z)) v.speed *= Math.max(0, 1 - 1.4 * dt);
     v.velX += (targetVx - v.velX) * Math.min(1, lateralGrip * gripMul * dt);
@@ -511,19 +680,31 @@ export function stepVehicleDriving(dt, elapsed) {
     const nextX = v.x + v.velX * dt;
     const nextZ = v.z + v.velZ * dt;
 
-    const cfx = Math.sin(v.yaw), cfz = Math.cos(v.yaw);
-    const crx = Math.cos(v.yaw), crz = -Math.sin(v.yaw);
-    const carFloor = computeSupportFloor(nextX, nextZ, v.y + 0.65, 0.8);
-    const wheelSupport = (forward, side) => computeSupportFloor(
-      nextX + cfx * forward * v.carScale + crx * side * v.carScale,
-      nextZ + cfz * forward * v.carScale + crz * side * v.carScale,
+    const cfx = headX, cfz = headZ;
+    const crx = sideX, crz = sideZ;
+
+    const carScale = v.carScale || 1.35;
+    const wheelZ = 1.38 * carScale;
+    const wheelX = 0.98 * carScale;
+
+    const getWheelY = (forwardSign, sideSign) => computeSupportFloor(
+      nextX + cfx * (forwardSign * wheelZ) + crx * (sideSign * wheelX),
+      nextZ + cfz * (forwardSign * wheelZ) + crz * (sideSign * wheelX),
       v.y + 0.65,
       0.42
     );
-    const frontFloor = (wheelSupport(1.38, -0.98) + wheelSupport(1.38, 0.98)) * 0.5;
-    const rearFloor = (wheelSupport(-1.38, -0.98) + wheelSupport(-1.38, 0.98)) * 0.5;
-    const gy = Math.max(carFloor, frontFloor, rearFloor);
-    const groundY = gy + 0.02;
+
+    const frontLeftY  = getWheelY(1, -1);
+    const frontRightY = getWheelY(1, 1);
+    const rearLeftY   = getWheelY(-1, -1);
+    const rearRightY  = getWheelY(-1, 1);
+
+    const centerY = computeSupportFloor(nextX, nextZ, v.y + 0.65, 0.8);
+    const wheelAvgY = (frontLeftY + frontRightY + rearLeftY + rearRightY) * 0.25;
+
+    const groundSupportY = Math.max(centerY, Math.min(wheelAvgY, centerY + 0.9));
+    const groundY = groundSupportY + 0.02;
+
     v.vy = v.vy || 0;
     if (groundY > v.y + 0.08) {
       v.vy = Math.max(0, v.vy);
@@ -539,9 +720,59 @@ export function stepVehicleDriving(dt, elapsed) {
       v.vy = 0;
       v.y = groundY;
     }
-    const tpT = Math.max(-0.5, Math.min(0.5, Math.atan2(frontFloor - rearFloor, 3.72 * v.carScale)));
-    v.terrPitch = (v.terrPitch || 0) + (tpT - (v.terrPitch || 0)) * Math.min(1, dt * 10);
 
+    // 3D Slope Gravity & Hill-Climbing Torque
+    const frontAvgY = (frontLeftY + frontRightY) * 0.5;
+    const rearAvgY  = (rearLeftY + rearRightY) * 0.5;
+    const leftAvgY  = (frontLeftY + rearLeftY) * 0.5;
+    const rightAvgY = (frontRightY + rearRightY) * 0.5;
+
+    const slopeForward = (frontAvgY - rearAvgY) / (wheelZ * 2);
+    const slopeSide    = (rightAvgY - leftAvgY) / (wheelX * 2);
+
+    v.speed += -19.5 * slopeForward * dt;
+    const lateralGravityMag = -19.5 * slopeSide * dt;
+    v.velX += sideX * lateralGravityMag;
+    v.velZ += sideZ * lateralGravityMag;
+
+    if (throttleInput > 0 && slopeForward > 0.08 && !isTipping) {
+      const climbAssist = 19.5 * Math.min(slopeForward, 0.45) * (v.isSupercar ? 1.35 : 1.15);
+      v.speed += climbAssist * dt;
+    }
+
+    // Side-to-Side Roll & Tipping
+    const rawPitch = Math.atan(slopeForward);
+    const rawRoll  = Math.atan(slopeSide);
+
+    const accelDelta = (v.speed - prevSpeed) / Math.max(0.008, dt);
+    const targetPitchSway = Math.max(-0.06, Math.min(0.06, -accelDelta * 0.0022));
+    const targetRollSway  = Math.max(-0.08, Math.min(0.08, v.steerAngle * (v.speed / 28) * 0.14));
+
+    v.pitchSway = v.pitchSway || 0;
+    v.rollSway = v.rollSway || 0;
+
+    // Smooth out suspension pitch & roll sway so braking / handbrake doesn't tilt immediately
+    v.pitchSway += (targetPitchSway - v.pitchSway) * Math.min(1, dt * 5.5);
+    v.rollSway  += (targetRollSway - v.rollSway) * Math.min(1, dt * 5.5);
+
+    const targetPitch = rawPitch;
+    const targetRoll  = rawRoll;
+
+    v.pitch = v.pitch || 0;
+    v.roll  = v.roll  || 0;
+
+    v.pitch += (targetPitch - v.pitch) * Math.min(1, dt * 10);
+
+    if (Math.abs(v.roll) > 0.78 || Math.abs(rawRoll) > 0.78) {
+      const rollDir = Math.sign(v.roll || rawRoll || 1);
+      v.roll += rollDir * 4.5 * dt;
+      if (v.roll > Math.PI * 2) v.roll -= Math.PI * 2;
+      if (v.roll < -Math.PI * 2) v.roll += Math.PI * 2;
+    } else {
+      v.roll += (targetRoll - v.roll) * Math.min(1, dt * 10);
+    }
+
+    // Lamp Post & NPC interactions
     for (const lp of lampPosts) {
       if (lp.state === 'standing' && Math.hypot(nextX - lp.x, nextZ - lp.z) < 1.85 && Math.abs(v.y - 0.18) < 2.0) {
         hooks.knockOverLamppost(lp, v.yaw, Math.abs(v.speed));
@@ -550,7 +781,7 @@ export function stepVehicleDriving(dt, elapsed) {
     }
 
     for (const npc of npcs) {
-if (npc.spawned && !npc.asleep && Math.hypot(nextX - npc.x, nextZ - npc.z) < 1.85 && Math.abs(v.speed) > 2.2 && Math.abs(v.y - 0.18) < 2.0) {
+      if (npc.spawned && !npc.asleep && Math.hypot(nextX - npc.x, nextZ - npc.z) < 1.85 && Math.abs(v.speed) > 2.2 && Math.abs(v.y - 0.18) < 2.0) {
         hooks.damageNpc(npc, Math.abs(v.speed) * 4.5, v.yaw);
         sfx.hit();
         spawnParticles(npc.x, 1.1, npc.z, 0xfacc15, 7, 5.0);
@@ -558,12 +789,38 @@ if (npc.spawned && !npc.asleep && Math.hypot(nextX - npc.x, nextZ - npc.z) < 1.8
       }
     }
 
+    if (hooks.mpActive() && Math.abs(v.speed) > 3) {
+      for (const tp of hooks.mpTargets()) {
+        if (tp.inCar) continue;
+        if (Math.hypot(nextX - tp.x, nextZ - tp.z) < 2.0 && Math.abs(v.y - tp.y) < 2.2) {
+          hooks.mpHitPlayer(tp.id, Math.abs(v.speed) * 3.5, 'VEHICLE IMPACT');
+          spawnParticles(tp.x, tp.y + 1, tp.z, 0xfacc15, 7, 5.0);
+          v.speed *= 0.8;
+        }
+      }
+    }
+
+    // Traversable Slope & Collision Checks
+    const isTraversableSlope = (px, pz) => {
+      const dzX = (terrainH(px + 0.4, pz) - terrainH(px - 0.4, pz)) / 0.8;
+      const dzZ = (terrainH(px, pz + 0.4) - terrainH(px, pz - 0.4)) / 0.8;
+      return Math.hypot(dzX, dzZ) < 1.4;
+    };
+
     const carHit = (px, pz) => {
       for (let q = 0; q < CAR_PTS.length; q++) {
-        if (collidesHorizontally(px + cfx * CAR_PTS[q][0] + crx * CAR_PTS[q][1], pz + cfz * CAR_PTS[q][0] + crz * CAR_PTS[q][1], v.y + 0.25, 1.3, 0.28)) return true;
+        const ptX = px + cfx * CAR_PTS[q][0] + crx * CAR_PTS[q][1];
+        const ptZ = pz + cfz * CAR_PTS[q][0] + crz * CAR_PTS[q][1];
+        if (collidesHorizontally(ptX, ptZ, v.y + 0.25, 1.3, 0.28)) {
+          const isStructure = collidesHorizontally(ptX, ptZ, terrainH(ptX, ptZ) + 4.0, 1.3, 0.28);
+          if (isStructure || !isTraversableSlope(ptX, ptZ)) {
+            return true;
+          }
+        }
       }
       return false;
     };
+
     let okX = true, okZ = true;
     const nSub = Math.max(1, Math.ceil(Math.hypot(nextX - v.x, nextZ - v.z) / 0.45));
     const stX = (nextX - v.x) / nSub, stZ = (nextZ - v.z) / nSub;
@@ -583,16 +840,15 @@ if (npc.spawned && !npc.asleep && Math.hypot(nextX - npc.x, nextZ - npc.z) < 1.8
       }
     }
 
-    const accelDelta = (v.speed - prevSpeed) / Math.max(0.008, dt);
-    const targetPitch = Math.max(-0.06, Math.min(0.06, -accelDelta * 0.0022));
-    const targetRoll = Math.max(-0.08, Math.min(0.08, v.steerAngle * (v.speed / 28) * 0.14));
-    v.pitchAngle += (targetPitch - v.pitchAngle) * Math.min(1, dt * 10);
-    v.rollAngle += (targetRoll - v.rollAngle) * Math.min(1, dt * 10);
-
+    // Mesh Transformations
     v.root.position.set(v.x, v.y, v.z);
+    v.root.rotation.order = 'YXZ';
     v.root.rotation.y = v.yaw;
-    v.chassis.rotation.x = v.pitchAngle - (v.terrPitch || 0);
-    v.chassis.rotation.z = v.rollAngle;
+    v.root.rotation.x = v.pitch;
+    v.root.rotation.z = v.roll;
+
+    v.chassis.rotation.x = v.pitchSway;
+    v.chassis.rotation.z = v.rollSway;
 
     v.wheelPivots[0].rotation.y = v.steerAngle;
     v.wheelPivots[1].rotation.y = v.steerAngle;
@@ -638,32 +894,52 @@ if (npc.spawned && !npc.asleep && Math.hypot(nextX - npc.x, nextZ - npc.z) < 1.8
     }
 }
 
-// ---- Car suspension & terrain physics ----
+// Car suspension & terrain spring physics
 export function suspFrame(dt, t) {
-for (const v of vehicles) {
-const ch = v.chassis; if (!ch) continue;
-const S = v.sus || (v.sus = { hy: 0, hv: 0, p: 0, pv: 0, r: 0, rv: 0, pa: 0, ps: v.speed || 0, lat: 0 });
-const driven = gameState.inCar && vehicles[gameState.activeCarIndex] === v;
-const acc = (v.speed - S.ps) / Math.max(dt, .001); S.ps = v.speed;
-const lat = -(v.steerAngle || 0) * v.speed * Math.abs(v.speed) * .03;
-const bump = (Math.sin(v.x * 1.7 + v.z * 1.3) * .5 + Math.sin(v.x * .37) * .5) * Math.min(1, Math.abs(v.speed) / 12) * (v.z < -170 ? .9 : .35);
-const k = 70, c = 9;
-S.hv += (-k * S.hy - c * S.hv + bump * 30) * dt; S.hy += S.hv * dt;
-S.pv += (-k * .9 * S.p - c * .8 * S.pv - Math.max(-14, Math.min(14, acc)) * .07 * k * .25) * dt; S.p += S.pv * dt;
-S.rv += (-k * .9 * S.r - c * .8 * S.rv + Math.max(-14, Math.min(14, lat)) * .02 * k) * dt; S.r += S.rv * dt;
-const sx = Math.sin(v.yaw), cz = Math.cos(v.yaw);
-const slope = Math.atan2(terrainH(v.x + sx * 2, v.z + cz * 2) - terrainH(v.x - sx * 2, v.z - cz * 2), 4);
-S.pa += ((v.z < -170 ? slope : 0) - S.pa) * Math.min(1, dt * 8);
-ch.position.y = S.hy * .35;
-if (driven) {
-ch.rotation.x = (v.pitchAngle || 0) - (v.terrPitch || 0) + S.p * .5 - S.pa;
-ch.rotation.z = (v.rollAngle || 0) + S.r * .5;
-} else {
-ch.rotation.x = S.p * .5 - S.pa;
-ch.rotation.z = S.r * .5;
-}
-v.root.rotation.order = 'YXZ';
-v.root.rotation.x = -S.pa;
-if (v.z < -170 && v.speed > 0) v.speed = Math.max(0, v.speed - 9.8 * Math.sin(Math.max(0, S.pa)) * dt * .9);
-}
+  if (!gameState.inCar) {
+    resolveVehicleCollisions(dt);
+  }
+
+  for (let vi = 0; vi < vehicles.length; vi++) {
+    const v = vehicles[vi];
+    const ch = v.chassis; if (!ch) continue;
+    const S = v.sus || (v.sus = { hy: 0, hv: 0, p: 0, pv: 0, r: 0, rv: 0, pa: 0, ps: v.speed || 0, lat: 0 });
+    const driven = gameState.inCar && gameState.activeCarIndex === vi;
+    const owner = hooks.mpCarOwner ? hooks.mpCarOwner(vi) : null;
+    const remoteDriven = !!owner && owner !== hooks.mpLocalId();
+
+    const acc = (v.speed - S.ps) / Math.max(dt, .001); S.ps = v.speed;
+    const lat = -(v.steerAngle || 0) * v.speed * Math.abs(v.speed) * .03;
+    const bump = (Math.sin(v.x * 1.7 + v.z * 1.3) * .5 + Math.sin(v.x * .37) * .5) * Math.min(1, Math.abs(v.speed) / 12) * .35;
+    const k = 70, c = 9;
+    S.hv += (-k * S.hy - c * S.hv + bump * 30) * dt; S.hy += S.hv * dt;
+    S.pv += (-k * .9 * S.p - c * .8 * S.pv - Math.max(-14, Math.min(14, acc)) * .07 * k * .25) * dt; S.p += S.pv * dt;
+    S.rv += (-k * .9 * S.r - c * .8 * S.rv + Math.max(-14, Math.min(14, lat)) * .02 * k) * dt; S.r += S.rv * dt;
+
+    ch.position.y = S.hy * .35;
+    if (!driven && !remoteDriven) {
+      v.pitch = v.pitch || 0;
+      v.roll = v.roll || 0;
+      const cfx = Math.sin(v.yaw), cfz = Math.cos(v.yaw);
+      const crx = Math.cos(v.yaw), crz = -Math.sin(v.yaw);
+      const carScale = v.carScale || 1.35;
+      const wheelZ = 1.38 * carScale;
+      const wheelX = 0.98 * carScale;
+
+      const getWheelY = (f, s) => computeSupportFloor(v.x + cfx * (f * wheelZ) + crx * (s * wheelX), v.z + cfz * (f * wheelZ) + crz * (s * wheelX), v.y + 0.65, 0.42);
+      const fLY = getWheelY(1, -1), fRY = getWheelY(1, 1), rLY = getWheelY(-1, -1), rRY = getWheelY(-1, 1);
+      const fAvg = (fLY + fRY) * 0.5, rAvg = (rLY + rRY) * 0.5, lAvg = (fLY + rLY) * 0.5, riAvg = (fRY + rRY) * 0.5;
+
+      const sFwd = (fAvg - rAvg) / (wheelZ * 2);
+      const sSd  = (riAvg - lAvg) / (wheelX * 2);
+
+      v.pitch += (Math.atan(sFwd) - v.pitch) * Math.min(1, dt * 8);
+      v.roll  += (Math.atan(sSd) - v.roll) * Math.min(1, dt * 8);
+
+      v.root.rotation.order = 'YXZ';
+      v.root.rotation.y = v.yaw;
+      v.root.rotation.x = v.pitch + S.p * 0.2;
+      v.root.rotation.z = v.roll + S.r * 0.2;
+    }
+  }
 }

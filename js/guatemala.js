@@ -414,75 +414,96 @@ function animateWalk(npc, dt, fast) {
 
 export function updateGuatemalanFestival(dt, elapsed) {
   if (!festival.built) return;
-  festival.lead += 2 * dt;
+  const guest = hooks.mpIsGuest();
+  if (guest) {
+    // Float positions derive from the host-synced parade lead (same pathAt math).
+    festival.lead = hooks.mpFestivalLead();
+  } else {
+    festival.lead += 2 * dt;
+  }
   placeFloat(festival.floats[0], festival.lead);
   placeFloat(festival.floats[1], festival.lead - 44);
   festival.musicians.forEach((musician, i) => {
-	const data = musician.userData, swing = Math.sin(elapsed * 9 + i * 1.6);
-	data.armL.rotation.x = -1.15 + swing * 0.45;
-	data.armR.rotation.x = -1.15 - swing * 0.45;
+    const data = musician.userData, swing = Math.sin(elapsed * 9 + i * 1.6);
+    data.armL.rotation.x = -1.15 + swing * 0.45;
+    data.armR.rotation.x = -1.15 - swing * 0.45;
   });
-  for (const npc of festival.parade) {
-	if (multiplayer.mode === 'guest' || busy(npc)) continue;
-	const slot = paradeSlot(npc);
-	const dx = slot.x - npc.x, dz = slot.z - npc.z, distance = Math.hypot(dx, dz);
-	const walking = distance > 0.35;
-	if (walking) {
-	  const step = Math.min(distance, 6.2 * dt);
-	  npc.x += dx / distance * step;
-	  npc.z += dz / distance * step;
-	  npc.yaw = Math.atan2(dx, dz);
-	} else {
-	  npc.x = slot.x;
-	  npc.z = slot.z;
-	  npc.yaw = slot.yaw;
-	}
-	npc.moving = walking;
-	if (npc.mesh && npc.spawned) {
-	  npc.mesh.position.set(npc.x, 0.18, npc.z);
-	  npc.mesh.rotation.y = npc.yaw;
-	  animateWalk(npc, dt, walking);
-	  const data = npc.mesh.userData;
-	  if (data.flag) {
-		data.armR.rotation.x = -0.55;
-		data.flag.rotation.y = Math.sin(elapsed * 4 + npc.id) * 0.35;
-	  } else if (Math.sin(elapsed * 0.45 + npc.id * 1.9) > 0.82) {
-		data.armL.rotation.x = -2.6 + Math.sin(elapsed * 9 + npc.id) * 0.35;
-		data.armR.rotation.x = -2.6 + Math.cos(elapsed * 9 + npc.id) * 0.35;
-	  }
-	}
-  }
-  for (const npc of festival.homers) {
-	if (multiplayer.mode === 'guest' || busy(npc) || !npc.mesh || !npc.spawned) continue;
-	npc.x = npc.gtHome.x;
-	npc.z = npc.gtHome.z;
-	npc.yaw = npc.gtYaw;
-	npc.mesh.position.set(npc.x, 0.18, npc.z);
-	npc.mesh.rotation.y = npc.yaw;
+  // Parade + crowd NPC movement is host-only; guests receive it via the NPC stream.
+  if (!guest) {
+    for (const npc of festival.parade) {
+      if (busy(npc)) continue;
+      const slot = paradeSlot(npc);
+      const dx = slot.x - npc.x, dz = slot.z - npc.z, distance = Math.hypot(dx, dz);
+      const walking = distance > 0.35;
+      if (walking) {
+        const step = Math.min(distance, 6.2 * dt);
+        npc.x += dx / distance * step;
+        npc.z += dz / distance * step;
+        npc.yaw = Math.atan2(dx, dz);
+      } else {
+        npc.x = slot.x;
+        npc.z = slot.z;
+        npc.yaw = slot.yaw;
+      }
+      npc.moving = walking;
+      if (npc.mesh && npc.spawned) {
+        npc.mesh.position.set(npc.x, 0.18, npc.z);
+        npc.mesh.rotation.y = npc.yaw;
+        animateWalk(npc, dt, walking);
+        const data = npc.mesh.userData;
+        if (data.flag) {
+          data.armR.rotation.x = -0.55;
+          data.flag.rotation.y = Math.sin(elapsed * 4 + npc.id) * 0.35;
+        } else if (Math.sin(elapsed * 0.45 + npc.id * 1.9) > 0.82) {
+          data.armL.rotation.x = -2.6 + Math.sin(elapsed * 9 + npc.id) * 0.35;
+          data.armR.rotation.x = -2.6 + Math.cos(elapsed * 9 + npc.id) * 0.35;
+        }
+      }
+    }
+    for (const npc of festival.homers) {
+      if (busy(npc) || !npc.mesh || !npc.spawned) continue;
+      npc.x = npc.gtHome.x;
+      npc.z = npc.gtHome.z;
+      npc.yaw = npc.gtYaw;
+      npc.mesh.position.set(npc.x, 0.18, npc.z);
+      npc.mesh.rotation.y = npc.yaw;
+    }
+  } else {
+    // Guests still wave the flags on their locally-rendered parade meshes.
+    for (const npc of festival.parade) {
+      if (!npc.mesh || !npc.spawned) continue;
+      const data = npc.mesh.userData;
+      if (data.flag) data.flag.rotation.y = Math.sin(elapsed * 4 + npc.id) * 0.35;
+    }
   }
   festival.confettiTimer -= dt;
   if (festival.confettiTimer <= 0 && Math.hypot(player.x - festival.floats[0].position.x, player.z - festival.floats[0].position.z) < 90) {
-	festival.confettiTimer = 0.3;
-	const npc = choose(festival.parade);
-	if (npc.mesh) spawnParticles(npc.x, 2.6, npc.z, choose([BLUE, WHITE, 0xfacc15, 0xdc2626, 0x16a34a, 0xf97316]), 4, 3.2);
-	spawnParticles(festival.floats[0].position.x, 4.6, festival.floats[0].position.z, choose([0xfacc15, 0xdc2626, BLUE]), 3, 4);
+    festival.confettiTimer = 0.3;
+    const npc = choose(festival.parade);
+    if (npc.mesh) spawnParticles(npc.x, 2.6, npc.z, choose([BLUE, WHITE, 0xfacc15, 0xdc2626, 0x16a34a, 0xf97316]), 4, 3.2);
+    spawnParticles(festival.floats[0].position.x, 4.6, festival.floats[0].position.z, choose([0xfacc15, 0xdc2626, BLUE]), 3, 4);
   }
   festival.musicTimer -= dt;
   if (festival.musicTimer <= 0) {
-	festival.musicTimer = 0.22;
-	const distance = Math.hypot(player.x - festival.floats[0].position.x, player.z - festival.floats[0].position.z);
-	if (distance < 75 && sfx.enabled && player.y > -1.2) {
-	  const scale = [293.66, 329.63, 369.99, 440, 493.88, 587.33];
-	  const pattern = [0, 2, 4, 2, 3, 2, 1, 2, 0, 2, 4, 5, 4, 3, 2, 1];
-	  const frequency = scale[pattern[festival.musicStep % pattern.length]];
-	  const volume = 0.07 * Math.pow(1 - distance / 75, 1.5);
-	  sfx.tone(frequency, frequency * 0.985, 0.3, 'sine', volume);
-	  sfx.tone(frequency * 3, frequency * 3, 0.1, 'sine', volume * 0.25);
-	  if (festival.musicStep % 4 === 0) sfx.tone(frequency / 2, frequency / 2.02, 0.4, 'triangle', volume * 0.7);
-	  festival.musicStep++;
-	}
+    festival.musicTimer = 0.22;
+    const distance = Math.hypot(player.x - festival.floats[0].position.x, player.z - festival.floats[0].position.z);
+    if (distance < 75 && sfx.enabled && player.y > -1.2) {
+      const scale = [293.66, 329.63, 369.99, 440, 493.88, 587.33];
+      const pattern = [0, 2, 4, 2, 3, 2, 1, 2, 0, 2, 4, 5, 4, 3, 2, 1];
+      const frequency = scale[pattern[festival.musicStep % pattern.length]];
+      const volume = 0.07 * Math.pow(1 - distance / 75, 1.5);
+      sfx.tone(frequency, frequency * 0.985, 0.3, 'sine', volume);
+      sfx.tone(frequency * 3, frequency * 3, 0.1, 'sine', volume * 0.25);
+      if (festival.musicStep % 4 === 0) sfx.tone(frequency / 2, frequency / 2.02, 0.4, 'triangle', volume * 0.7);
+      festival.musicStep++;
+    }
   }
 }
+// Net hooks: the host streams festival.lead; guests adopt it.
+Object.assign(hooks, {
+  mpFestivalLead: () => festival.lead,
+  mpSetFestivalLead: (v) => { if (Number.isFinite(v)) festival.lead = v; },
+});
 
 export function decorateGuatemalanNpc(npc, mesh) {
   if (npc.gtFestival) decorateFestivalNpc(mesh, npc);

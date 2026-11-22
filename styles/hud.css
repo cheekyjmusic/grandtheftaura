@@ -137,8 +137,12 @@
       animation: toastAnim 1.95s ease forwards;
     }
     html, body, #game-canvas { touch-action: none; }
-    #orientation-lock { display: none; }
-@media (orientation: portrait) and (pointer: coarse) {
+#orientation-lock {
+    display: none;
+}
+/* Only true phones/tablets (no hover-capable pointer) get the portrait lock.
+   Touchscreen Chromebooks/laptops have hover:hover + a fine pointer and keep playing. */
+@media (orientation: portrait) and (pointer: coarse) and (hover: none) {
     body > :not(#orientation-lock) {
         visibility: hidden !important;
     }
