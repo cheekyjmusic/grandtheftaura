@@ -1,4 +1,6 @@
-/* Grand Theft Aura — HUD, watch, inventory, map & modal styles (extracted from the original index.html) */
+/* Grand Theft Aura — Matte PS3-Era HUD, Bars, Minimap, Inventory & Modal Styles */
+@import url('https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@600;700&family=Chakra+Petch:wght@500;600;700&display=swap');
+
 * {
     box-sizing: border-box;
     user-select: none;
@@ -11,10 +13,15 @@ html, body {
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background-color: #090b0f;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    color: #f8fafc;
+    background-color: #08090c;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    color: #f1f5f9;
 }
+
+button, input, select, textarea {
+    font-family: inherit;
+}
+
 /* Primary 3D WebGL Canvas pinned full-viewport at z-index 0 */
 #game-canvas {
     position: fixed;
@@ -24,6 +31,7 @@ html, body {
     display: block;
     z-index: 0;
 }
+
 /* All in-game overlays hidden by default until explicitly activated */
 #hud,
 #vehicle-hud,
@@ -39,101 +47,250 @@ html, body {
     display: none;
 }
 
+/* ---- Subtle Psychedelic PS3 Chromatic Drift (No Gloss) ---- */
+@keyframes ps3ChromaticBorder {
+    0%, 100% {
+        border-color: rgba(245, 158, 11, 0.55);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.78), -2px 0 0 rgba(34, 211, 238, 0.22), 2px 0 0 rgba(232, 121, 249, 0.22);
+    }
+
+    50% {
+        border-color: rgba(217, 70, 239, 0.52);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.78), -2px 0 0 rgba(163, 230, 53, 0.22), 2px 0 0 rgba(56, 189, 248, 0.24);
+    }
+}
+
+@keyframes ps3HuePulse {
+    0%, 100% {
+        filter: hue-rotate(-8deg);
+    }
+
+    50% {
+        filter: hue-rotate(14deg);
+    }
+}
+
+/* ---- PS3 Typography ---- */
 .font-display {
-    font-family: 'Oswald', sans-serif;
-    letter-spacing: 0.04em;
+    font-family: 'Archivo Narrow', 'Arial Narrow', 'Helvetica Neue', sans-serif;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    text-shadow: -1px 0 0 rgba(34, 211, 238, 0.42), 1px 0 0 rgba(232, 121, 249, 0.42), 0 2px 6px rgba(0, 0, 0, 0.85);
 }
 
 .font-tactical {
-    font-family: 'Rajdhani', sans-serif;
-    letter-spacing: 0.06em;
+    font-family: 'Chakra Petch', 'Lucida Console', Consolas, monospace;
+    letter-spacing: 0.08em;
 }
 
 #minimap-north {
     left: 50% !important;
     top: 5% !important;
+    font-family: 'Chakra Petch', monospace;
+    text-shadow: -1px 0 0 rgba(34, 211, 238, 0.75), 1px 0 0 rgba(232, 121, 249, 0.75);
 }
 
+/* ---- Matte Squared-Off PS3 Panels ---- */
 .glass-panel {
-    background: rgba(10, 13, 18, 0.93);
-    border: 1px solid rgba(255, 255, 255, 0.13);
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
-    border-radius: 10px;
+    background: rgba(10, 11, 15, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.72), -1px 0 0 rgba(34, 211, 238, 0.16), 1px 0 0 rgba(232, 121, 249, 0.16);
+    border-radius: 0 !important;
 }
 
 .glass-panel-amber {
-    background: rgba(11, 14, 20, 0.95);
-    border: 1px solid rgba(245, 158, 11, 0.45);
-    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.68);
-    border-radius: 12px;
+    background: rgba(11, 12, 17, 0.95);
+    border: 1px solid rgba(245, 158, 11, 0.55);
+    border-left: 3px solid #f59e0b;
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.80), -2px 0 0 rgba(34, 211, 238, 0.20), 2px 0 0 rgba(232, 121, 249, 0.20);
+    border-radius: 0 !important;
+    animation: ps3ChromaticBorder 9s ease-in-out infinite;
 }
 
-.menu-btn {
-    background: rgba(20, 25, 34, 0.9);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 8px;
-    transition: background-color 0.14s ease, border-color 0.14s ease, transform 0.08s ease;
+/* ---- Top-Left Health & Stamina Bars ---- */
+#hud-hp-card {
+    border-left: 3px solid #10b981 !important;
 }
 
-    .menu-btn:hover {
-        background: rgba(34, 42, 58, 0.96);
-        border-color: #f59e0b;
+#hud-stam-card {
+    border-left: 3px solid #38bdf8 !important;
+}
+
+/* ---- Start Menu Atmosphere ---- */
+#start-menu {
+    isolation: isolate;
+}
+
+    #start-menu::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        background: radial-gradient(circle at 20% 25%, rgba(34, 211, 238, 0.10) 0%, transparent 48%), radial-gradient(circle at 80% 75%, rgba(232, 121, 249, 0.11) 0%, transparent 50%), linear-gradient(180deg, rgba(6, 7, 10, 0.45) 0%, rgba(6, 7, 10, 0.82) 100%);
     }
 
-    .menu-btn:active {
-        transform: translateY(1px);
+    #start-menu h1 {
+        font-family: 'Archivo Narrow', 'Arial Narrow', sans-serif;
+        letter-spacing: 0.08em;
+        color: #f8fafc;
+        text-shadow: -2px 0 0 rgba(34, 211, 238, 0.55), 2px 0 0 rgba(232, 121, 249, 0.55), 0 4px 18px rgba(0, 0, 0, 0.9);
     }
+
+    /* Title Image Responsive Constraints */
+    #start-menu img,
+    #start-menu .title-img,
+    #start-menu img[src*="title"] {
+        max-width: 100%;
+        max-height: 28vh;
+        width: auto;
+        height: auto;
+        object-fit: contain;
+        filter: drop-shadow(-2px 0 0 rgba(34, 211, 238, 0.45)) drop-shadow(2px 0 0 rgba(232, 121, 249, 0.45)) drop-shadow(0 8px 20px rgba(0, 0, 0, 0.85));
+    }
+
+    /* ---- Squared-Off Matte PS3 Buttons (Zero Gloss) ---- */
+    .menu-btn,
+    #start-menu button:not(.menu-btn-primary) {
+        background: rgba(15, 17, 23, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-left: 3px solid rgba(148, 163, 184, 0.55);
+        border-radius: 0 !important;
+        color: #f1f5f9;
+        font-family: 'Chakra Petch', 'Helvetica Neue', sans-serif;
+        font-weight: 600;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.65);
+        transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, transform 0.08s ease;
+    }
+
+        .menu-btn:hover,
+        #start-menu button:not(.menu-btn-primary):hover {
+            background: rgba(28, 24, 42, 0.98);
+            border-color: rgba(232, 121, 249, 0.65);
+            border-left-color: #22d3ee;
+            color: #ffffff;
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.8), -2px 0 0 rgba(34, 211, 238, 0.45), 2px 0 0 rgba(232, 121, 249, 0.45);
+        }
+
+        .menu-btn:active,
+        #start-menu button:not(.menu-btn-primary):active {
+            transform: translateY(1px);
+        }
 
 .menu-btn-primary {
-    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-    color: #090b0f;
-    border: 1px solid #fcd34d;
-    border-radius: 8px;
+    background: #f59e0b;
+    color: #08090c;
+    border: 1px solid #fde68a;
+    border-left: 4px solid #d946ef;
+    border-radius: 0 !important;
+    font-family: 'Chakra Petch', 'Helvetica Neue', sans-serif;
     font-weight: 700;
-    box-shadow: 0 4px 18px rgba(245, 158, 11, 0.35);
-    transition: filter 0.14s ease, transform 0.08s ease;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.72), -2px 0 0 rgba(34, 211, 238, 0.40), 2px 0 0 rgba(232, 121, 249, 0.40);
+    animation: ps3HuePulse 8s ease-in-out infinite;
+    transition: background-color 0.12s ease, color 0.12s ease, transform 0.08s ease;
 }
 
     .menu-btn-primary:hover {
-        filter: brightness(1.08);
+        background: #fbbf24;
+        color: #050608;
+        border-color: #ffffff;
+        border-left-color: #22d3ee;
     }
 
     .menu-btn-primary:active {
         transform: translateY(1px);
     }
 
-.hotbar-slot {
-    background: rgba(10, 13, 18, 0.85);
+/* ---- Inventory, Pause, Settings, Radial & Map Modals ---- */
+#inventory-menu > div,
+#pause-menu > div,
+#settings-menu > div,
+#map-modal > div {
+    background: rgba(9, 10, 14, 0.96);
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    border-top: 2px solid #f59e0b;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.88), -2px 0 0 rgba(34, 211, 238, 0.20), 2px 0 0 rgba(232, 121, 249, 0.20);
+    border-radius: 0 !important;
+}
+
+/* Inventory Item Cards & Slots */
+#inventory-menu button:not(.menu-btn):not(.menu-btn-primary),
+#inventory-menu [data-item],
+#inventory-menu [data-weapon],
+#inventory-menu [data-slot] {
+    background: rgba(16, 18, 25, 0.94);
     border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 8px;
+    border-radius: 0 !important;
+    box-shadow: none;
+    transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+    #inventory-menu button:not(.menu-btn):not(.menu-btn-primary):hover,
+    #inventory-menu [data-item]:hover,
+    #inventory-menu [data-weapon]:hover,
+    #inventory-menu [data-slot]:hover {
+        background: rgba(30, 25, 44, 0.98);
+        border-color: #e879f9;
+        box-shadow: -1px 0 0 rgba(34, 211, 238, 0.45), 1px 0 0 rgba(232, 121, 249, 0.45);
+    }
+
+/* ---- Squared-Off Hotbar Slots ---- */
+.hotbar-slot {
+    background: rgba(10, 11, 16, 0.90);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 0 !important;
     transition: border-color 0.12s ease, background-color 0.12s ease, transform 0.1s ease;
 }
 
-    .hotbar-slot.active {
-        border-color: #38bdf8;
-        background: rgba(14, 44, 70, 0.92);
-        transform: translateY(-3px);
-        box-shadow: 0 0 14px rgba(56, 189, 248, 0.32);
+    .hotbar-slot:hover {
+        border-color: rgba(232, 121, 249, 0.55);
     }
 
+    .hotbar-slot.active {
+        border-color: #22d3ee;
+        border-bottom: 3px solid #e879f9;
+        background: rgba(20, 26, 38, 0.96);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.75), -1px 0 0 rgba(34, 211, 238, 0.45), 1px 0 0 rgba(232, 121, 249, 0.45);
+    }
+
+/* ---- Minimap & Prompt Boxes ---- */
+#minimap-box,
+#radial-menu > div,
+#npc-dialogue,
+#interact-prompt,
+#mantle-prompt,
+#meteor-aim-banner {
+    border-radius: 0 !important;
+    border-color: rgba(255, 255, 255, 0.22) !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.78), -1px 0 0 rgba(34, 211, 238, 0.22), 1px 0 0 rgba(232, 121, 249, 0.22);
+}
+
+/* ---- Squared-Off PS3 Range Sliders ---- */
 input[type="range"].pro-slider {
     -webkit-appearance: none;
     appearance: none;
     height: 6px;
-    background: #1e293b;
-    border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: #1e2230;
+    border-radius: 0 !important;
+    border: 1px solid rgba(255, 255, 255, 0.22);
     outline: none;
 }
 
     input[type="range"].pro-slider::-webkit-slider-thumb {
         -webkit-appearance: none;
         appearance: none;
-        width: 16px;
-        height: 16px;
-        border-radius: 50%;
+        width: 10px;
+        height: 18px;
+        border-radius: 0 !important;
         background: #f59e0b;
-        border: 2px solid #fef3c7;
+        border: 1px solid #fef3c7;
+        box-shadow: -1px 0 0 rgba(34, 211, 238, 0.55), 1px 0 0 rgba(232, 121, 249, 0.55);
         cursor: pointer;
     }
 
@@ -166,6 +323,8 @@ input[type="range"].pro-slider {
 
 .toast-item {
     animation: toastAnim 1.95s ease forwards;
+    border-radius: 0 !important;
+    background: rgba(11, 12, 17, 0.94);
 }
 
 html, body, #game-canvas {
@@ -174,16 +333,6 @@ html, body, #game-canvas {
 
 #orientation-lock {
     display: none;
-}
-/* Title Image Responsive Constraints */
-#start-menu img,
-#start-menu .title-img,
-#start-menu img[src*="title"] {
-    max-width: 100%;
-    max-height: 28vh;
-    width: auto;
-    height: auto;
-    object-fit: contain;
 }
 
 /* Only true phones/tablets (no hover-capable pointer) get the portrait lock.
@@ -206,10 +355,10 @@ html, body, #game-canvas {
     align-items: center;
     justify-content: center;
     padding: 28px;
-    background: radial-gradient(ellipse at 50% 40%, #182335 0%, #090b0f 72%);
+    background: #08090c;
     color: #f8fafc;
     text-align: center;
-    font-family: 'Rajdhani', sans-serif;
+    font-family: 'Chakra Petch', sans-serif;
 }
 
     #orientation-lock .rotate-icon {
@@ -240,7 +389,7 @@ html, body, #game-canvas {
     z-index: 26;
     pointer-events: none;
     color: white;
-    font-family: 'Rajdhani', sans-serif;
+    font-family: 'Chakra Petch', sans-serif;
 }
 
     #mobile-controls.visible {
@@ -264,7 +413,7 @@ html, body, #game-canvas {
     top: 50%;
     transform: translate(-50%,-50%);
     color: rgba(255,255,255,.2);
-    font: 700 10px 'Rajdhani',sans-serif;
+    font: 700 10px 'Chakra Petch',sans-serif;
     letter-spacing: .18em;
     pointer-events: none;
 }
@@ -292,20 +441,20 @@ html, body, #game-canvas {
     height: 38px;
     padding: 0 9px;
     border: 1px solid rgba(255,255,255,.25);
-    border-radius: 14px;
+    border-radius: 0;
     color: #f8fafc;
-    background: rgba(8,13,22,.9);
-    box-shadow: 0 4px 14px rgba(0,0,0,.38);
-    font: 700 11px 'Rajdhani',sans-serif;
+    background: rgba(10,12,18,.92);
+    box-shadow: 0 4px 12px rgba(0,0,0,.5);
+    font: 700 11px 'Chakra Petch',sans-serif;
     letter-spacing: .06em;
     touch-action: none;
     -webkit-tap-highlight-color: transparent;
 }
 
     .mobile-btn:active, .mobile-btn.pressed {
-        transform: scale(.94);
-        background: rgba(245,158,11,.88);
-        color: #111827;
+        transform: scale(.96);
+        background: #f59e0b;
+        color: #08090c;
     }
 
     .mobile-btn:disabled {
@@ -314,8 +463,8 @@ html, body, #game-canvas {
     }
 
     .mobile-btn.primary {
-        border-color: rgba(251,191,36,.75);
-        background: rgba(146,64,14,.82);
+        border-color: rgba(251,191,36,.85);
+        background: rgba(146,64,14,.90);
     }
 
 .mobile-stick-wrap {
@@ -325,8 +474,8 @@ html, body, #game-canvas {
     height: 138px;
     border: 1px solid rgba(255,255,255,.28);
     border-radius: 50%;
-    background: radial-gradient(circle, rgba(30,41,59,.4), rgba(8,13,22,.72));
-    box-shadow: inset 0 0 24px rgba(0,0,0,.3), 0 5px 20px rgba(0,0,0,.28);
+    background: rgba(10,12,18,.76);
+    box-shadow: inset 0 0 20px rgba(0,0,0,.45);
     touch-action: none;
 }
 
@@ -337,10 +486,9 @@ html, body, #game-canvas {
     width: 56px;
     height: 56px;
     margin: -28px;
-    border: 2px solid rgba(255,255,255,.8);
+    border: 2px solid rgba(255,255,255,.85);
     border-radius: 50%;
-    background: rgba(56,189,248,.58);
-    box-shadow: 0 2px 12px rgba(0,0,0,.4);
+    background: rgba(34,211,238,.52);
     transform: translate(0,0);
     pointer-events: none;
 }
@@ -352,7 +500,7 @@ html, body, #game-canvas {
     bottom: 8px;
     text-align: center;
     color: rgba(255,255,255,.62);
-    font: 700 9px 'Rajdhani',sans-serif;
+    font: 700 9px 'Chakra Petch',sans-serif;
     letter-spacing: .15em;
     pointer-events: none;
 }
@@ -371,7 +519,7 @@ html, body, #game-canvas {
         min-width: 48px;
         width: 48px;
         height: 48px;
-        border-radius: 50%;
+        border-radius: 0;
         padding: 0 3px;
         font-size: 9px;
     }
@@ -379,7 +527,7 @@ html, body, #game-canvas {
     .mobile-actions .wide {
         grid-column: span 2;
         width: 100%;
-        border-radius: 14px;
+        border-radius: 0;
     }
 
 .mobile-extra-actions {
@@ -388,9 +536,9 @@ html, body, #game-canvas {
     grid-template-columns: repeat(3, 46px);
     gap: 5px;
     padding: 8px;
-    border: 1px solid rgba(255,255,255,.2);
-    border-radius: 14px;
-    background: rgba(8,13,22,.86);
+    border: 1px solid rgba(255,255,255,.22);
+    border-radius: 0;
+    background: rgba(10,12,18,.92);
 }
 
     .mobile-extra-actions.hidden {
@@ -423,7 +571,7 @@ html, body, #game-canvas {
         min-width: 58px;
         width: 58px;
         height: 58px;
-        border-radius: 18px;
+        border-radius: 0;
         padding: 2px;
     }
 
@@ -434,9 +582,9 @@ html, body, #game-canvas {
     align-items: center;
     gap: 5px;
     padding: 6px;
-    border: 1px solid rgba(251,191,36,.4);
-    border-radius: 16px;
-    background: rgba(8,13,22,.8);
+    border: 1px solid rgba(251,191,36,.45);
+    border-radius: 0;
+    background: rgba(10,12,18,.90);
 }
 
     .mobile-shifter .mobile-btn {
@@ -449,12 +597,12 @@ html, body, #game-canvas {
     min-width: 42px;
     text-align: center;
     color: #fbbf24;
-    font: 700 24px 'Oswald',sans-serif;
+    font: 700 24px 'Archivo Narrow',sans-serif;
 }
 
 .mobile-gear-caption {
     color: #cbd5e1;
-    font: 700 8px 'Rajdhani',sans-serif;
+    font: 700 8px 'Chakra Petch',sans-serif;
     letter-spacing: .1em;
 }
 
@@ -476,8 +624,18 @@ html.mobile-device #start-menu, html.mobile-device #pause-menu, html.mobile-devi
 }
 
 html.mobile-device #hud > .fixed.top-4.left-4 {
-    transform: scale(.78);
+    transform: scale(.74);
     transform-origin: top left;
+}
+
+html.mobile-device #top-status-row > .glass-panel {
+    padding: 5px 8px;
+    gap: 8px;
+}
+
+html.mobile-device #hud-hp-card,
+html.mobile-device #hud-stam-card {
+    min-width: 96px;
 }
 
 html.mobile-device #minimap-box {
@@ -523,11 +681,6 @@ html.mobile-device #pause-menu > div, html.mobile-device #settings-menu > div, h
 
 html.mobile-device #hud-pov {
     font-size: 10px;
-}
-
-html.mobile-device #hud > .fixed.top-4.left-4 > .glass-panel {
-    padding: 6px 9px;
-    gap: 8px;
 }
 
 html.mobile-device #interact-key, html.mobile-device #mantle-prompt, html.mobile-device #vehicle-hud > div:last-child, html.mobile-device #watch-keybind-strip, html.mobile-device #jh-help, html.mobile-device #pause-key-hint, html.mobile-device #ao-tip, html.mobile-device #sniper-scope svg text:last-child {
@@ -580,7 +733,7 @@ html.mobile-device .mobile-tools {
     html.mobile-device .mobile-tools .mobile-btn {
         min-width: 42px;
         height: 34px;
-        border-radius: 11px;
+        border-radius: 0;
     }
 
 html.mobile-device .mobile-actions {
@@ -599,19 +752,6 @@ html.mobile-device #lock-hint, html.mobile-device #onfoot-hotbar, html.mobile-de
 
 html.mobile-device #hud .text-tiny, html.mobile-device #hud [data-keybind] {
     display: none !important;
-}
-
-html.mobile-device #hud > .fixed.bottom-4.left-4 > div:first-child {
-    width: 92px;
-    height: 92px;
-}
-
-html.mobile-device #hud-hp-val {
-    font-size: 18px;
-}
-
-html.mobile-device #hud-stam-val {
-    font-size: 9px;
 }
 
 html.mobile-device #ammo-hud-card {
@@ -679,7 +819,7 @@ html.mobile-device #interact-prompt {
             min-width: 46px;
             width: 46px;
             height: 44px;
-            border-radius: 14px;
+            border-radius: 0;
         }
 
         .mobile-jet-buttons .wide {

@@ -1,595 +1,649 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Grand Theft Aura</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Oswald:wght@600;700&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet" />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
-    }
-  }
-  </script>
-  <link rel="stylesheet" href="styles/hud.css" />
-  <style>
-      #game-canvas {
-          image-rendering: pixelated;
-          transition: filter .35s ease, transform .35s ease;
-      }
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Grand Theft Aura</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@600;700&family=Chakra+Petch:wght@500;600;700&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+          }
+        }
+    </script>
+    <link rel="stylesheet" href="styles/hud.css" />
+    <style>
+        #game-canvas {
+            image-rendering: pixelated;
+            transition: filter .35s ease, transform .35s ease;
+        }
 
-      body.menu-active #game-canvas {
-          filter: blur(5px) brightness(.72);
-          transform: scale(1.025);
-      }
-    #loading-screen { transition: opacity .35s ease, visibility .35s ease; }
-    #loading-screen.is-hidden { opacity: 0; visibility: hidden; pointer-events: none; }
-    #loading-progress { transition: width .25s ease; }
-      #ps3-filter {
-          position: fixed;
-          inset: 0;
-          z-index: 4;
-          pointer-events: none;
-          opacity: .10;
-          background: repeating-linear-gradient(0deg,rgba(255,255,255,.10) 0 1px,rgba(0,0,0,.16) 1px 3px),radial-gradient(ellipse at center,transparent 62%,rgba(5,8,14,.30) 100%);
-      }
-    #sun-lens-flare { position:fixed; inset:0; z-index:6; pointer-events:none; overflow:hidden; opacity:0; mix-blend-mode:screen; transition:opacity .08s linear; }
-    #sun-lens-flare .flare { position:absolute; border-radius:50%; transform:translate(-50%,-50%); }
-    #sun-lens-flare .flare-source { width:180px; height:180px; background:radial-gradient(circle,rgba(255,249,210,.62) 0,rgba(255,214,130,.22) 23%,transparent 72%); }
-    #sun-lens-flare .flare-source::after { content:""; position:absolute; left:-50%; top:49%; width:200%; height:2px; background:linear-gradient(90deg,transparent,rgba(255,242,196,.28),transparent); }
-    #sun-lens-flare .flare-ghost { width:54px; height:54px; }
-    #sun-lens-flare .ghost-a { background:radial-gradient(circle,rgba(255,216,145,.48),rgba(255,180,90,.08) 42%,transparent 72%); }
-    #sun-lens-flare .ghost-b { width:30px; height:30px; background:radial-gradient(circle,rgba(178,224,255,.42),rgba(96,165,250,.08) 48%,transparent 75%); }
-    #sun-lens-flare .ghost-c { width:82px; height:82px; background:radial-gradient(circle,rgba(255,227,170,.26),rgba(255,169,102,.05) 52%,transparent 74%); }
-    #wasted-screen { display:none; }
-    #hud, #vehicle-hud, #ammo-hud-card, #sniper-scope, #npc-dialogue, #pause-menu, #settings-menu, #inventory-menu, #radial-menu, #map-modal, #error-banner { display:none; }
-    .menu-btn, .menu-btn-primary, .glass-panel, .glass-panel-amber { font-variant-numeric:tabular-nums; }
-  </style>
+        body.menu-active #game-canvas {
+            filter: blur(5px) brightness(.72);
+            transform: scale(1.025);
+        }
+
+        #loading-screen {
+            transition: opacity .35s ease, visibility .35s ease;
+        }
+
+            #loading-screen.is-hidden {
+                opacity: 0;
+                visibility: hidden;
+                pointer-events: none;
+            }
+
+        #loading-progress {
+            transition: width .25s ease;
+        }
+
+        #ps3-filter {
+            position: fixed;
+            inset: 0;
+            z-index: 4;
+            pointer-events: none;
+            opacity: .10;
+            background: repeating-linear-gradient(0deg,rgba(255,255,255,.10) 0 1px,rgba(0,0,0,.16) 1px 3px),radial-gradient(ellipse at center,transparent 62%,rgba(5,8,14,.30) 100%);
+        }
+
+        #sun-lens-flare {
+            position: fixed;
+            inset: 0;
+            z-index: 6;
+            pointer-events: none;
+            overflow: hidden;
+            opacity: 0;
+            mix-blend-mode: screen;
+            transition: opacity .08s linear;
+        }
+
+            #sun-lens-flare .flare {
+                position: absolute;
+                border-radius: 50%;
+                transform: translate(-50%,-50%);
+            }
+
+            #sun-lens-flare .flare-source {
+                width: 180px;
+                height: 180px;
+                background: radial-gradient(circle,rgba(255,249,210,.62) 0,rgba(255,214,130,.22) 23%,transparent 72%);
+            }
+
+                #sun-lens-flare .flare-source::after {
+                    content: "";
+                    position: absolute;
+                    left: -50%;
+                    top: 49%;
+                    width: 200%;
+                    height: 2px;
+                    background: linear-gradient(90deg,transparent,rgba(255,242,196,.28),transparent);
+                }
+
+            #sun-lens-flare .flare-ghost {
+                width: 54px;
+                height: 54px;
+            }
+
+            #sun-lens-flare .ghost-a {
+                background: radial-gradient(circle,rgba(255,216,145,.48),rgba(255,180,90,.08) 42%,transparent 72%);
+            }
+
+            #sun-lens-flare .ghost-b {
+                width: 30px;
+                height: 30px;
+                background: radial-gradient(circle,rgba(178,224,255,.42),rgba(96,165,250,.08) 48%,transparent 75%);
+            }
+
+            #sun-lens-flare .ghost-c {
+                width: 82px;
+                height: 82px;
+                background: radial-gradient(circle,rgba(255,227,170,.26),rgba(255,169,102,.05) 52%,transparent 74%);
+            }
+
+        #wasted-screen {
+            display: none;
+        }
+
+        #hud, #vehicle-hud, #ammo-hud-card, #sniper-scope, #npc-dialogue, #pause-menu, #settings-menu, #inventory-menu, #radial-menu, #map-modal, #error-banner {
+            display: none;
+        }
+
+        .menu-btn, .menu-btn-primary, .glass-panel, .glass-panel-amber {
+            font-variant-numeric: tabular-nums;
+        }
+    </style>
 </head>
 <body class="menu-active">
-  <div id="loading-screen" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950" role="status" aria-live="polite">
-    <div class="w-full max-w-sm px-8 text-center">
-      <img src="assets/images/title.png" alt="Grand Theft Aura" class="w-full h-auto object-contain mb-10" />
-      <div id="loading-status" class="font-tactical text-xs uppercase tracking-[.3em] text-amber-300">Preparing game</div>
-      <div class="mt-4 h-1 overflow-hidden rounded bg-white/10"><div id="loading-progress" class="h-full bg-amber-400" style="width:0%"></div></div>
-      <div id="loading-percent" class="mt-2 font-display text-sm text-slate-200">0%</div>
+    <div id="loading-screen" class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950" role="status" aria-live="polite">
+        <div class="w-full max-w-sm px-8 text-center">
+            <img src="assets/images/title.png" alt="Grand Theft Aura" class="w-full h-auto object-contain mb-10" />
+            <div id="loading-status" class="font-tactical text-xs uppercase tracking-[.3em] text-amber-300">Preparing game</div>
+            <div class="mt-4 h-1 overflow-hidden bg-white/10"><div id="loading-progress" class="h-full bg-amber-400" style="width:0%"></div></div>
+            <div id="loading-percent" class="mt-2 font-display text-sm text-slate-200">0%</div>
+        </div>
     </div>
-  </div>
-  <div id="orientation-lock" aria-live="polite"><div><div class="rotate-icon" aria-hidden="true">&#8635;</div><div class="font-display text-3xl uppercase text-amber-300 mt-4">Rotate to Play</div><p class="text-sm text-slate-300 mt-2">Grand Theft Aura is designed for landscape mode.</p></div></div>
-  <!-- Fullscreen 3D WebGL Canvas -->
-  <canvas id="game-canvas"></canvas>
-  <div id="ps3-filter" aria-hidden="true"></div>
-  <div id="sun-lens-flare" aria-hidden="true"><i class="flare flare-source"></i><i class="flare flare-ghost ghost-a"></i><i class="flare flare-ghost ghost-b"></i><i class="flare flare-ghost ghost-c"></i></div>
+    <div id="orientation-lock" aria-live="polite"><div><div class="rotate-icon" aria-hidden="true">&#8635;</div><div class="font-display text-3xl uppercase text-amber-300 mt-4">Rotate to Play</div><p class="text-sm text-slate-300 mt-2">Grand Theft Aura is designed for landscape mode.</p></div></div>
+    <!-- Fullscreen 3D WebGL Canvas -->
+    <canvas id="game-canvas"></canvas>
+    <div id="ps3-filter" aria-hidden="true"></div>
+    <div id="sun-lens-flare" aria-hidden="true"><i class="flare flare-source"></i><i class="flare flare-ghost ghost-a"></i><i class="flare flare-ghost ghost-b"></i><i class="flare flare-ghost ghost-c"></i></div>
 
-  <!-- Hidden File Input for .JSON Save Import -->
-  <input type="file" id="save-file-input" accept=".json,application/json" class="hidden" />
+    <!-- Hidden File Input for .JSON Save Import -->
+    <input type="file" id="save-file-input" accept=".json,application/json" class="hidden" />
 
-  <!-- Damage / Heal / Meteor Impact Screen Edge Vignette -->
-  <div id="screen-flash" class="fixed inset-0 opacity-0 z-10"></div>
-  <div id="wasted-screen" class="fixed inset-0 z-30 items-center justify-center text-center" role="alert" aria-live="assertive"><div class="px-6"><div class="font-display text-7xl sm:text-9xl uppercase italic tracking-wider text-rose-600">WASTED</div><div id="wasted-cause" class="mt-3 font-tactical text-sm sm:text-lg uppercase tracking-[.28em] text-slate-200"></div><div class="mt-8 font-tactical text-xs uppercase tracking-[.22em] text-slate-400">MEDICAL RESPONSE IN PROGRESS</div></div></div>
+    <!-- Damage / Heal / Meteor Impact Screen Edge Vignette -->
+    <div id="screen-flash" class="fixed inset-0 opacity-0 z-10"></div>
+    <div id="wasted-screen" class="fixed inset-0 z-30 items-center justify-center text-center" role="alert" aria-live="assertive"><div class="px-6"><div class="font-display text-7xl sm:text-9xl uppercase italic tracking-wider text-rose-600">WASTED</div><div id="wasted-cause" class="mt-3 font-tactical text-sm sm:text-lg uppercase tracking-[.28em] text-slate-200"></div><div class="mt-8 font-tactical text-xs uppercase tracking-[.22em] text-slate-400">MEDICAL RESPONSE IN PROGRESS</div></div></div>
 
-  <!-- Non-Intrusive Error Fallback Banner -->
-  <div id="error-banner" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 glass-panel-amber px-5 py-3 text-xs text-rose-300 max-w-md text-center"></div>
+    <!-- Non-Intrusive Error Fallback Banner -->
+    <div id="error-banner" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 glass-panel-amber px-5 py-3 text-xs text-rose-300 max-w-md text-center"></div>
 
-  <!-- =====================================================================
-       IN-GAME HUD (HIDDEN ON START MENU; VISIBLE DURING ACTIVE PLAY)
-       ===================================================================== -->
-  <div id="hud" class="fixed inset-0 z-20 pointer-events-none">
-    <!-- TOP-LEFT: Cash, Sector/Indoor Location, POV Mode, Prompts & Activity Feed -->
-    <div class="fixed top-4 left-4 flex flex-col gap-2">
-      <div class="glass-panel px-4 py-2.5 flex items-center gap-3.5">
-        <div class="flex items-baseline gap-0.5 text-emerald-400 font-display text-2xl">
-          <span>$</span><span id="hud-cash">150</span>
-        </div>
-        <div class="h-5 w-px bg-white/15"></div>
-        <div class="flex flex-col">
-          <span class="text-[10px] font-tactical uppercase text-slate-400 leading-none">SECTOR</span>
-          <span id="hud-zone" class="text-xs font-bold uppercase tracking-wider text-white mt-0.5">CENTRAL PLAZA</span>
-        </div>
-        <div class="h-5 w-px bg-white/15"></div>
-        <div class="flex flex-col">
-          <span class="text-[10px] font-tactical uppercase text-slate-400 leading-none">POV [V]</span>
-          <span id="hud-pov" class="text-xs font-bold uppercase tracking-wider text-sky-400 mt-0.5">1ST PERSON</span>
-        </div>
-      </div>
+    <!-- =====================================================================
+         IN-GAME HUD (HIDDEN ON START MENU; VISIBLE DURING ACTIVE PLAY)
+         ===================================================================== -->
+    <div id="hud" class="fixed inset-0 z-20 pointer-events-none">
+        <!-- TOP-LEFT: Cash & Sector | Health | Stamina + Prompts & Activity Feed -->
+        <div class="fixed top-4 left-4 flex flex-col items-start gap-2">
+            <div id="top-status-row" class="flex items-stretch gap-2">
+                <!-- 1. Cash, Sector/Indoor Location & POV -->
+                <div class="glass-panel px-3.5 py-2 flex items-center gap-3">
+                    <div class="flex items-baseline gap-0.5 text-emerald-400 font-display text-2xl leading-none">
+                        <span>$</span><span id="hud-cash">150</span>
+                    </div>
+                    <div class="h-6 w-px bg-white/15"></div>
+                    <div class="flex flex-col">
+                        <span class="text-[9px] font-tactical uppercase text-slate-400 leading-none">SECTOR</span>
+                        <span id="hud-zone" class="text-xs font-bold uppercase tracking-wider text-white mt-0.5">CENTRAL PLAZA</span>
+                    </div>
+                    <div class="h-6 w-px bg-white/15"></div>
+                    <div class="flex flex-col">
+                        <span class="text-[9px] font-tactical uppercase text-slate-400 leading-none">POV [V]</span>
+                        <span id="hud-pov" class="text-xs font-bold uppercase tracking-wider text-sky-400 mt-0.5">1ST PERSON</span>
+                    </div>
+                </div>
 
-      <!-- Pointer-Lock / Trackpad Hint when cursor unlocked -->
-      <div id="lock-hint" class="glass-panel px-3 py-1.5 text-[11px] font-tactical uppercase text-amber-300 border-l-2 border-l-amber-400">
-        CLICK VIEWPORT TO LOCK AIM &bull; OR DRAG TO LOOK
-      </div>
+                <!-- 2. Health Bar -->
+                <div id="hud-hp-card" class="glass-panel px-3 py-2 flex flex-col justify-between min-w-[126px]">
+                    <div class="flex items-baseline justify-between gap-2">
+                        <span class="text-[9px] font-tactical font-bold uppercase tracking-wider text-emerald-400 leading-none">HEALTH</span>
+                        <span id="hud-hp-val" class="font-display text-sm font-bold text-white leading-none">100</span>
+                    </div>
+                    <div class="w-full h-2.5 bg-slate-950 border border-white/20 overflow-hidden mt-1.5">
+                        <div id="hud-hp-bar" class="h-full bg-emerald-500 transition-all duration-150" style="width: 100%;"></div>
+                    </div>
+                </div>
 
-      <!-- Contextual Interaction Prompt -->
-      <div id="interact-prompt" class="hidden glass-panel-amber px-3.5 py-2 flex items-center gap-2.5">
-        <span id="interact-key" class="px-2 py-0.5 rounded bg-amber-500 text-slate-950 font-display text-xs font-bold">E</span>
-        <span id="interact-text" class="font-tactical text-sm font-bold uppercase text-white">INTERACT</span>
-      </div>
-
-      <!-- Parkour Mantle Available Prompt -->
-      <div id="mantle-prompt" class="hidden glass-panel px-3 py-1.5 flex items-center gap-2 border-l-2 border-l-sky-400">
-        <span class="px-1.5 py-0.5 rounded bg-sky-400 text-slate-950 font-display text-[11px] font-bold">SPACE</span>
-        <span class="font-tactical text-xs font-bold uppercase text-sky-200">MANTLE LEDGE</span>
-      </div>
-
-      <!-- Activity Feed Toasts -->
-      <div id="feed-container" class="flex flex-col gap-1 mt-1"></div>
-
-      <!-- Clan Territory & Search Alert Pill -->
-      <div id="clan-alert-badge" class="hidden glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-rose-500 text-rose-300">
-        CLAN TERRITORY
-      </div>
-    </div>
-
-    <!-- TOP-CENTER: Orbital Meteor Landing Aim Banner -->
-    <div id="meteor-aim-banner" class="hidden fixed top-5 left-1/2 -translate-x-1/2 glass-panel-amber px-5 py-2.5 text-center z-30">
-      <div class="text-[10px] font-tactical font-bold uppercase tracking-widest text-amber-400">ORBITAL METEOR DESCENT &bull; STEER LANDING ZONE</div>
-      <div class="text-xs font-bold uppercase text-white mt-0.5">AIM WITH MOUSE OR [WASD] &bull; HOLD [SHIFT] TO DIVE FASTER</div>
-      <div id="meteor-target-label" class="text-[11px] font-tactical text-sky-300 mt-0.5">TARGET: CENTRAL PLAZA</div>
-    </div>
-
-    <!-- TOP-RIGHT: Live Circular Radar Mini-Map + Dual-Hand Status + Sausage Ammo Counter -->
-    <div class="fixed top-4 right-4 flex flex-col items-end gap-2">
-      <!-- Circular Radar Mini-Map -->
-      <div id="minimap-box" title="Click or press [M] for Full City Map" class="relative w-[178px] h-[178px] glass-panel p-1.5 rounded-full cursor-pointer pointer-events-auto">
-        <canvas id="minimap-canvas" width="164" height="164" class="w-full h-full rounded-full block"></canvas>
-        <!-- Orbiting North Compass Marker -->
-        <div id="minimap-north" class="absolute w-5 h-5 -ml-2.5 -mt-2.5 rounded-full bg-rose-600 text-white font-display text-[10px] flex items-center justify-center border border-white/80 shadow pointer-events-none" style="left: 89px; top: 9px;">
-          N
-        </div>
-        <div class="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-slate-950/90 px-2 py-0.5 rounded-full text-[9px] font-tactical font-bold text-slate-300 border border-white/15">
-          MAP [M]
-        </div>
-      </div>
-
-      <!-- Docked Right-Hand & Left-Hand Equipment Readout -->
-      <div id="dual-hand-card" class="w-[196px] glass-panel p-2.5 flex flex-col gap-1.5 mt-1">
-        <div class="flex items-center justify-between border-b border-white/10 pb-1.5">
-          <div class="flex items-center gap-2 min-w-0">
-            <div id="hud-rhand-icon" class="w-6 h-6 rounded bg-amber-500/15 border border-amber-400/40 flex items-center justify-center shrink-0 text-amber-400"></div>
-            <div class="min-w-0">
-              <div class="text-[9px] font-tactical uppercase text-amber-400 leading-none">RIGHT [LMB]</div>
-              <div id="hud-rhand-name" class="text-xs font-bold uppercase text-white truncate mt-0.5">FISTS</div>
+                <!-- 3. Stamina Bar -->
+                <div id="hud-stam-card" class="glass-panel px-3 py-2 flex flex-col justify-between min-w-[126px]">
+                    <div class="flex items-baseline justify-between gap-2">
+                        <span class="text-[9px] font-tactical font-bold uppercase tracking-wider text-sky-400 leading-none">STAMINA</span>
+                        <span id="hud-stam-val" class="font-display text-sm font-bold text-sky-300 leading-none">100%</span>
+                    </div>
+                    <div class="w-full h-2.5 bg-slate-950 border border-white/20 overflow-hidden mt-1.5">
+                        <div id="hud-stam-bar" class="h-full bg-sky-400 transition-all duration-100" style="width: 100%;"></div>
+                    </div>
+                </div>
             </div>
-          </div>
-          <span class="text-[10px] font-tactical text-slate-400 shrink-0">[Q]</span>
-        </div>
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2 min-w-0">
-            <div id="hud-lhand-icon" class="w-6 h-6 rounded bg-sky-500/15 border border-sky-400/40 flex items-center justify-center shrink-0 text-sky-300"></div>
-            <div class="min-w-0">
-              <div class="text-[9px] font-tactical uppercase text-sky-400 leading-none">LEFT [U]</div>
-              <div id="hud-lhand-name" class="text-xs font-bold uppercase text-white truncate mt-0.5">MEDKIT</div>
+
+            <!-- Pointer-Lock / Trackpad Hint when cursor unlocked -->
+            <div id="lock-hint" class="glass-panel px-3 py-1.5 text-[11px] font-tactical uppercase text-amber-300 border-l-2 border-l-amber-400">
+                CLICK VIEWPORT TO LOCK AIM &bull; OR DRAG TO LOOK
             </div>
-          </div>
-          <span class="text-[10px] font-tactical text-slate-400 shrink-0">[E]</span>
-        </div>
-      </div>
 
-      <!-- COMPACT BALLISTIC HOTDOG SHOOTER SAUSAGE AMMO COUNTER CARD -->
-      <div id="ammo-hud-card" class="w-[196px] glass-panel-amber px-2.5 py-2 flex-col gap-1">
-        <div class="flex items-center justify-between">
-          <span class="text-[10px] font-tactical font-bold uppercase text-amber-300">SAUSAGE AMMO</span>
-          <span id="hud-ammo-count" class="font-display text-sm text-white">60 / 60</span>
-        </div>
-        <div class="w-full h-2 bg-slate-950/90 rounded-full border border-white/15 overflow-hidden">
-          <div id="hud-sausage-bar" class="h-full bg-gradient-to-r from-rose-500 via-amber-400 to-yellow-300 transition-all duration-75" style="width: 100%;"></div>
-        </div>
-        <div id="hud-ammo-hint" class="text-[9px] font-tactical uppercase text-slate-300 flex justify-between">
-          <span>[RMB] AIM</span>
-          <span class="text-amber-400">[LMB] FIRE</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- CENTER: Precision Crosshair, Ballistic Aim Reticle & GTA Radial Weapon Wheel -->
-    <div class="fixed inset-0 flex items-center justify-center">
-      <!-- Standard Crosshair -->
-      <div id="crosshair" class="relative w-5 h-5 flex items-center justify-center">
-        <div class="w-1 h-1 rounded-full bg-white shadow"></div>
-        <div class="absolute top-0 w-px h-1.5 bg-white/75"></div>
-        <div class="absolute bottom-0 w-px h-1.5 bg-white/75"></div>
-        <div class="absolute left-0 h-px w-1.5 bg-white/75"></div>
-        <div class="absolute right-0 h-px w-1.5 bg-white/75"></div>
-      </div>
-
-      <!-- Ballistic Hotdog Shooter Toggle-Aim Sight Reticle -->
-      <div id="sniper-scope" class="fixed inset-0 items-center justify-center pointer-events-none">
-        <svg viewBox="0 0 240 240" class="w-64 h-64 drop-shadow-lg">
-          <circle cx="120" cy="120" r="88" fill="none" stroke="rgba(245, 158, 11, 0.72)" stroke-width="1.5" stroke-dasharray="10 6" />
-          <circle cx="120" cy="120" r="42" fill="none" stroke="rgba(255, 255, 255, 0.35)" stroke-width="1" />
-          <line x1="25" y1="120" x2="104" y2="120" stroke="#f59e0b" stroke-width="1.5" />
-          <line x1="136" y1="120" x2="215" y2="120" stroke="#f59e0b" stroke-width="1.5" />
-          <line x1="120" y1="25" x2="120" y2="104" stroke="#f59e0b" stroke-width="1.5" />
-          <line x1="120" y1="136" x2="120" y2="215" stroke="#f59e0b" stroke-width="1.5" />
-          <!-- Ballistic Gravity Drop Ticks for Wieners -->
-          <line x1="112" y1="142" x2="128" y2="142" stroke="#ef4444" stroke-width="1.4" />
-          <text x="134" y="145" fill="#fca5a5" font-size="8" font-family="Rajdhani" font-weight="700">25M</text>
-          <line x1="114" y1="162" x2="126" y2="162" stroke="#ef4444" stroke-width="1.4" />
-          <text x="132" y="165" fill="#fca5a5" font-size="8" font-family="Rajdhani" font-weight="700">50M</text>
-          <line x1="115" y1="184" x2="125" y2="184" stroke="#ef4444" stroke-width="1.4" />
-          <text x="131" y="187" fill="#fca5a5" font-size="8" font-family="Rajdhani" font-weight="700">75M</text>
-          <circle cx="120" cy="120" r="2.5" fill="#ef4444" />
-          <text x="120" y="228" text-anchor="middle" fill="#fcd34d" font-size="9" font-family="Rajdhani" font-weight="700">BALLISTIC WIENER OPTIC [RMB TO EXIT AIM]</text>
-        </svg>
-      </div>
-
-      <!-- GTA-Style Radial Weapon Switcher ([Q] or Scroll Wheel) -->
-      <div id="radial-menu" class="absolute w-72 h-72 items-center justify-center">
-        <svg viewBox="0 0 260 260" class="w-full h-full drop-shadow-2xl">
-          <circle cx="130" cy="130" r="118" fill="rgba(9, 12, 18, 0.86)" stroke="rgba(255,255,255,0.16)" stroke-width="1.5" />
-          <circle cx="130" cy="130" r="52" fill="rgba(15, 20, 28, 0.96)" stroke="rgba(245, 158, 11, 0.5)" stroke-width="1.5" />
-          <line x1="130" y1="12" x2="130" y2="78" stroke="rgba(255,255,255,0.12)" stroke-width="1" />
-          <line x1="130" y1="182" x2="130" y2="248" stroke="rgba(255,255,255,0.12)" stroke-width="1" />
-          <line x1="12" y1="130" x2="78" y2="130" stroke="rgba(255,255,255,0.12)" stroke-width="1" />
-          <line x1="182" y1="130" x2="248" y2="130" stroke="rgba(255,255,255,0.12)" stroke-width="1" />
-        </svg>
-        <div class="absolute text-center px-2">
-          <div class="text-[9px] font-tactical uppercase text-amber-400">RIGHT HAND</div>
-          <div id="wheel-center-name" class="font-display text-sm uppercase text-white">FISTS</div>
-          <div id="wheel-center-dmg" class="text-[10px] font-tactical text-slate-300">DMG 18</div>
-        </div>
-        <div id="wheel-nodes" class="absolute inset-0"></div>
-      </div>
-    </div>
-
-    <!-- BOTTOM-CENTER SPEECH SUBTITLE FOR NPC INTERACTIONS -->
-    <div id="npc-dialogue" class="fixed bottom-24 left-1/2 -translate-x-1/2 glass-panel-amber px-5 py-3 max-w-md text-center">
-      <div id="npc-dialogue-name" class="text-[10px] font-tactical font-bold uppercase text-amber-400">CITIZEN</div>
-      <div id="npc-dialogue-text" class="text-xs sm:text-sm text-white mt-0.5">"Beautiful day in Sunnyvale!"</div>
-    </div>
-
-    <!-- BOTTOM-LEFT: Circular Health & Stamina Watch UI -->
-    <div class="fixed bottom-4 left-4 flex flex-col items-center gap-1.5">
-      <div class="relative w-[146px] h-[146px] rounded-full glass-panel-amber flex items-center justify-center shadow-2xl">
-        <!-- Watch Crown Accent -->
-        <div class="absolute -right-1.5 top-1/2 -translate-y-1/2 w-2 h-6 rounded-r bg-amber-400/90 border border-amber-200/70 shadow"></div>
-        <!-- Dual Concentric Watch Rings (Outer = Health, Inner = Stamina) -->
-        <svg viewBox="0 0 140 140" class="w-full h-full">
-          <!-- Outer Bezel & Tick Marks -->
-          <circle cx="70" cy="70" r="64" fill="rgba(9, 13, 20, 0.78)" stroke="rgba(255,255,255,0.14)" stroke-width="1.5" />
-          <circle cx="70" cy="70" r="61" fill="none" stroke="rgba(245,158,11,0.32)" stroke-width="1.5" stroke-dasharray="2 10.77" />
-
-          <!-- Outer Track & Progress Ring: HEALTH (r = 53, circ = 333.01) -->
-          <circle cx="70" cy="70" r="53" fill="none" stroke="rgba(15, 23, 42, 0.95)" stroke-width="8.5" />
-          <circle id="hud-hp-ring" cx="70" cy="70" r="53" fill="none" stroke="#10b981" stroke-width="8.5" stroke-linecap="round"
-            stroke-dasharray="333.01" stroke-dashoffset="0" transform="rotate(-90 70 70)"
-            style="transition: stroke-dashoffset 0.16s ease, stroke 0.2s ease;" />
-
-          <!-- Inner Track & Progress Ring: STAMINA (r = 41, circ = 257.61) -->
-          <circle cx="70" cy="70" r="41" fill="none" stroke="rgba(15, 23, 42, 0.95)" stroke-width="7" />
-          <circle id="hud-stam-ring" cx="70" cy="70" r="41" fill="none" stroke="#38bdf8" stroke-width="7" stroke-linecap="round"
-            stroke-dasharray="257.61" stroke-dashoffset="0" transform="rotate(-90 70 70)"
-            style="transition: stroke-dashoffset 0.12s ease;" />
-
-          <!-- Inner Watch Dial Face -->
-          <circle cx="70" cy="70" r="33" fill="rgba(9, 13, 20, 0.92)" stroke="rgba(255,255,255,0.1)" stroke-width="1" />
-        </svg>
-
-        <!-- Center Digital Watch Readout -->
-        <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <span class="text-[8px] font-tactical font-bold uppercase tracking-widest text-emerald-400 leading-none">HP</span>
-          <span id="hud-hp-val" class="font-display text-2xl font-bold text-white leading-tight">100</span>
-          <div class="w-8 h-px bg-white/15 my-0.5"></div>
-          <div class="flex items-center gap-1">
-            <span class="text-[8px] font-tactical font-bold uppercase text-sky-400">STM</span>
-            <span id="hud-stam-val" class="font-display text-[11px] font-bold text-sky-300">100%</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Compact Watch Strap Keybind Strip -->
-      <div id="watch-keybind-strip" class="glass-panel px-3 py-1 flex items-center gap-2 text-[9px] font-tactical font-bold uppercase text-slate-300">
-        <span>[C] CROUCH</span>
-        <span>[G] PICKPOCKET</span>
-        <span class="text-white/25">&bull;</span>
-        <span>[V] POV</span>
-        <span class="text-white/25">&bull;</span>
-        <span>[TAB] PAUSE</span>
-      </div>
-    </div>
-
-    <!-- BOTTOM-CENTER: 5-Slot Left-Hand Utility Hotbar -->
-    <div id="onfoot-hotbar" class="fixed bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto">
-      <div id="hotbar-container" class="flex items-center gap-1.5"></div>
-    </div>
-
-    <!-- BOTTOM-RIGHT: VEHICLE TACHOMETER, TORQUE & SPEEDOMETER HUD -->
-    <div id="vehicle-hud" class="fixed bottom-4 right-4 glass-panel-amber p-3.5 flex-col gap-2 w-[326px]">
-      <div class="flex items-center justify-between border-b border-white/10 pb-1.5">
-        <span id="veh-name" class="font-display text-xs uppercase text-amber-400 tracking-wider">CRIMSON SPORTS COUPE</span>
-        <div id="veh-shift-light" class="px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-slate-800 text-slate-400">
-          MANUAL
-        </div>
-      </div>
-
-      <div class="flex items-center justify-between gap-2 my-0.5">
-        <!-- Tachometer Gauge -->
-        <div class="relative w-[112px] h-[112px] flex items-center justify-center">
-          <svg viewBox="0 0 120 120" class="w-full h-full">
-            <circle cx="60" cy="60" r="54" fill="#090d14" stroke="rgba(255,255,255,0.16)" stroke-width="2" />
-            <path d="M 96 34 A 44 44 0 0 1 96 86" fill="none" stroke="#ef4444" stroke-width="5" stroke-linecap="round" />
-            <circle cx="60" cy="60" r="44" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="3" stroke-dasharray="195 90" transform="rotate(135 60 60)" />
-            <text x="60" y="83" text-anchor="middle" fill="#94a3b8" font-size="8.5" font-family="Rajdhani" font-weight="700">ENGINE RPM</text>
-            <text x="60" y="96" id="veh-rpm-text" text-anchor="middle" fill="#f8fafc" font-size="11" font-family="Oswald" font-weight="700">900</text>
-            <g id="veh-rpm-needle" transform="rotate(-125 60 60)">
-              <line x1="60" y1="64" x2="60" y2="19" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" />
-            </g>
-            <circle cx="60" cy="60" r="5" fill="#f59e0b" />
-          </svg>
-        </div>
-
-        <!-- Central Gear & Gear Ceiling Indicator -->
-        <div class="flex flex-col items-center justify-center bg-slate-950/90 border border-white/15 rounded-lg px-2.5 py-2 min-w-[66px]">
-          <span class="text-[9px] font-tactical uppercase text-slate-400">GEAR</span>
-          <span id="veh-gear" class="font-display text-3xl text-amber-400 leading-none my-0.5">1</span>
-          <span id="veh-gear-cap" class="text-[9px] font-tactical font-bold uppercase text-sky-400">MAX 39</span>
-          <div class="w-full h-1 bg-slate-800 rounded-full mt-1 overflow-hidden">
-            <div id="veh-torque-bar" class="h-full bg-emerald-400 transition-all duration-75" style="width: 40%;"></div>
-          </div>
-        </div>
-
-        <!-- 200 MPH Speedometer Gauge -->
-        <div class="relative w-[112px] h-[112px] flex items-center justify-center">
-          <svg viewBox="0 0 120 120" class="w-full h-full">
-            <circle cx="60" cy="60" r="54" fill="#090d14" stroke="rgba(255,255,255,0.16)" stroke-width="2" />
-            <circle cx="60" cy="60" r="44" fill="none" stroke="rgba(56,189,248,0.28)" stroke-width="3" stroke-dasharray="195 90" transform="rotate(135 60 60)" />
-            <path d="M 98 42 A 44 44 0 0 1 94 88" fill="none" stroke="#f59e0b" stroke-width="3.5" stroke-linecap="round" />
-            <text x="60" y="83" text-anchor="middle" fill="#38bdf8" font-size="8.5" font-family="Rajdhani" font-weight="700">MPH / 200</text>
-            <text x="60" y="97" id="veh-mph-text" text-anchor="middle" fill="#ffffff" font-size="13" font-family="Oswald" font-weight="700">0</text>
-            <g id="veh-mph-needle" transform="rotate(-125 60 60)">
-              <line x1="60" y1="64" x2="60" y2="19" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" />
-            </g>
-            <circle cx="60" cy="60" r="5" fill="#38bdf8" />
-          </svg>
-        </div>
-      </div>
-
-      <div class="pt-1.5 border-t border-white/10 flex justify-between text-[9px] font-tactical uppercase text-slate-300">
-        <span>[I] UP [K] DN</span>
-        <span>[SPACE] DRIFT</span>
-        <span>[V] AERIAL [F] EXIT</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- =====================================================================
-       START MENU ("GRAND THEFT AURA") OVER LIVE 3D CITY CAMERA
-       ===================================================================== -->
-  <div id="start-menu" class="fixed inset-0 z-30 flex items-center justify-between bg-gradient-to-r from-slate-950/88 via-slate-950/55 to-transparent p-6 sm:p-14">
-    <div class="max-w-lg w-full flex flex-col justify-between h-full max-h-[640px]">
-      <div>
-        <h1 class="drop-shadow-lg">
-          <img src="assets/images/title.png" alt="Grand Theft Aura" class="w-full max-w-[520px] h-auto object-contain" />
-        </h1>
-      </div>
-
-      <!-- Primary Start Buttons -->
-      <div class="flex flex-col gap-3 w-full max-w-xs my-6">
-        <button id="btn-start-play" class="menu-btn-primary py-3.5 px-6 text-left flex items-center justify-between font-display text-xl uppercase cursor-pointer">
-          <span>SINGLEPLAYER</span>
-          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-        </button>
-        <button id="btn-host-multiplayer" class="menu-btn py-3 px-6 text-left flex items-center justify-between font-tactical text-base font-bold uppercase text-amber-300 cursor-pointer"><span>HOST MULTIPLAYER</span><span class="text-xs text-slate-400">ROOM CODE</span></button>
-        <div id="host-room-row" class="hidden items-center gap-2"><div id="host-room-code" class="glass-panel px-3 py-2 font-display text-lg tracking-[0.35em] text-amber-300 flex-1 text-center"></div><button id="btn-copy-room" class="menu-btn px-3 py-2 text-xs font-tactical font-bold uppercase text-white cursor-pointer">COPY</button></div>
-        <div class="flex items-center gap-2"><input id="join-room-code" maxlength="4" autocomplete="off" placeholder="CODE" class="menu-btn min-w-0 flex-1 px-3 py-2 text-center font-display text-lg uppercase tracking-[0.35em] text-white outline-none" /><button id="btn-join-multiplayer" class="menu-btn-primary px-4 py-2 font-tactical text-sm font-bold uppercase cursor-pointer">JOIN</button></div>
-        <button id="btn-start-settings" class="menu-btn py-3 px-6 text-left flex items-center justify-between font-tactical text-base font-bold uppercase text-white cursor-pointer">
-          <span>SETTINGS</span>
-          <span class="text-xs text-amber-400">GFX / SENS</span>
-        </button>
-        <button id="btn-start-import" class="menu-btn py-3 px-6 text-left flex items-center justify-between font-tactical text-base font-bold uppercase text-sky-300 cursor-pointer">
-          <span>IMPORT SAVE (.JSON)</span>
-          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-        </button>
-      </div>
-
-    </div>
-  </div>
-
-  <!-- =====================================================================
-       PAUSE MENU ([TAB] OR [ESC])
-       ===================================================================== -->
-  <div id="pause-menu" class="fixed inset-0 z-40 items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-    <div class="glass-panel-amber w-full max-w-md p-6">
-      <div class="flex items-center justify-between border-b border-white/15 pb-3 mb-5">
-        <div>
-          <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold">SIMULATION PAUSED</div>
-          <h2><img src="assets/images/title.png" alt="Grand Theft Aura" class="w-[220px] max-w-full h-auto object-contain mt-1" /></h2>
-        </div>
-        <span id="pause-key-hint" class="text-xs font-tactical text-slate-400 border border-white/15 rounded px-2 py-0.5">[TAB]</span>
-      </div>
-
-      <div class="flex flex-col gap-2.5">
-        <button id="btn-pause-resume" class="menu-btn-primary py-3 px-5 text-left flex items-center justify-between font-display text-lg uppercase cursor-pointer">
-          <span>RESUME GAME</span>
-          <span>&rarr;</span>
-        </button>
-        <button id="btn-pause-settings" class="menu-btn py-2.5 px-5 text-left flex items-center justify-between font-tactical text-sm font-bold uppercase text-white cursor-pointer">
-          <span>SETTINGS (SENSITIVITY &amp; GRAPHICS)</span>
-          <span class="text-amber-400">CFG</span>
-        </button>
-        <button id="btn-pause-save" class="menu-btn py-2.5 px-5 text-left flex items-center justify-between font-tactical text-sm font-bold uppercase text-emerald-300 cursor-pointer">
-          <span>SAVE GAME (.JSON)</span>
-          <span>DOWNLOAD</span>
-        </button>
-        <button id="btn-pause-import" class="menu-btn py-2.5 px-5 text-left flex items-center justify-between font-tactical text-sm font-bold uppercase text-sky-300 cursor-pointer">
-          <span>IMPORT SAVE (.JSON)</span>
-          <span>UPLOAD</span>
-        </button>
-        <div class="h-px bg-white/10 my-1"></div>
-        <button id="btn-pause-exit" class="menu-btn py-2.5 px-5 text-left flex items-center justify-between font-tactical text-sm font-bold uppercase text-rose-400 cursor-pointer">
-          <span>EXIT TO MAIN MENU</span>
-          <span>QUIT</span>
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- =====================================================================
-       SETTINGS MODAL (SENSITIVITY, LOW/MED/HIGH GRAPHICS, AUDIO)
-       ===================================================================== -->
-  <div id="settings-menu" class="fixed inset-0 z-50 items-center justify-center bg-black/80 p-4">
-    <div class="glass-panel-amber w-full max-w-lg p-6">
-      <div class="flex items-center justify-between border-b border-white/15 pb-3 mb-5">
-        <div>
-          <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold">SYSTEM CONFIGURATION</div>
-          <h2 class="font-display text-2xl uppercase text-white">SETTINGS</h2>
-        </div>
-        <button id="btn-settings-close" class="menu-btn px-3.5 py-1.5 font-tactical text-xs font-bold uppercase text-white cursor-pointer">
-          DONE
-        </button>
-      </div>
-
-      <div class="mb-6">
-        <div class="flex justify-between items-center mb-2">
-          <label for="setting-sens" class="font-tactical text-sm font-bold uppercase text-slate-200">
-            MOUSE LOOK SENSITIVITY
-          </label>
-          <span id="setting-sens-val" class="font-display text-sm text-amber-400">1.00x</span>
-        </div>
-        <input id="setting-sens" type="range" min="0.2" max="3.0" step="0.05" value="1.0" class="pro-slider w-full" />
-        <div class="flex justify-between text-[10px] font-tactical text-slate-400 mt-1">
-          <span>0.20x (PRECISION)</span>
-          <span>1.00x (DEFAULT)</span>
-          <span>3.00x (FAST)</span>
-        </div>
-      </div>
-
-      <div class="mb-6">
-        <div class="flex justify-between items-center mb-2">
-          <span class="font-tactical text-sm font-bold uppercase text-slate-200">GRAPHICS QUALITY</span>
-          <span id="setting-gfx-desc" class="text-[11px] font-tactical text-sky-400 uppercase">MEDIUM &bull; PBR TEXTURES</span>
-        </div>
-        <div class="grid grid-cols-3 gap-2">
-          <button data-gfx="low" class="gfx-choice menu-btn py-2.5 px-3 text-center font-display text-sm uppercase cursor-pointer">
-            LOW
-          </button>
-          <button data-gfx="medium" class="gfx-choice menu-btn py-2.5 px-3 text-center font-display text-sm uppercase cursor-pointer">
-            MEDIUM
-          </button>
-          <button data-gfx="high" class="gfx-choice menu-btn py-2.5 px-3 text-center font-display text-sm uppercase cursor-pointer">
-            HIGH
-          </button>
-        </div>
-        <p id="setting-gfx-detail" class="text-xs text-slate-400 mt-2 leading-relaxed">
-          Procedural PBR textures with metallic clearcoat vehicles, real transparent glass windows, proximity LODs, and 1024x1024 shadows.
-        </p>
-      </div>
-
-      <div class="flex items-center justify-between mb-6 pt-4 border-t border-white/15">
-        <div>
-          <div class="font-tactical text-sm font-bold uppercase text-slate-200">MOBILE CONTROLS</div>
-          <div class="text-xs text-slate-400">Touch joystick, buttons, and drag-to-look</div>
-        </div>
-        <button id="btn-setting-mobile" class="menu-btn px-4 py-2 font-display text-xs uppercase text-rose-400 border-rose-500/40 cursor-pointer">DISABLED</button>
-      </div>
-
-      <div id="desktop-controls-overview" class="mb-6 pt-4 border-t border-white/15">
-        <div class="font-tactical text-sm font-bold uppercase text-slate-200 mb-3">COMPUTER CONTROLS</div>
-        <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px] text-slate-300">
-          <div><span class="text-amber-300 font-bold">WASD</span> MOVE</div><div><span class="text-amber-300 font-bold">SHIFT</span> SPRINT</div>
-          <div><span class="text-amber-300 font-bold">SPACE / C</span> MANTLE / CROUCH</div><div><span class="text-amber-300 font-bold">G</span> PICKPOCKET</div>
-          <div><span class="text-amber-300 font-bold">LMB / RMB</span> FIRE / AIM</div><div><span class="text-amber-300 font-bold">Q / SCROLL</span> WEAPON WHEEL</div>
-          <div><span class="text-amber-300 font-bold">F / V</span> VEHICLE / POV</div><div><span class="text-amber-300 font-bold">J</span> AIR BUNKER</div>
-          <div><span class="text-amber-300 font-bold">TAB</span> PAUSE</div>
-        </div>
-      </div>
-
-      <div class="flex items-center justify-between pt-4 border-t border-white/15">
-        <div>
-          <div class="font-tactical text-sm font-bold uppercase text-slate-200">SYNTHESIZED AUDIO SFX</div>
-          <div class="text-xs text-slate-400">Meteor crash, rapid-fire wiener pop, engine RPM, tire skid &amp; UI</div>
-        </div>
-        <button id="btn-setting-sfx" class="menu-btn px-4 py-2 font-display text-xs uppercase text-emerald-400 border-emerald-500/40 cursor-pointer">
-          ENABLED
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- =====================================================================
-       INVENTORY & DUAL-HAND LOADOUT MODAL ([E])
-       ===================================================================== -->
-  <div id="inventory-menu" class="fixed inset-0 z-40 items-center justify-center bg-black/75 p-4">
-    <div class="glass-panel-amber w-full max-w-3xl p-6">
-      <div class="flex items-center justify-between border-b border-white/15 pb-3 mb-5">
-        <div>
-          <div class="text-[10px] font-tactical uppercase text-sky-400 font-bold">DUAL-HAND EQUIPMENT</div>
-          <h2 class="font-display text-2xl uppercase text-white">INVENTORY &amp; ARSENAL</h2>
-        </div>
-        <button id="btn-inv-close" class="menu-btn px-3.5 py-1.5 font-tactical text-xs font-bold uppercase text-white cursor-pointer">
-          CLOSE [E]
-        </button>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div class="bg-black/40 border border-white/10 rounded-lg p-4 flex flex-col justify-between">
-          <div>
-            <div class="flex items-center justify-between mb-3">
-              <span class="font-tactical text-xs font-bold uppercase text-sky-400">LEFT HAND &bull; UTILITY BAG [U]</span>
-              <span class="text-[10px] font-tactical text-slate-400">SLOTS 1–5</span>
+            <!-- Contextual Interaction Prompt -->
+            <div id="interact-prompt" class="hidden glass-panel-amber px-3.5 py-2 flex items-center gap-2.5">
+                <span id="interact-key" class="px-2 py-0.5 bg-amber-500 text-slate-950 font-display text-xs font-bold">E</span>
+                <span id="interact-text" class="font-tactical text-sm font-bold uppercase text-white">INTERACT</span>
             </div>
-            <div id="inv-left-grid" class="grid grid-cols-5 gap-2 mb-4"></div>
-            <div id="inv-left-inspector" class="border-t border-white/10 pt-3 min-h-[96px]"></div>
-          </div>
-          <div class="grid grid-cols-2 gap-2 mt-4">
-            <button id="btn-inv-use" class="menu-btn-primary py-2 px-3 font-tactical text-xs font-bold uppercase cursor-pointer">
-              USE / EQUIP [U]
-            </button>
-            <button id="btn-inv-drop" class="menu-btn py-2 px-3 font-tactical text-xs font-bold uppercase text-rose-300 cursor-pointer">
-              DROP ITEM
-            </button>
-          </div>
-        </div>
 
-        <div class="bg-black/40 border border-white/10 rounded-lg p-4 flex flex-col justify-between">
-          <div>
-            <div class="flex items-center justify-between mb-3">
-              <span class="font-tactical text-xs font-bold uppercase text-amber-400">RIGHT HAND &bull; COMBAT [LMB]</span>
-              <span class="text-[10px] font-tactical text-slate-400">CYCLE [Q]</span>
+            <!-- Parkour Mantle Available Prompt -->
+            <div id="mantle-prompt" class="hidden glass-panel px-3 py-1.5 flex items-center gap-2 border-l-2 border-l-sky-400">
+                <span class="px-1.5 py-0.5 bg-sky-400 text-slate-950 font-display text-[11px] font-bold">SPACE</span>
+                <span class="font-tactical text-xs font-bold uppercase text-sky-200">MANTLE LEDGE</span>
             </div>
-            <div id="inv-right-list" class="flex flex-col gap-2 max-h-[260px] overflow-y-auto pr-1"></div>
-          </div>
-          <div class="mt-4 pt-3 border-t border-white/10 text-[11px] text-slate-400">
-            Grab the rapid-fire Ballistic Hotdog Shooter inside Aura Hotdogs and refill sausages at the hotdog vat or Plaza Hotdog Cart!
-          </div>
+
+            <!-- Activity Feed Toasts -->
+            <div id="feed-container" class="flex flex-col gap-1 mt-1"></div>
+
+            <!-- Clan Territory & Search Alert Pill -->
+            <div id="clan-alert-badge" class="hidden glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-rose-500 text-rose-300">
+                CLAN TERRITORY
+            </div>
         </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- =====================================================================
-       FULL CITY MAP MODAL ([M])
-       ===================================================================== -->
-  <div id="map-modal" class="fixed inset-0 z-40 items-center justify-center bg-black/80 p-4">
-    <div class="glass-panel-amber w-full max-w-xl p-5 flex flex-col items-center">
-      <div class="w-full flex items-center justify-between border-b border-white/15 pb-3 mb-4">
-        <div>
-          <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold">SUNNYVALE &amp; REDROCK SURVEY</div>
-          <h2 class="font-display text-xl uppercase text-white">CITY, FREEWAY &amp; DESERT MAP</h2>
+        <!-- TOP-CENTER: Orbital Meteor Landing Aim Banner -->
+        <div id="meteor-aim-banner" class="hidden fixed top-5 left-1/2 -translate-x-1/2 glass-panel-amber px-5 py-2.5 text-center z-30">
+            <div class="text-[10px] font-tactical font-bold uppercase tracking-widest text-amber-400">ORBITAL METEOR DESCENT &bull; STEER LANDING ZONE</div>
+            <div class="text-xs font-bold uppercase text-white mt-0.5">AIM WITH MOUSE OR [WASD] &bull; HOLD [SHIFT] TO DIVE FASTER</div>
+            <div id="meteor-target-label" class="text-[11px] font-tactical text-sky-300 mt-0.5">TARGET: CENTRAL PLAZA</div>
         </div>
-        <button id="btn-map-close" class="menu-btn px-3.5 py-1.5 font-tactical text-xs font-bold uppercase text-white cursor-pointer">
-          CLOSE [M]
-        </button>
-      </div>
-      <canvas id="fullmap-canvas" width="440" height="440" class="w-full max-w-[420px] aspect-square rounded-lg border border-white/20 bg-slate-950"></canvas>
-      <div class="flex flex-wrap justify-center gap-3.5 mt-3 text-[11px] font-tactical uppercase text-slate-300">
-        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-sky-400 inline-block"></span> PLAYER</span>
-        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 border border-amber-400 bg-red-500/70 inline-block"></span> HOTDOG STORE / WALK-IN</span>
-        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 bg-slate-500 border border-amber-400/60 inline-block"></span> I-88 FREEWAY</span>
-        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 bg-amber-600 inline-block"></span> REDROCK DESERT</span>
-        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 bg-rose-500 inline-block"></span> VEHICLE</span>
-      </div>
+
+        <!-- TOP-RIGHT: Live Circular Radar Mini-Map + Dual-Hand Status + Sausage Ammo Counter -->
+        <div class="fixed top-4 right-4 flex flex-col items-end gap-2">
+            <!-- Circular Radar Mini-Map -->
+            <div id="minimap-box" title="Click or press [M] for Full City Map" class="relative w-[178px] h-[178px] glass-panel p-1.5 rounded-full cursor-pointer pointer-events-auto">
+                <canvas id="minimap-canvas" width="164" height="164" class="w-full h-full rounded-full block"></canvas>
+                <!-- Orbiting North Compass Marker -->
+                <div id="minimap-north" class="absolute w-5 h-5 -ml-2.5 -mt-2.5 rounded-full bg-rose-600 text-white font-display text-[10px] flex items-center justify-center border border-white/80 shadow pointer-events-none" style="left: 89px; top: 9px;">
+                    N
+                </div>
+                <div class="absolute -bottom-1.5 left-1/2 -translate-x-1/2 bg-slate-950/90 px-2 py-0.5 text-[9px] font-tactical font-bold text-slate-300 border border-white/15">
+                    MAP [M]
+                </div>
+            </div>
+
+            <!-- Docked Right-Hand & Left-Hand Equipment Readout -->
+            <div id="dual-hand-card" class="w-[196px] glass-panel p-2.5 flex flex-col gap-1.5 mt-1">
+                <div class="flex items-center justify-between border-b border-white/10 pb-1.5">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <div id="hud-rhand-icon" class="w-6 h-6 bg-amber-500/15 border border-amber-400/40 flex items-center justify-center shrink-0 text-amber-400"></div>
+                        <div class="min-w-0">
+                            <div class="text-[9px] font-tactical uppercase text-amber-400 leading-none">RIGHT [LMB]</div>
+                            <div id="hud-rhand-name" class="text-xs font-bold uppercase text-white truncate mt-0.5">FISTS</div>
+                        </div>
+                    </div>
+                    <span class="text-[10px] font-tactical text-slate-400 shrink-0">[Q]</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <div id="hud-lhand-icon" class="w-6 h-6 bg-sky-500/15 border border-sky-400/40 flex items-center justify-center shrink-0 text-sky-300"></div>
+                        <div class="min-w-0">
+                            <div class="text-[9px] font-tactical uppercase text-sky-400 leading-none">LEFT [U]</div>
+                            <div id="hud-lhand-name" class="text-xs font-bold uppercase text-white truncate mt-0.5">MEDKIT</div>
+                        </div>
+                    </div>
+                    <span class="text-[10px] font-tactical text-slate-400 shrink-0">[E]</span>
+                </div>
+            </div>
+
+            <!-- COMPACT BALLISTIC HOTDOG SHOOTER SAUSAGE AMMO COUNTER CARD -->
+            <div id="ammo-hud-card" class="w-[196px] glass-panel-amber px-2.5 py-2 flex-col gap-1">
+                <div class="flex items-center justify-between">
+                    <span class="text-[10px] font-tactical font-bold uppercase text-amber-300">SAUSAGE AMMO</span>
+                    <span id="hud-ammo-count" class="font-display text-sm text-white">60 / 60</span>
+                </div>
+                <div class="w-full h-2 bg-slate-950/90 border border-white/15 overflow-hidden">
+                    <div id="hud-sausage-bar" class="h-full bg-gradient-to-r from-rose-500 via-amber-400 to-yellow-300 transition-all duration-75" style="width: 100%;"></div>
+                </div>
+                <div id="hud-ammo-hint" class="text-[9px] font-tactical uppercase text-slate-300 flex justify-between">
+                    <span>[RMB] AIM</span>
+                    <span class="text-amber-400">[LMB] FIRE</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- CENTER: Precision Crosshair, Ballistic Aim Reticle & GTA Radial Weapon Wheel -->
+        <div class="fixed inset-0 flex items-center justify-center">
+            <!-- Standard Crosshair -->
+            <div id="crosshair" class="relative w-5 h-5 flex items-center justify-center">
+                <div class="w-1 h-1 rounded-full bg-white shadow"></div>
+                <div class="absolute top-0 w-px h-1.5 bg-white/75"></div>
+                <div class="absolute bottom-0 w-px h-1.5 bg-white/75"></div>
+                <div class="absolute left-0 h-px w-1.5 bg-white/75"></div>
+                <div class="absolute right-0 h-px w-1.5 bg-white/75"></div>
+            </div>
+
+            <!-- Ballistic Hotdog Shooter Toggle-Aim Sight Reticle -->
+            <div id="sniper-scope" class="fixed inset-0 items-center justify-center pointer-events-none">
+                <svg viewBox="0 0 240 240" class="w-64 h-64 drop-shadow-lg">
+                    <circle cx="120" cy="120" r="88" fill="none" stroke="rgba(245, 158, 11, 0.72)" stroke-width="1.5" stroke-dasharray="10 6" />
+                    <circle cx="120" cy="120" r="42" fill="none" stroke="rgba(255, 255, 255, 0.35)" stroke-width="1" />
+                    <line x1="25" y1="120" x2="104" y2="120" stroke="#f59e0b" stroke-width="1.5" />
+                    <line x1="136" y1="120" x2="215" y2="120" stroke="#f59e0b" stroke-width="1.5" />
+                    <line x1="120" y1="25" x2="120" y2="104" stroke="#f59e0b" stroke-width="1.5" />
+                    <line x1="120" y1="136" x2="120" y2="215" stroke="#f59e0b" stroke-width="1.5" />
+                    <!-- Ballistic Gravity Drop Ticks for Wieners -->
+                    <line x1="112" y1="142" x2="128" y2="142" stroke="#ef4444" stroke-width="1.4" />
+                    <text x="134" y="145" fill="#fca5a5" font-size="8" font-family="Chakra Petch" font-weight="700">25M</text>
+                    <line x1="114" y1="162" x2="126" y2="162" stroke="#ef4444" stroke-width="1.4" />
+                    <text x="132" y="165" fill="#fca5a5" font-size="8" font-family="Chakra Petch" font-weight="700">50M</text>
+                    <line x1="115" y1="184" x2="125" y2="184" stroke="#ef4444" stroke-width="1.4" />
+                    <text x="131" y="187" fill="#fca5a5" font-size="8" font-family="Chakra Petch" font-weight="700">75M</text>
+                    <circle cx="120" cy="120" r="2.5" fill="#ef4444" />
+                    <text x="120" y="228" text-anchor="middle" fill="#fcd34d" font-size="9" font-family="Chakra Petch" font-weight="700">BALLISTIC WIENER OPTIC [RMB TO EXIT AIM]</text>
+                </svg>
+            </div>
+
+            <!-- GTA-Style Radial Weapon Switcher ([Q] or Scroll Wheel) -->
+            <div id="radial-menu" class="absolute w-72 h-72 items-center justify-center">
+                <svg viewBox="0 0 260 260" class="w-full h-full drop-shadow-2xl">
+                    <circle cx="130" cy="130" r="118" fill="rgba(9, 12, 18, 0.86)" stroke="rgba(255,255,255,0.16)" stroke-width="1.5" />
+                    <circle cx="130" cy="130" r="52" fill="rgba(15, 20, 28, 0.96)" stroke="rgba(245, 158, 11, 0.5)" stroke-width="1.5" />
+                    <line x1="130" y1="12" x2="130" y2="78" stroke="rgba(255,255,255,0.12)" stroke-width="1" />
+                    <line x1="130" y1="182" x2="130" y2="248" stroke="rgba(255,255,255,0.12)" stroke-width="1" />
+                    <line x1="12" y1="130" x2="78" y2="130" stroke="rgba(255,255,255,0.12)" stroke-width="1" />
+                    <line x1="182" y1="130" x2="248" y2="130" stroke="rgba(255,255,255,0.12)" stroke-width="1" />
+                </svg>
+                <div class="absolute text-center px-2">
+                    <div class="text-[9px] font-tactical uppercase text-amber-400">RIGHT HAND</div>
+                    <div id="wheel-center-name" class="font-display text-sm uppercase text-white">FISTS</div>
+                    <div id="wheel-center-dmg" class="text-[10px] font-tactical text-slate-300">DMG 18</div>
+                </div>
+                <div id="wheel-nodes" class="absolute inset-0"></div>
+            </div>
+        </div>
+
+        <!-- BOTTOM-CENTER SPEECH SUBTITLE FOR NPC INTERACTIONS -->
+        <div id="npc-dialogue" class="fixed bottom-24 left-1/2 -translate-x-1/2 glass-panel-amber px-5 py-3 max-w-md text-center">
+            <div id="npc-dialogue-name" class="text-[10px] font-tactical font-bold uppercase text-amber-400">CITIZEN</div>
+            <div id="npc-dialogue-text" class="text-xs sm:text-sm text-white mt-0.5">"Beautiful day in Sunnyvale!"</div>
+        </div>
+
+        <!-- BOTTOM-LEFT: Keybind Strip -->
+        <div class="fixed bottom-4 left-4 flex flex-col items-start gap-1.5">
+            <div id="watch-keybind-strip" class="glass-panel px-3 py-1 flex items-center gap-2 text-[9px] font-tactical font-bold uppercase text-slate-300">
+                <span>[C] CROUCH</span>
+                <span>[G] PICKPOCKET</span>
+                <span class="text-white/25">&bull;</span>
+                <span>[V] POV</span>
+                <span class="text-white/25">&bull;</span>
+                <span>[TAB] PAUSE</span>
+            </div>
+        </div>
+
+        <!-- BOTTOM-CENTER: 5-Slot Left-Hand Utility Hotbar -->
+        <div id="onfoot-hotbar" class="fixed bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto">
+            <div id="hotbar-container" class="flex items-center gap-1.5"></div>
+        </div>
+
+        <!-- BOTTOM-RIGHT: VEHICLE TACHOMETER, TORQUE & SPEEDOMETER HUD -->
+        <div id="vehicle-hud" class="fixed bottom-4 right-4 glass-panel-amber p-3.5 flex-col gap-2 w-[326px]">
+            <div class="flex items-center justify-between border-b border-white/10 pb-1.5">
+                <span id="veh-name" class="font-display text-xs uppercase text-amber-400 tracking-wider">CRIMSON SPORTS COUPE</span>
+                <div id="veh-shift-light" class="px-2 py-0.5 text-[9px] font-tactical font-bold uppercase bg-slate-800 text-slate-400">
+                    MANUAL
+                </div>
+            </div>
+
+            <div class="flex items-center justify-between gap-2 my-0.5">
+                <!-- Tachometer Gauge -->
+                <div class="relative w-[112px] h-[112px] flex items-center justify-center">
+                    <svg viewBox="0 0 120 120" class="w-full h-full">
+                        <circle cx="60" cy="60" r="54" fill="#090d14" stroke="rgba(255,255,255,0.16)" stroke-width="2" />
+                        <path d="M 96 34 A 44 44 0 0 1 96 86" fill="none" stroke="#ef4444" stroke-width="5" stroke-linecap="round" />
+                        <circle cx="60" cy="60" r="44" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="3" stroke-dasharray="195 90" transform="rotate(135 60 60)" />
+                        <text x="60" y="83" text-anchor="middle" fill="#94a3b8" font-size="8.5" font-family="Chakra Petch" font-weight="700">ENGINE RPM</text>
+                        <text x="60" y="96" id="veh-rpm-text" text-anchor="middle" fill="#f8fafc" font-size="11" font-family="Archivo Narrow" font-weight="700">900</text>
+                        <g id="veh-rpm-needle" transform="rotate(-125 60 60)">
+                            <line x1="60" y1="64" x2="60" y2="19" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" />
+                        </g>
+                        <circle cx="60" cy="60" r="5" fill="#f59e0b" />
+                    </svg>
+                </div>
+
+                <!-- Central Gear & Gear Ceiling Indicator -->
+                <div class="flex flex-col items-center justify-center bg-slate-950/90 border border-white/15 px-2.5 py-2 min-w-[66px]">
+                    <span class="text-[9px] font-tactical uppercase text-slate-400">GEAR</span>
+                    <span id="veh-gear" class="font-display text-3xl text-amber-400 leading-none my-0.5">1</span>
+                    <span id="veh-gear-cap" class="text-[9px] font-tactical font-bold uppercase text-sky-400">MAX 39</span>
+                    <div class="w-full h-1 bg-slate-800 mt-1 overflow-hidden">
+                        <div id="veh-torque-bar" class="h-full bg-emerald-400 transition-all duration-75" style="width: 40%;"></div>
+                    </div>
+                </div>
+
+                <!-- 200 MPH Speedometer Gauge -->
+                <div class="relative w-[112px] h-[112px] flex items-center justify-center">
+                    <svg viewBox="0 0 120 120" class="w-full h-full">
+                        <circle cx="60" cy="60" r="54" fill="#090d14" stroke="rgba(255,255,255,0.16)" stroke-width="2" />
+                        <circle cx="60" cy="60" r="44" fill="none" stroke="rgba(56,189,248,0.28)" stroke-width="3" stroke-dasharray="195 90" transform="rotate(135 60 60)" />
+                        <path d="M 98 42 A 44 44 0 0 1 94 88" fill="none" stroke="#f59e0b" stroke-width="3.5" stroke-linecap="round" />
+                        <text x="60" y="83" text-anchor="middle" fill="#38bdf8" font-size="8.5" font-family="Chakra Petch" font-weight="700">MPH / 200</text>
+                        <text x="60" y="97" id="veh-mph-text" text-anchor="middle" fill="#ffffff" font-size="13" font-family="Archivo Narrow" font-weight="700">0</text>
+                        <g id="veh-mph-needle" transform="rotate(-125 60 60)">
+                            <line x1="60" y1="64" x2="60" y2="19" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" />
+                        </g>
+                        <circle cx="60" cy="60" r="5" fill="#38bdf8" />
+                    </svg>
+                </div>
+            </div>
+
+            <div class="pt-1.5 border-t border-white/10 flex justify-between text-[9px] font-tactical uppercase text-slate-300">
+                <span>[I] UP [K] DN</span>
+                <span>[SPACE] DRIFT</span>
+                <span>[V] AERIAL [F] EXIT</span>
+            </div>
+        </div>
     </div>
-  </div>
 
-  <!-- Game entry point (native ES modules, no bundler) -->
-  <div id="multiplayer-hud" class="fixed top-4 left-1/2 -translate-x-1/2 z-28 hidden px-3 py-1.5 rounded-full glass-panel text-[10px] font-tactical font-bold uppercase text-slate-200 pointer-events-none"><span class="text-amber-400">ROOM</span> <span id="mp-room-label">----</span> &bull; <span id="mp-player-count">1 PLAYER</span></div>
+    <!-- =====================================================================
+         START MENU ("GRAND THEFT AURA") OVER LIVE 3D CITY CAMERA
+         ===================================================================== -->
+    <div id="start-menu" class="fixed inset-0 z-30 flex items-center justify-between bg-gradient-to-r from-slate-950/88 via-slate-950/55 to-transparent p-6 sm:p-14">
+        <div class="max-w-lg w-full flex flex-col justify-between h-full max-h-[640px]">
+            <div>
+                <h1 class="drop-shadow-lg">
+                    <img src="assets/images/title.png" alt="Grand Theft Aura" class="w-full max-w-[520px] h-auto object-contain" />
+                </h1>
+            </div>
 
-  <script type="module" src="js/main.js"></script>
+            <!-- Primary Start Buttons -->
+            <div class="flex flex-col gap-3 w-full max-w-xs my-6">
+                <button id="btn-start-play" class="menu-btn-primary py-3.5 px-6 text-left flex items-center justify-between font-display text-xl uppercase cursor-pointer">
+                    <span>SINGLEPLAYER</span>
+                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                </button>
+                <button id="btn-host-multiplayer" class="menu-btn py-3 px-6 text-left flex items-center justify-between font-tactical text-base font-bold uppercase text-amber-300 cursor-pointer"><span>HOST MULTIPLAYER</span><span class="text-xs text-slate-400">ROOM CODE</span></button>
+                <div id="host-room-row" class="hidden items-center gap-2"><div id="host-room-code" class="glass-panel px-3 py-2 font-display text-lg tracking-[0.35em] text-amber-300 flex-1 text-center"></div><button id="btn-copy-room" class="menu-btn px-3 py-2 text-xs font-tactical font-bold uppercase text-white cursor-pointer">COPY</button></div>
+                <div class="flex items-center gap-2"><input id="join-room-code" maxlength="4" autocomplete="off" placeholder="CODE" class="menu-btn min-w-0 flex-1 px-3 py-2 text-center font-display text-lg uppercase tracking-[0.35em] text-white outline-none" /><button id="btn-join-multiplayer" class="menu-btn-primary px-4 py-2 font-tactical text-sm font-bold uppercase cursor-pointer">JOIN</button></div>
+                <button id="btn-start-settings" class="menu-btn py-3 px-6 text-left flex items-center justify-between font-tactical text-base font-bold uppercase text-white cursor-pointer">
+                    <span>SETTINGS</span>
+                    <span class="text-xs text-amber-400">GFX / SENS</span>
+                </button>
+                <button id="btn-start-import" class="menu-btn py-3 px-6 text-left flex items-center justify-between font-tactical text-base font-bold uppercase text-sky-300 cursor-pointer">
+                    <span>IMPORT SAVE (.JSON)</span>
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- =====================================================================
+         PAUSE MENU ([TAB] OR [ESC])
+         ===================================================================== -->
+    <div id="pause-menu" class="fixed inset-0 z-40 items-center justify-center bg-black/75 backdrop-blur-xs p-4">
+        <div class="glass-panel-amber w-full max-w-md p-6">
+            <div class="flex items-center justify-between border-b border-white/15 pb-3 mb-5">
+                <div>
+                    <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold">SIMULATION PAUSED</div>
+                    <h2><img src="assets/images/title.png" alt="Grand Theft Aura" class="w-[220px] max-w-full h-auto object-contain mt-1" /></h2>
+                </div>
+                <span id="pause-key-hint" class="text-xs font-tactical text-slate-400 border border-white/15 px-2 py-0.5">[TAB]</span>
+            </div>
+
+            <div class="flex flex-col gap-2.5">
+                <button id="btn-pause-resume" class="menu-btn-primary py-3 px-5 text-left flex items-center justify-between font-display text-lg uppercase cursor-pointer">
+                    <span>RESUME GAME</span>
+                    <span>&rarr;</span>
+                </button>
+                <button id="btn-pause-settings" class="menu-btn py-2.5 px-5 text-left flex items-center justify-between font-tactical text-sm font-bold uppercase text-white cursor-pointer">
+                    <span>SETTINGS (SENSITIVITY &amp; GRAPHICS)</span>
+                    <span class="text-amber-400">CFG</span>
+                </button>
+                <button id="btn-pause-save" class="menu-btn py-2.5 px-5 text-left flex items-center justify-between font-tactical text-sm font-bold uppercase text-emerald-300 cursor-pointer">
+                    <span>SAVE GAME (.JSON)</span>
+                    <span>DOWNLOAD</span>
+                </button>
+                <button id="btn-pause-import" class="menu-btn py-2.5 px-5 text-left flex items-center justify-between font-tactical text-sm font-bold uppercase text-sky-300 cursor-pointer">
+                    <span>IMPORT SAVE (.JSON)</span>
+                    <span>UPLOAD</span>
+                </button>
+                <div class="h-px bg-white/10 my-1"></div>
+                <button id="btn-pause-exit" class="menu-btn py-2.5 px-5 text-left flex items-center justify-between font-tactical text-sm font-bold uppercase text-rose-400 cursor-pointer">
+                    <span>EXIT TO MAIN MENU</span>
+                    <span>QUIT</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- =====================================================================
+         SETTINGS MODAL (SENSITIVITY, LOW/MED/HIGH GRAPHICS, AUDIO)
+         ===================================================================== -->
+    <div id="settings-menu" class="fixed inset-0 z-50 items-center justify-center bg-black/80 p-4">
+        <div class="glass-panel-amber w-full max-w-lg p-6">
+            <div class="flex items-center justify-between border-b border-white/15 pb-3 mb-5">
+                <div>
+                    <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold">SYSTEM CONFIGURATION</div>
+                    <h2 class="font-display text-2xl uppercase text-white">SETTINGS</h2>
+                </div>
+                <button id="btn-settings-close" class="menu-btn px-3.5 py-1.5 font-tactical text-xs font-bold uppercase text-white cursor-pointer">
+                    DONE
+                </button>
+            </div>
+
+            <div class="mb-6">
+                <div class="flex justify-between items-center mb-2">
+                    <label for="setting-sens" class="font-tactical text-sm font-bold uppercase text-slate-200">
+                        MOUSE LOOK SENSITIVITY
+                    </label>
+                    <span id="setting-sens-val" class="font-display text-sm text-amber-400">1.00x</span>
+                </div>
+                <input id="setting-sens" type="range" min="0.2" max="3.0" step="0.05" value="1.0" class="pro-slider w-full" />
+                <div class="flex justify-between text-[10px] font-tactical text-slate-400 mt-1">
+                    <span>0.20x (PRECISION)</span>
+                    <span>1.00x (DEFAULT)</span>
+                    <span>3.00x (FAST)</span>
+                </div>
+            </div>
+
+            <div class="mb-6">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="font-tactical text-sm font-bold uppercase text-slate-200">GRAPHICS QUALITY</span>
+                    <span id="setting-gfx-desc" class="text-[11px] font-tactical text-sky-400 uppercase">MEDIUM &bull; PBR TEXTURES</span>
+                </div>
+                <div class="grid grid-cols-3 gap-2">
+                    <button data-gfx="low" class="gfx-choice menu-btn py-2.5 px-3 text-center font-display text-sm uppercase cursor-pointer">
+                        LOW
+                    </button>
+                    <button data-gfx="medium" class="gfx-choice menu-btn py-2.5 px-3 text-center font-display text-sm uppercase cursor-pointer">
+                        MEDIUM
+                    </button>
+                    <button data-gfx="high" class="gfx-choice menu-btn py-2.5 px-3 text-center font-display text-sm uppercase cursor-pointer">
+                        HIGH
+                    </button>
+                </div>
+                <p id="setting-gfx-detail" class="text-xs text-slate-400 mt-2 leading-relaxed">
+                    Procedural PBR textures with metallic clearcoat vehicles, real transparent glass windows, proximity LODs, and 1024x1024 shadows.
+                </p>
+            </div>
+
+            <div class="flex items-center justify-between mb-6 pt-4 border-t border-white/15">
+                <div>
+                    <div class="font-tactical text-sm font-bold uppercase text-slate-200">MOBILE CONTROLS</div>
+                    <div class="text-xs text-slate-400">Touch joystick, buttons, and drag-to-look</div>
+                </div>
+                <button id="btn-setting-mobile" class="menu-btn px-4 py-2 font-display text-xs uppercase text-rose-400 border-rose-500/40 cursor-pointer">DISABLED</button>
+            </div>
+
+            <div id="desktop-controls-overview" class="mb-6 pt-4 border-t border-white/15">
+                <div class="font-tactical text-sm font-bold uppercase text-slate-200 mb-3">COMPUTER CONTROLS</div>
+                <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px] text-slate-300">
+                    <div><span class="text-amber-300 font-bold">WASD</span> MOVE</div><div><span class="text-amber-300 font-bold">SHIFT</span> SPRINT</div>
+                    <div><span class="text-amber-300 font-bold">SPACE / C</span> MANTLE / CROUCH</div><div><span class="text-amber-300 font-bold">G</span> PICKPOCKET</div>
+                    <div><span class="text-amber-300 font-bold">LMB / RMB</span> FIRE / AIM</div><div><span class="text-amber-300 font-bold">Q / SCROLL</span> WEAPON WHEEL</div>
+                    <div><span class="text-amber-300 font-bold">F / V</span> VEHICLE / POV</div><div><span class="text-amber-300 font-bold">J</span> AIR BUNKER</div>
+                    <div><span class="text-amber-300 font-bold">TAB</span> PAUSE</div>
+                </div>
+            </div>
+
+            <div class="flex items-center justify-between pt-4 border-t border-white/15">
+                <div>
+                    <div class="font-tactical text-sm font-bold uppercase text-slate-200">SYNTHESIZED AUDIO SFX</div>
+                    <div class="text-xs text-slate-400">Meteor crash, rapid-fire wiener pop, engine RPM, tire skid &amp; UI</div>
+                </div>
+                <button id="btn-setting-sfx" class="menu-btn px-4 py-2 font-display text-xs uppercase text-emerald-400 border-emerald-500/40 cursor-pointer">
+                    ENABLED
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- =====================================================================
+         INVENTORY & DUAL-HAND LOADOUT MODAL ([E])
+         ===================================================================== -->
+    <div id="inventory-menu" class="fixed inset-0 z-40 items-center justify-center bg-black/75 p-4">
+        <div class="glass-panel-amber w-full max-w-3xl p-6">
+            <div class="flex items-center justify-between border-b border-white/15 pb-3 mb-5">
+                <div>
+                    <div class="text-[10px] font-tactical uppercase text-sky-400 font-bold">DUAL-HAND EQUIPMENT</div>
+                    <h2 class="font-display text-2xl uppercase text-white">INVENTORY &amp; ARSENAL</h2>
+                </div>
+                <button id="btn-inv-close" class="menu-btn px-3.5 py-1.5 font-tactical text-xs font-bold uppercase text-white cursor-pointer">
+                    CLOSE [E]
+                </button>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-black/40 border border-white/10 p-4 flex flex-col justify-between">
+                    <div>
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="font-tactical text-xs font-bold uppercase text-sky-400">LEFT HAND &bull; UTILITY BAG [U]</span>
+                            <span class="text-[10px] font-tactical text-slate-400">SLOTS 1–5</span>
+                        </div>
+                        <div id="inv-left-grid" class="grid grid-cols-5 gap-2 mb-4"></div>
+                        <div id="inv-left-inspector" class="border-t border-white/10 pt-3 min-h-[96px]"></div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 mt-4">
+                        <button id="btn-inv-use" class="menu-btn-primary py-2 px-3 font-tactical text-xs font-bold uppercase cursor-pointer">
+                            USE / EQUIP [U]
+                        </button>
+                        <button id="btn-inv-drop" class="menu-btn py-2 px-3 font-tactical text-xs font-bold uppercase text-rose-300 cursor-pointer">
+                            DROP ITEM
+                        </button>
+                    </div>
+                </div>
+
+                <div class="bg-black/40 border border-white/10 p-4 flex flex-col justify-between">
+                    <div>
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="font-tactical text-xs font-bold uppercase text-amber-400">RIGHT HAND &bull; COMBAT [LMB]</span>
+                            <span class="text-[10px] font-tactical text-slate-400">CYCLE [Q]</span>
+                        </div>
+                        <div id="inv-right-list" class="flex flex-col gap-2 max-h-[260px] overflow-y-auto pr-1"></div>
+                    </div>
+                    <div class="mt-4 pt-3 border-t border-white/10 text-[11px] text-slate-400">
+                        Grab the rapid-fire Ballistic Hotdog Shooter inside Aura Hotdogs and refill sausages at the hotdog vat or Plaza Hotdog Cart!
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- =====================================================================
+         FULL CITY MAP MODAL ([M])
+         ===================================================================== -->
+    <div id="map-modal" class="fixed inset-0 z-40 items-center justify-center bg-black/80 p-4">
+        <div class="glass-panel-amber w-full max-w-xl p-5 flex flex-col items-center">
+            <div class="w-full flex items-center justify-between border-b border-white/15 pb-3 mb-4">
+                <div>
+                    <div class="text-[10px] font-tactical uppercase text-amber-400 font-bold">SUNNYVALE &amp; REDROCK SURVEY</div>
+                    <h2 class="font-display text-xl uppercase text-white">CITY, FREEWAY &amp; DESERT MAP</h2>
+                </div>
+                <button id="btn-map-close" class="menu-btn px-3.5 py-1.5 font-tactical text-xs font-bold uppercase text-white cursor-pointer">
+                    CLOSE [M]
+                </button>
+            </div>
+            <canvas id="fullmap-canvas" width="440" height="440" class="w-full max-w-[420px] aspect-square border border-white/20 bg-slate-950"></canvas>
+            <div class="flex flex-wrap justify-center gap-3.5 mt-3 text-[11px] font-tactical uppercase text-slate-300">
+                <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-sky-400 inline-block"></span> PLAYER</span>
+                <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 border border-amber-400 bg-red-500/70 inline-block"></span> HOTDOG STORE / WALK-IN</span>
+                <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 bg-slate-500 border border-amber-400/60 inline-block"></span> I-88 FREEWAY</span>
+                <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 bg-amber-600 inline-block"></span> REDROCK DESERT</span>
+                <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 bg-rose-500 inline-block"></span> VEHICLE</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Game entry point (native ES modules, no bundler) -->
+    <div id="multiplayer-hud" class="fixed top-4 left-1/2 -translate-x-1/2 z-28 hidden px-3 py-1.5 glass-panel text-[10px] font-tactical font-bold uppercase text-slate-200 pointer-events-none"><span class="text-amber-400">ROOM</span> <span id="mp-room-label">----</span> &bull; <span id="mp-player-count">1 PLAYER</span></div>
+
+    <script type="module" src="js/main.js"></script>
 </body>
 </html>

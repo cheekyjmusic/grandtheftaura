@@ -817,6 +817,14 @@ export function stepSimulation(dt, elapsed) {
     const movingSpeed = (keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD']) && player.grounded;
     const isSprintingNow = (keys['ShiftLeft'] || keys['ShiftRight']) && (keys['KeyW'] || keys['ArrowUp']) && !player.crouching && !gameState.isAiming && gameState.stamina > 0 && movingSpeed && !player.sprintExhausted;
     const bobY = movingSpeed ? Math.abs(Math.sin(player.walkCycle)) * (isSprintingNow ? 0.085 : 0.045) : 0;
+    const isStepping = movingSpeed && player.slideTimer <= 0 && !player.mantle.active;
+    const biome = biomeAt(player.x, player.z);
+    const stepSurface = under() ? 'metal'
+      : (player.x >= 164 || biome === 'cove') ? 'sand'
+      : (biome === 'woods' || biome === 'alpine') ? 'grass'
+      : 'concrete';
+    sfx.updateFootsteps(dt, isStepping, isSprintingNow, player.grounded, stepSurface);
+
 
     let swingPitch = 0;
     let punchZ = 0;

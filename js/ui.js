@@ -1,5 +1,5 @@
 // =============================================================================
-// ui.js — HUD updates, watch rings, minimap, modals, save/load JSON and DOM button bindings (call initUI() once from main.js).
+// ui.js — HUD updates, top-left bars, minimap, modals, save/load JSON and DOM button bindings (call initUI() once from main.js).
 // =============================================================================
 import * as THREE from 'three';
 import { AO, MAX_HOTDOG_AMMO, ahRz, aura, gameState, hooks, inputState, manholes, mapShapes, meteorDrop, npcs, player, pushFeed, riverX, roadC, sausageRefillZones, under } from './state.js';
@@ -169,8 +169,8 @@ function showDistrictBanner(zoneName) {
       align-items: flex-end;
     `;
     banner.innerHTML = `
-      <div style="font-size:10px; font-family:'Rajdhani',sans-serif; font-weight:700; letter-spacing:0.25em; color:#f59e0b; text-transform:uppercase;">DISTRICT DISCOVERED</div>
-      <div id="district-banner-name" style="font-size:26px; font-family:'Oswald',sans-serif; font-weight:700; letter-spacing:0.08em; color:#f8fafc; text-transform:uppercase; text-shadow:0 3px 12px rgba(0,0,0,0.9); line-height:1.1;"></div>
+      <div style="font-size:10px; font-family:'Chakra Petch',sans-serif; font-weight:700; letter-spacing:0.25em; color:#f59e0b; text-transform:uppercase;">DISTRICT DISCOVERED</div>
+      <div id="district-banner-name" style="font-size:26px; font-family:'Archivo Narrow',sans-serif; font-weight:700; letter-spacing:0.08em; color:#f8fafc; text-transform:uppercase; text-shadow:0 3px 12px rgba(0,0,0,0.9); line-height:1.1;"></div>
       <div style="width:100%; height:2px; background:linear-gradient(90deg, transparent, #f59e0b); margin-top:4px;"></div>
     `;
     document.body.appendChild(banner);
@@ -253,17 +253,15 @@ export function updateHUD(force) {
 
   const hpPct = Math.max(0, Math.min(100, (gameState.hp / gameState.maxHp) * 100));
   const stPct = Math.max(0, Math.min(100, gameState.stamina));
-  const hpRing = document.getElementById('hud-hp-ring');
-  const stamRing = document.getElementById('hud-stam-ring');
-  if (hpRing) {
-    const off = (333.01 * (1 - hpPct / 100)).toFixed(2);
-    if (hpRing.__off !== off) { hpRing.__off = off; hpRing.style.strokeDashoffset = off; }
+  const hpBar = document.getElementById('hud-hp-bar');
+  const stamBar = document.getElementById('hud-stam-bar');
+  if (hpBar) {
+    setWidth(hpBar, `${hpPct.toFixed(1)}%`);
     const col = hpPct > 50 ? '#10b981' : hpPct > 25 ? '#f59e0b' : '#ef4444';
-    if (hpRing.__col !== col) { hpRing.__col = col; hpRing.style.stroke = col; }
+    if (hpBar.__col !== col) { hpBar.__col = col; hpBar.style.backgroundColor = col; }
   }
-  if (stamRing) {
-    const off = (257.61 * (1 - stPct / 100)).toFixed(2);
-    if (stamRing.__off !== off) { stamRing.__off = off; stamRing.style.strokeDashoffset = off; }
+  if (stamBar) {
+    setWidth(stamBar, `${stPct.toFixed(1)}%`);
   }
   setText(document.getElementById('hud-hp-val'), String(Math.ceil(gameState.hp)));
   setText(document.getElementById('hud-stam-val'), `${Math.round(stPct)}%`);
@@ -322,15 +320,15 @@ export function updateHUD(force) {
       const shiftLight = document.getElementById('veh-shift-light');
       if (v.rpm >= 7150 && v.gearIndex >= 2 && v.gearIndex < 7) {
         setText(shiftLight, 'SHIFT UP [I]');
-        setClass(shiftLight, 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-rose-500 text-white animate-pulse');
+        setClass(shiftLight, 'px-2 py-0.5 text-[9px] font-tactical font-bold uppercase bg-rose-500 text-white animate-pulse');
       } else if (v.gearIndex > 2 && mph < GEAR_CAPS_MPH[v.gearIndex - 1] * 0.58) {
         setText(shiftLight, 'DOWNSHIFT [K]');
-        setClass(shiftLight, 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-amber-500/30 text-amber-300');
+        setClass(shiftLight, 'px-2 py-0.5 text-[9px] font-tactical font-bold uppercase bg-amber-500/30 text-amber-300');
       } else {
         setText(shiftLight, v.isSupercar ? 'SUPERCHARGED' : 'MANUAL');
         setClass(shiftLight, v.isSupercar
-          ? 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-amber-500/20 text-amber-300'
-          : 'px-2 py-0.5 rounded text-[9px] font-tactical font-bold uppercase bg-slate-800 text-slate-300');
+          ? 'px-2 py-0.5 text-[9px] font-tactical font-bold uppercase bg-amber-500/20 text-amber-300'
+          : 'px-2 py-0.5 text-[9px] font-tactical font-bold uppercase bg-slate-800 text-slate-300');
       }
     }
   }
@@ -486,7 +484,7 @@ export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
     ctx.stroke();
 
     ctx.fillStyle = '#ef4444';
-    ctx.font = 'bold 10px Rajdhani, sans-serif';
+    ctx.font = 'bold 10px "Chakra Petch", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('N', nx, ny);
@@ -609,7 +607,7 @@ export function renderInventoryModal() {
     const selected = i === gameState.inspectedLeftSlot;
     const equipped = i === gameState.activeLeftSlot;
     const btn = document.createElement('button');
-    btn.className = `p-2 rounded-lg border text-center flex flex-col items-center justify-between h-20 cursor-pointer ${selected ? 'border-sky-400 bg-sky-950/60' : 'border-white/15 bg-slate-900/80'}`;
+    btn.className = `p-2 border text-center flex flex-col items-center justify-between h-20 cursor-pointer ${selected ? 'border-sky-400 bg-sky-950/60' : 'border-white/15 bg-slate-900/80'}`;
     btn.innerHTML = `
       <div class="w-full flex justify-between text-[9px] font-tactical">
         <span class="text-slate-400">${i + 1}</span>
@@ -653,13 +651,13 @@ export function renderInventoryModal() {
     if (!w) return;
     const isEq = wId === gameState.activeRightWeapon;
     const row = document.createElement('div');
-    row.className = `p-3 rounded-lg border flex items-center justify-between cursor-pointer ${isEq ? 'border-amber-400 bg-amber-500/15' : 'border-white/10 bg-slate-900/75 hover:border-white/30'}`;
+    row.className = `p-3 border flex items-center justify-between cursor-pointer ${isEq ? 'border-amber-400 bg-amber-500/15' : 'border-white/10 bg-slate-900/75 hover:border-white/30'}`;
     const statBadge = w.id === 'hotdog_shooter'
       ? `AMMO ${gameState.hotdogAmmo}/${MAX_HOTDOG_AMMO}`
       : `DMG ${w.damage}`;
     row.innerHTML = `
       <div class="flex items-center gap-3">
-        <div class="w-8 h-8 rounded bg-amber-500/20 text-amber-400 flex items-center justify-center">${w.svg}</div>
+        <div class="w-8 h-8 bg-amber-500/20 text-amber-400 flex items-center justify-center">${w.svg}</div>
         <div>
           <div class="font-display text-sm uppercase text-white">${w.name}</div>
           <div class="text-[11px] text-slate-400">${w.desc}</div>
@@ -838,9 +836,9 @@ export function importSaveFromFile(file) {
 export function buildAuraUI() {
   const st = document.createElement('style');
   st.textContent = `
-    .glass-panel{background:linear-gradient(160deg,rgba(18,24,34,.88),rgba(8,11,17,.9))!important;border:1px solid rgba(255,255,255,.1)!important;border-top:1px solid rgba(245,158,11,.5)!important;box-shadow:0 12px 32px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.06)!important}
-    #ao-stars{position:fixed;top:14px;left:50%;transform:translateX(-50%);display:none;gap:4px;font-size:30px;padding:4px 16px;border-radius:999px;background:rgba(8,11,17,.7);border:1px solid rgba(255,255,255,.15);text-shadow:0 0 12px currentColor;z-index:25}
-    #ao-compass{position:fixed;top:14px;right:208px;padding:6px 14px;font:700 12px Rajdhani,sans-serif;letter-spacing:.15em;color:#e2e8f0;border-radius:8px;background:rgba(8,11,17,.72);border:1px solid rgba(255,255,255,.12);z-index:25}
+    .glass-panel{background:rgba(10,11,15,.92)!important;border:1px solid rgba(255,255,255,.16)!important;border-top:1px solid rgba(245,158,11,.55)!important;border-radius:0!important;box-shadow:0 10px 26px rgba(0,0,0,.72),-1px 0 0 rgba(34,211,238,.18),1px 0 0 rgba(232,121,249,.18)!important}
+    #ao-stars{position:fixed;top:14px;left:50%;transform:translateX(-50%);display:none;gap:4px;font-size:30px;padding:4px 16px;border-radius:0;background:rgba(8,11,17,.82);border:1px solid rgba(255,255,255,.18);text-shadow:0 0 12px currentColor;z-index:25}
+    #ao-compass{position:fixed;top:14px;right:208px;padding:6px 14px;font:700 12px 'Chakra Petch',sans-serif;letter-spacing:.15em;color:#e2e8f0;border-radius:0;background:rgba(8,11,17,.82);border:1px solid rgba(255,255,255,.16);z-index:25}
     #ao-vig{position:fixed;inset:0;pointer-events:none;z-index:5;background:radial-gradient(ellipse at center,transparent 58%,rgba(0,0,0,.42) 100%)}
     @keyframes cashFloat {
       0% { opacity: 1; transform: translateY(0) scale(1); }
@@ -851,7 +849,7 @@ export function buildAuraUI() {
       right: 0;
       top: -6px;
       pointer-events: none;
-      font-family: 'Oswald', sans-serif;
+      font-family: 'Archivo Narrow', sans-serif;
       font-size: 18px;
       font-weight: 700;
       text-shadow: 0 2px 8px rgba(0,0,0,0.9);
@@ -865,7 +863,7 @@ export function buildAuraUI() {
   const s = document.createElement('div'); s.id = 'ao-stars'; hud.appendChild(s);
   const c = document.createElement('div'); c.id = 'ao-compass'; hud.appendChild(c);
   const v = document.createElement('div'); v.id = 'ao-vig'; document.body.appendChild(v);
-  const tip = document.createElement('div'); tip.id = 'ao-tip'; tip.style.cssText = 'position:fixed;bottom:150px;left:50%;transform:translateX(-50%);padding:6px 14px;border-radius:8px;background:rgba(8,11,17,.85);border:1px solid #f59e0b;font:700 13px Rajdhani,sans-serif;letter-spacing:.1em;display:none;z-index:25'; hud.appendChild(tip);
+  const tip = document.createElement('div'); tip.id = 'ao-tip'; tip.style.cssText = 'position:fixed;bottom:150px;left:50%;transform:translateX(-50%);padding:6px 14px;border-radius:0;background:rgba(8,11,17,.88);border:1px solid #f59e0b;font:700 13px "Chakra Petch",sans-serif;letter-spacing:.1em;display:none;z-index:25'; hud.appendChild(tip);
 }
 
 export function renderMapCanvas(cv, center) {
