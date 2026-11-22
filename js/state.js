@@ -32,6 +32,7 @@ export const hooks = {
   damageNpc: noop,
   knockOverLamppost: noop,
   getRightMountWorldPosition: noop,
+  recomputeWorldBounds: noop,
   // ---- multiplayer v2 (registered by js/multiplayer.js; offline defaults keep singleplayer identical) ----
   mpActive: () => false,
   mpIsHost: () => false,
@@ -189,19 +190,143 @@ export const skyscrapers = [];
 
 export const sausageRefillZones = [];
 
+export const waterZones = [];
+
+export const iceZones = [];
+
+const WORLD_BOUNDS_PAD = 24;
+const BASE_WORLD_BOUNDS = { minX: -260, maxX: 260, minZ: -260, maxZ: 260 };
+
+export const WORLD_BOUNDS = {
+  minX: BASE_WORLD_BOUNDS.minX,
+  maxX: BASE_WORLD_BOUNDS.maxX,
+  minZ: BASE_WORLD_BOUNDS.minZ,
+  maxZ: BASE_WORLD_BOUNDS.maxZ
+};
+
+let _boundsSig = '';
+
+export function expandWorldBounds(minX, maxX, minZ, maxZ, pad = WORLD_BOUNDS_PAD) {
+  if (Number.isFinite(minX)) WORLD_BOUNDS.minX = Math.min(WORLD_BOUNDS.minX, minX - pad);
+  if (Number.isFinite(maxX)) WORLD_BOUNDS.maxX = Math.max(WORLD_BOUNDS.maxX, maxX + pad);
+  if (Number.isFinite(minZ)) WORLD_BOUNDS.minZ = Math.min(WORLD_BOUNDS.minZ, minZ - pad);
+  if (Number.isFinite(maxZ)) WORLD_BOUNDS.maxZ = Math.max(WORLD_BOUNDS.maxZ, maxZ + pad);
+}
+
+export function recomputeWorldBounds() {
+  let minX = BASE_WORLD_BOUNDS.minX;
+  let maxX = BASE_WORLD_BOUNDS.maxX;
+  let minZ = BASE_WORLD_BOUNDS.minZ;
+  let maxZ = BASE_WORLD_BOUNDS.maxZ;
+
+  const includeRect = (x0, x1, z0, z1, pad = WORLD_BOUNDS_PAD) => {
+    if (Number.isFinite(x0) && x0 - pad < minX) minX = x0 - pad;
+    if (Number.isFinite(x1) && x1 + pad > maxX) maxX = x1 + pad;
+    if (Number.isFinite(z0) && z0 - pad < minZ) minZ = z0 - pad;
+    if (Number.isFinite(z1) && z1 + pad > maxZ) maxZ = z1 + pad;
+  };
+
+  const includePoint = (x, z, pad = WORLD_BOUNDS_PAD) => {
+    if (Number.isFinite(x)) {
+      if (x - pad < minX) minX = x - pad;
+      if (x + pad > maxX) maxX = x + pad;
+    }
+    if (Number.isFinite(z)) {
+      if (z - pad < minZ) minZ = z - pad;
+      if (z + pad > maxZ) maxZ = z + pad;
+    }
+  };
+
+  for (let i = 0; i < worldBoxes.length; i++) {
+    const b = worldBoxes[i];
+    includeRect(b.minX, b.maxX, b.minZ, b.maxZ);
+  }
+  for (let i = 0; i < driveableRamps.length; i++) {
+    const r = driveableRamps[i];
+    includeRect(r.minX, r.maxX, r.minZ, r.maxZ);
+  }
+  for (let i = 0; i < enterableZones.length; i++) {
+    const z = enterableZones[i];
+    includeRect(z.minX, z.maxX, z.minZ, z.maxZ);
+  }
+  for (let i = 0; i < waterZones.length; i++) {
+    const w = waterZones[i];
+    includeRect(w.minX, w.maxX, w.minZ, w.maxZ);
+  }
+  for (let i = 0; i < mapShapes.length; i++) {
+    const s = mapShapes[i];
+    const hw = (s.w || 0) * 0.5;
+    const hd = (s.d || 0) * 0.5;
+    includeRect(s.x - hw, s.x + hw, s.z - hd, s.z + hd);
+  }
+  for (let i = 0; i < iceZones.length; i++) {
+    const ic = iceZones[i];
+    const r = ic.r || 0;
+    includeRect(ic.x - r, ic.x + r, ic.z - r, ic.z + r);
+  }
+  for (let i = 0; i < lampPosts.length; i++) includePoint(lampPosts[i].x, lampPosts[i].z);
+  for (let i = 0; i < buildingLods.length; i++) includePoint(buildingLods[i].x, buildingLods[i].z);
+  for (let i = 0; i < skyscrapers.length; i++) {
+    const sk = skyscrapers[i];
+    if (sk.lobbyPad) includePoint(sk.lobbyPad.x, sk.lobbyPad.z);
+    if (sk.roofPad) includePoint(sk.roofPad.x, sk.roofPad.z);
+  }
+  for (let i = 0; i < sausageRefillZones.length; i++) includePoint(sausageRefillZones[i].x, sausageRefillZones[i].z);
+  for (let i = 0; i < worldPickups.length; i++) includePoint(worldPickups[i].x, worldPickups[i].z);
+  for (let i = 0; i < smashableCrates.length; i++) includePoint(smashableCrates[i].x, smashableCrates[i].z);
+  for (let i = 0; i < hazardBarrels.length; i++) includePoint(hazardBarrels[i].x, hazardBarrels[i].z);
+
+  WORLD_BOUNDS.minX = minX;
+  WORLD_BOUNDS.maxX = maxX;
+  WORLD_BOUNDS.minZ = minZ;
+  WORLD_BOUNDS.maxZ = maxZ;
+  _boundsSig = `${worldBoxes.length}|${driveableRamps.length}|${mapShapes.length}|${enterableZones.length}|${waterZones.length}|${iceZones.length}|${lampPosts.length}|${buildingLods.length}|${skyscrapers.length}|${sausageRefillZones.length}|${worldPickups.length}|${smashableCrates.length}|${hazardBarrels.length}`;
+  return WORLD_BOUNDS;
+}
+
+function syncWorldBounds() {
+  const sig = `${worldBoxes.length}|${driveableRamps.length}|${mapShapes.length}|${enterableZones.length}|${waterZones.length}|${iceZones.length}|${lampPosts.length}|${buildingLods.length}|${skyscrapers.length}|${sausageRefillZones.length}|${worldPickups.length}|${smashableCrates.length}|${hazardBarrels.length}`;
+  if (sig !== _boundsSig) recomputeWorldBounds();
+}
+
+function hasDetectedMapRegionAt(x, z, pad = 28) {
+  for (let i = 0; i < enterableZones.length; i++) {
+    const ez = enterableZones[i];
+    if (x >= ez.minX - pad && x <= ez.maxX + pad && z >= ez.minZ - pad && z <= ez.maxZ + pad) return true;
+  }
+  for (let i = 0; i < mapShapes.length; i++) {
+    const s = mapShapes[i];
+    const hw = (s.w || 0) * 0.5 + pad;
+    const hd = (s.d || 0) * 0.5 + pad;
+    if (x >= s.x - hw && x <= s.x + hw && z >= s.z - hd && z <= s.z + hd) return true;
+  }
+  for (let i = 0; i < driveableRamps.length; i++) {
+    const r = driveableRamps[i];
+    if (x >= r.minX - pad && x <= r.maxX + pad && z >= r.minZ - pad && z <= r.maxZ + pad) return true;
+  }
+  for (let i = 0; i < worldBoxes.length; i++) {
+    const b = worldBoxes[i];
+    if (x >= b.minX - pad && x <= b.maxX + pad && z >= b.minZ - pad && z <= b.maxZ + pad) return true;
+  }
+  return false;
+}
+
 export function addWorldBox(minX, maxX, minY, maxY, minZ, maxZ, tag = 'solid', climbable = true) {
   const box = { minX, maxX, minY, maxY, minZ, maxZ, tag, climbable };
   worldBoxes.push(box);
+  expandWorldBounds(minX, maxX, minZ, maxZ);
   return box;
 }
 
 export function addDriveableRamp({ minX, maxX, minZ, maxZ, startY, endY, axis = 'z', dir = 1 }) {
   driveableRamps.push({ minX, maxX, minZ, maxZ, startY, endY, axis, dir });
+  expandWorldBounds(minX, maxX, minZ, maxZ);
 }
 
 export function registerBuildingLod(x, z, lodGroup) {
   lodGroup.visible = false;
   buildingLods.push({ x, z, group: lodGroup, active: false });
+  expandWorldBounds(x, x, z, z);
 }
 
 export function flashEdge(cssColor) {
@@ -227,8 +352,6 @@ export function pushFeed(text, borderClass = 'border-l-amber-400') {
 export const keys = {};
 
 export const inputState = { isDraggingLook: false, isPrimaryFireHeld: false, lastMouseX: 0, lastMouseY: 0 };
-
-export const WORLD_BOUNDS = Object.freeze({ minX: -710, maxX: 540, minZ: -590, maxZ: 325 });
 
 export function computeSupportFloor(x, z, footY, radius) {
   if (footY < -1.0) return sewerFloor(x, z);
@@ -261,8 +384,9 @@ export function computeSupportFloor(x, z, footY, radius) {
 }
 
 export function collidesHorizontally(nx, nz, footY, bodyH, radius) {
+  syncWorldBounds();
   if (nx < WORLD_BOUNDS.minX + radius || nx > WORLD_BOUNDS.maxX - radius || nz < WORLD_BOUNDS.minZ + radius || nz > WORLD_BOUNDS.maxZ - radius) return true;
-  if (nx < -196 && nx > -560 && (nz < -170 + radius || nz > 170 - radius) && !(nx >= -700 && nx <= -50 && nz >= 108 && nz <= 320)) return true;
+  if (nx < -196 && nx > -560 && (nz < -170 + radius || nz > 170 - radius) && !(nx >= -700 && nx <= -50 && nz >= 108 && nz <= 320) && !hasDetectedMapRegionAt(nx, nz)) return true;
   if (footY < -1.0 && !sewerOK(nx, nz, radius)) return true;
   if (footY > -0.5) { const th = terrainH(nx, nz); if (th > -90 && th - footY > 1.0) return true; }
   for (let i = 0; i < worldBoxes.length; i++) {
@@ -280,10 +404,6 @@ export let _seed = 1337;
 export const rnd = () => { _seed = (_seed * 1664525 + 1013904223) >>> 0; return _seed / 4294967296; };
 
 export const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
-
-export const waterZones = [];
-
-export const iceZones = [];
 
 export function biomeAt(x, z) {
   if (z >= 110 && x > -136 && x < 138) return x < -52 ? 'alpine' : (x < 28 ? 'woods' : 'cove');
@@ -398,3 +518,5 @@ export const AO={heat:0,calm:0,cops:[],cars:[],spawnT:0,shotT:0,lastAtk:0};
 export const stars=()=>Math.min(5,Math.ceil(AO.heat-.001));
 
 export function crime(a){if(under())return;const s0=stars();AO.heat=Math.min(5,AO.heat+a);AO.calm=0;if(stars()>s0)pushFeed('WANTED LEVEL '+stars()+' — POLICE DISPATCHED','border-l-blue-500');}
+
+Object.assign(hooks, { recomputeWorldBounds });

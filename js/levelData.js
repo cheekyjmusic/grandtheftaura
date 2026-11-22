@@ -4593,22 +4593,7 @@ export const DEFAULT_LEVEL_DATA = {
       "deleted": true
     },
     "static:767/3": {
-      "position": [
-        152,
-        9.484942660131823,
-        200.54224393969722
-      ],
-      "rotation": [
-        -0.27257022261796976,
-        0,
-        0,
-        "XYZ"
-      ],
-      "scale": [
-        0.9322054305571136,
-        1,
-        1
-      ]
+      "deleted": true
     },
     "static:292": {
       "position": [
@@ -4762,6 +4747,60 @@ export const DEFAULT_LEVEL_DATA = {
     },
     "static:712": {
       "deleted": true
+    },
+    "static:596": {
+      "position": [
+        0,
+        7.127249148861601,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        "XYZ"
+      ],
+      "scale": [
+        1,
+        1.1300102811633554,
+        1
+      ]
+    },
+    "static:596/0": {
+      "position": [
+        139.5,
+        11.082285132933345,
+        140
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        "XYZ"
+      ],
+      "scale": [
+        1,
+        1.1300102811633554,
+        1
+      ]
+    },
+    "static:596/2": {
+      "position": [
+        152,
+        15.040992590993044,
+        140
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        "XYZ"
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
     }
   },
   "assets": {
@@ -4931,7 +4970,9 @@ export const DEFAULT_LEVEL_DATA = {
     {"id":"road_mwr8epy21","type":"road","name":"Road Segment","pos":[152.097,4.894,137.478],"rot":[0,0,0],"scale":[0.831,1,9.657],"texture":"","texRepeat":[1,1],"color":"#313946","road":{"width":24,"depth":12,"markings":true}},
     {"id":"road_mwr8fxyy2","type":"road","name":"Road Segment","pos":[152.082,2.293,62.121],"rot":[-0.1493,0,0],"scale":[0.867,1,3.134],"texture":"","texRepeat":[1,1],"color":"#313946","road":{"width":24,"depth":12,"markings":true}},
     {"id":"building_mwr8qel73","type":"building","name":"Warehouse","pos":[219.107,0,82.773],"rot":[0,0,0],"scale":[1,1,1],"texture":"","texRepeat":[1,1],"color":"#a3a3a3","building":{"width":22,"depth":16,"height":9,"roofColor":"#475569","windowColor":"#bae6fd"}},
-    {"id":"building_mwr8ql3u4","type":"building","name":"Office Building","pos":[2.69,0,89.256],"rot":[0,0,0],"scale":[1,1,1],"texture":"","texRepeat":[1,1],"color":"#64748b","building":{"width":14,"depth":12,"height":28,"roofColor":"#1e293b","windowColor":"#7dd3fc"}}
+    {"id":"building_mwr8ql3u4","type":"building","name":"Office Building","pos":[2.69,0,89.256],"rot":[0,0,0],"scale":[1,1,1],"texture":"","texRepeat":[1,1],"color":"#64748b","building":{"width":14,"depth":12,"height":28,"roofColor":"#1e293b","windowColor":"#7dd3fc"}},
+    {"id":"road_mwsebg0p1","type":"road","name":"Road Segment copy","pos":[152.278,8.379,180.032],"rot":[-0.1493,0,0],"scale":[0.867,1,6.209],"texture":"","texRepeat":[1,1],"color":"#313946","road":{"width":24,"depth":12,"markings":true}},
+    {"id":"vehicle_mwseh9qs4","type":"vehicle","name":"Apex GT Supercar","pos":[-36.089,0.41,492.432],"rot":[0,0,0],"scale":[1.35,1.35,1.35],"texture":"","texRepeat":[1,1],"color":"#1d23d3","vehicle":{"bodyHex":"#f97316","accentHex":"#0f172a","isCoupe":true,"isSupercar":true}}
   ]
 };
 // ---- DEFAULT_LEVEL_DATA:END ----

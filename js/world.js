@@ -3054,18 +3054,19 @@ break;
                     case 'road': {
       object = makeRoadMesh(entity);
       object.position.set(x, y, z);
-      object.rotation.set(rot, rot, rot);
-      object.scale.set(scale, scale, scale);
+      object.rotation.set(rot[0], rot[1], rot[2]);
+      object.scale.set(scale[0], scale[1], scale[2]);
       worldRoot.add(object);
       if (register) {
         object.updateMatrixWorld(true);
         const bounds = new THREE.Box3().setFromObject(object);
-        const tiltMag = Math.hypot(rot || 0, rot || 0);
+        const tiltMag = Math.hypot(rot[0] || 0, rot[2] || 0);
         if (tiltMag === 0) {
           record = addWorldBox(bounds.min.x, bounds.max.x, bounds.min.y, bounds.max.y, bounds.min.z, bounds.max.z, 'entity_road', true);
         } else {
-          const halfW = (entity.width || 10) * 0.5;
-          const halfL = (entity.length || 20) * 0.5;
+          const roadCfg = entity.road || {};
+          const halfW = ((Number(roadCfg.width) || 24) * scale[0]) * 0.5;
+          const halfL = ((Number(roadCfg.depth) || 12) * scale[2]) * 0.5;
           const pNegX = new THREE.Vector3(-halfW, 0, 0).applyMatrix4(object.matrixWorld);
           const pPosX = new THREE.Vector3(halfW, 0, 0).applyMatrix4(object.matrixWorld);
           const pNegZ = new THREE.Vector3(0, 0, -halfL).applyMatrix4(object.matrixWorld);
