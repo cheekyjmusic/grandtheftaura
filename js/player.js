@@ -1,5 +1,20 @@
 // =============================================================================
-// player.js — First/third person rigs, movement, parkour mantling, meteor drop, combat triggers and the per-frame simulation step.
+// player.js — First/third person rigs, movement, parkour mantling, meteor drop,
+// combat triggers, SWIMMING / WADING / DIVING integration and the per-frame
+// simulation step.
+//
+// WATER UPDATE:
+//   • water.js owns buoyancy, currents, dive/surface physics & oxygen while
+//     swimming — the normal walk/gravity branch yields to it (no fighting).
+//   • Mouse-look swimming: the camera pitch steers the body. Look down + W to
+//     dive, look up + W to surface; [C]/[SPACE] remain optional assists.
+//   • Wading respects the real seabed, scales speed with depth and drifts
+//     with the current.
+//   • Full procedural swim animation set: freestyle stroke + flutter kick,
+//     sprint stroke, streamlined dive + dolphin kick, treading-water scull,
+//     wave-synced bob, breathing head turn, first-person stroke arms & roll.
+//   • Oxygen HUD readout, low-O₂ warning, drowning damage, splashdown meteors,
+//     swim-aware camera (follows you underwater), climb-out mantling.
 // =============================================================================
 import * as THREE from 'three';
 import { levelData } from './levelData.js';
@@ -11,6 +26,7 @@ import { LEFT_ITEMS, RIGHT_WEAPONS, addLeftItemToBag, buildLeftItemMesh, buildRi
 import { GEAR_CAPS_MPH, exitCurrentCar, getNearestVehicle, stepVehicleDriving, suspFrame } from './vehicles.js';
 import { knockOverLamppost, updateBiomeAtmosphere, updateBuildingLods, updateLampposts, updateSkyscraperInteriors } from './world.js';
 import { clearWantedLevel, copFrame, damageNpc, makeFace, pp, ratFrame, reviveRats, setFaceMood, updateNPCs, updatePickpocket } from './npcs.js';
+import { getWaterBedAt, getWaterBodyAt, getWaterHeightAt, isSwimming, sampleOceanWave, swimState } from './water.js';
 
 function clampMeteorPosition(x, z) {
   return {
@@ -22,20 +38,16 @@ function clampMeteorPosition(x, z) {
 // Procedural woven cloth textures (shared across clothing materials only)
 const clothTextures = (() => {
   const size = 128;
-
   const weaveCanvas = document.createElement('canvas');
   weaveCanvas.width = size;
   weaveCanvas.height = size;
   const wCtx = weaveCanvas.getContext('2d');
-
   const bumpCanvas = document.createElement('canvas');
   bumpCanvas.width = size;
   bumpCanvas.height = size;
   const bCtx = bumpCanvas.getContext('2d');
-
   const wImg = wCtx.createImageData(size, size);
   const bImg = bCtx.createImageData(size, size);
-
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const idx = (y * size + x) * 4;
@@ -45,14 +57,12 @@ const clothTextures = (() => {
       const twill = Math.sin(((x + y) / 8) * Math.PI * 2) * 0.35;
       const grain = (Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1;
       const thread = (warp * 0.4 + weft * 0.4 + twill) * 0.5 + (grain - 0.5) * 0.18;
-
       // Albedo stays bright (222..255) so material.color tints cleanly without darkening
       const albedoVal = Math.max(215, Math.min(255, Math.round(238 + thread * 17)));
       wImg.data[idx] = albedoVal;
       wImg.data[idx + 1] = albedoVal;
       wImg.data[idx + 2] = albedoVal;
       wImg.data[idx + 3] = 255;
-
       // Higher-contrast height value for bump/roughness maps
       const bumpVal = Math.max(0, Math.min(255, Math.round(128 + thread * 95)));
       bImg.data[idx] = bumpVal;
@@ -61,23 +71,19 @@ const clothTextures = (() => {
       bImg.data[idx + 3] = 255;
     }
   }
-
   wCtx.putImageData(wImg, 0, 0);
   bCtx.putImageData(bImg, 0, 0);
-
   const map = new THREE.CanvasTexture(weaveCanvas);
   map.wrapS = THREE.RepeatWrapping;
   map.wrapT = THREE.RepeatWrapping;
   map.repeat.set(3, 3);
   if ('colorSpace' in map && THREE.SRGBColorSpace) map.colorSpace = THREE.SRGBColorSpace;
   map.needsUpdate = true;
-
   const bumpMap = new THREE.CanvasTexture(bumpCanvas);
   bumpMap.wrapS = THREE.RepeatWrapping;
   bumpMap.wrapT = THREE.RepeatWrapping;
   bumpMap.repeat.set(3, 3);
   bumpMap.needsUpdate = true;
-
   return { map, bumpMap };
 })();
 
@@ -93,48 +99,33 @@ function makeClothMat(color) {
 }
 
 export const fpRoot = new THREE.Group();
-
 camera.add(fpRoot);
-
 export const skinMat = makeMat(0xe2a87e);
-
 export const sleeveMat = makeClothMat(0x1e293b);
 
 export function createFirstPersonArm(side) {
   const pivot = new THREE.Group();
   pivot.position.set(side * 0.32, -0.26, -0.34);
-
   const sleeve = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.11, 0.30), sleeveMat);
   sleeve.position.set(0, -0.02, 0.12);
-
   const forearm = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.095, 0.24), skinMat);
   forearm.position.set(0, 0, -0.06);
-
   const fist = new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.105, 0.11), skinMat);
   fist.position.set(0, 0.005, -0.19);
-
   const itemMount = new THREE.Group();
   itemMount.position.set(0, 0.02, -0.20);
-
   pivot.add(sleeve, forearm, fist, itemMount);
   fpRoot.add(pivot);
   return { pivot, fist, itemMount };
 }
-
 export const fpRight = createFirstPersonArm(1);
-
 export const fpLeft = createFirstPersonArm(-1);
 
 export const spotLight = new THREE.SpotLight(0xfef9c3, 3.6, 36, Math.PI / 5.5, 0.42, 1.1);
-
 spotLight.position.set(0, 0, -0.1);
-
 spotLight.target.position.set(0, 0, -10);
-
 spotLight.visible = false;
-
 fpLeft.itemMount.add(spotLight);
-
 fpLeft.itemMount.add(spotLight.target);
 
 // 3rd-Person Articulated Character Rig (Olympic Sprinter & Jump Ready)
@@ -148,80 +139,62 @@ export function buildPlayerRigMesh(params = {}) {
   const tpHip = new THREE.Group();
   tpHip.position.y = 0.90;
   tpRig.add(tpHip);
-
   const tpTorso = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.56, 0.24), shirtClothMat);
   tpTorso.position.y = 0.28;
   tpTorso.castShadow = true;
-
   const tpHead = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.28, 0.26), skinMat);
   tpHead.position.y = 0.72;
   tpHead.castShadow = true;
-
   const tpHair = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.10, 0.28), makeMat(accentColor));
   tpHair.position.y = 0.85;
   tpHead.add(makeFace(0.26, 0.28, 0.26, -1, { age: 'adult', skin: 0xe2a87e, brow: 0x0f172a, iris: 0x1e40af }));
-
   function createTpArticulatedArm(side) {
     const shoulderPivot = new THREE.Group();
     shoulderPivot.position.set(side * 0.31, 0.50, 0);
-
     const upperArm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.27, 0.12), shirtClothMat);
     upperArm.position.y = -0.135;
     upperArm.castShadow = true;
-
     const elbowPivot = new THREE.Group();
     elbowPivot.position.set(0, -0.26, 0);
-
     const forearm = new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.26, 0.105), skinMat);
     forearm.position.y = -0.13;
     forearm.castShadow = true;
-
     elbowPivot.add(forearm);
     shoulderPivot.add(upperArm, elbowPivot);
     return { shoulderPivot, elbowPivot };
   }
-
   const tpArmLeftRig = createTpArticulatedArm(-1);
   const tpArmRightRig = createTpArticulatedArm(1);
   const tpArmL = tpArmLeftRig.shoulderPivot;
   const tpArmR = tpArmRightRig.shoulderPivot;
   const tpElbowL = tpArmLeftRig.elbowPivot;
   const tpElbowR = tpArmRightRig.elbowPivot;
-
   function createTpArticulatedLeg(side) {
     const hipJoint = new THREE.Group();
     hipJoint.position.set(side * 0.13, 0.0, 0);
-
     const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.38, 0.15), pantsClothMat);
     thigh.position.y = -0.19;
     thigh.castShadow = true;
-
     const kneeJoint = new THREE.Group();
     kneeJoint.position.set(0, -0.37, 0);
-
     const shin = new THREE.Mesh(new THREE.BoxGeometry(0.135, 0.37, 0.135), pantsClothMat);
     shin.position.y = -0.185;
     shin.castShadow = true;
-
     kneeJoint.add(shin);
     hipJoint.add(thigh, kneeJoint);
     return { hipJoint, kneeJoint };
   }
-
   const tpLegLeftRig = createTpArticulatedLeg(-1);
   const tpLegRightRig = createTpArticulatedLeg(1);
   const tpLegL = tpLegLeftRig.hipJoint;
   const tpLegR = tpLegRightRig.hipJoint;
   const tpKneeL = tpLegLeftRig.kneeJoint;
   const tpKneeR = tpLegRightRig.kneeJoint;
-
   tpHip.add(tpTorso, tpHead, tpHair, tpArmL, tpArmR, tpLegL, tpLegR);
   tpRig.visible = false;
   return { tpRig, tpHip, tpTorso, tpHead, tpHair, tpArmL, tpArmR, tpElbowL, tpElbowR, tpLegL, tpLegR, tpKneeL, tpKneeR };
 }
-
 export const { tpRig, tpHip, tpTorso, tpHead, tpHair, tpArmL, tpArmR, tpElbowL, tpElbowR, tpLegL, tpLegR, tpKneeL, tpKneeR } = buildPlayerRigMesh(levelData.params.player);
-
 worldRoot.add(tpRig);
 
 export function syncEquippedMeshes() {
@@ -232,14 +205,12 @@ export function syncEquippedMeshes() {
   if (rId !== 'fists') {
     { const wm = buildRightWeaponMesh(rId); applyModelPreset(rId, wm); fpRight.itemMount.add(wm); }
   }
-
   const keptLight = spotLight;
   const keptTarget = spotLight.target;
   while (fpLeft.itemMount.children.length > 0) {
     fpLeft.itemMount.remove(fpLeft.itemMount.children[0]);
   }
   fpLeft.itemMount.add(keptLight, keptTarget);
-
   const lSlot = gameState.leftHotbar[gameState.activeLeftSlot];
   if (lSlot && LEFT_ITEMS[lSlot.id]) {
     fpLeft.itemMount.add(buildLeftItemMesh(lSlot.id));
@@ -247,15 +218,179 @@ export function syncEquippedMeshes() {
   spotLight.visible = Boolean(gameState.flashlightOn && lSlot && lSlot.id === 'flashlight');
 }
 
+// =============================================================================
+// SWIMMING — shared helpers
+// =============================================================================
+let wasSwimming = false;
+let swimO2Warned = false;
+let swimDrownT = 0;
+
+function swimInputActive() {
+  return Boolean(keys['KeyW'] || keys['KeyA'] || keys['KeyS'] || keys['KeyD']
+    || keys['ArrowUp'] || keys['ArrowDown'] || keys['ArrowLeft'] || keys['ArrowRight']);
+}
+function swimDiveHeld() {
+  return Boolean(keys['KeyC'] || keys['ControlLeft'] || keys['ControlRight']);
+}
+function swimSprintHeld() {
+  return Boolean(keys['ShiftLeft'] || keys['ShiftRight']);
+}
+/** Hard-reset swim posture/state (respawn, teleport, studio rebuild). */
+function clearSwimPosture() {
+  swimState.active = false;
+  swimState.submerged = false;
+  swimState.wading = false;
+  swimState.vy = 0;
+  swimState.oxygen = swimState.maxOxygen;
+  swimState.drownTick = 0;
+  swimState.lastBodyId = null;
+  swimO2Warned = false;
+  swimDrownT = 0;
+  wasSwimming = false;
+  tpHip.rotation.set(0, 0, 0);
+  tpHead.rotation.set(0, 0, 0);
+  tpTorso.rotation.set(0, 0, 0);
+  camera.rotation.z = 0;
+}
+
+/**
+ * Third-person swim animation. Every channel is driven by swimState (the real
+ * buoyancy sim): strokePhase sets the cadence, swimState.yaw faces the actual
+ * velocity INCLUDING current drift, submersion + camera pitch select the body
+ * angle so the swimmer points where the mouse aims, and the sampled wave
+ * height bobs the body on the swell.
+ */
+function animateSwimRig(dt, elapsed) {
+  const wb = getWaterBodyAt(player.x, player.z);
+  const wave = wb ? sampleOceanWave(player.x, player.z, elapsed, wb.waveScale) : 0;
+  const ph = swimState.strokePhase;
+  const moving = swimInputActive();
+  const sprinting = moving && swimSprintHeld();
+  const lookPitch = THREE.MathUtils.clamp(swimState.pitch || 0, -1, 1);
+  // Descending = mouse pointed down (or optional C). No key needed to dive.
+  const descending = swimState.vy < -1.1 || swimDiveHeld();
+  const diving = swimState.submerged && descending;
+  const ascending = swimState.vy > 1.2 || Boolean(keys['Space']);
+  const amp = moving ? (sprinting ? 1.3 : 1.0) : 0.5;
+  const blend = Math.min(1, dt * 9);
+
+  // Rig floats with the swell; -Z is the rig's face, swim yaw is +Z convention.
+  tpRig.position.set(
+    player.x,
+    player.y - 0.12 + wave * 0.5 + Math.sin(ph * 2) * 0.03 * amp,
+    player.z
+  );
+  tpRig.rotation.y = swimState.yaw + Math.PI;
+
+  // Body angle follows the mouse while submerged: look down → head-down glide,
+  // look up → angled ascent; freestyle at the surface, upright when treading.
+  let targetPitch;
+  if (diving) targetPitch = -1.66;
+  else if (swimState.submerged && moving) targetPitch = THREE.MathUtils.clamp(-1.30 + lookPitch * 0.85, -1.9, -0.55);
+  else if (ascending) targetPitch = -1.02;
+  else if (moving) targetPitch = -1.34;
+  else targetPitch = -0.40;
+  tpHip.rotation.x += (targetPitch - tpHip.rotation.x) * blend;
+  tpHip.rotation.z = Math.sin(ph) * 0.17 * amp;          // body roll per stroke
+  tpHip.position.y = 0.90;
+  tpHip.scale.y = 1;
+  tpTorso.rotation.y = Math.sin(ph) * 0.14 * amp;
+  // Side-breath head turn while stroking at the surface.
+  tpHead.rotation.y = (!swimState.submerged && moving) ? Math.sin(ph) * 0.38 : 0;
+  tpHead.rotation.x = diving ? 0.25 : 0;
+
+  if (diving) {
+    // Streamlined glide: arms swept forward, unified dolphin kick.
+    const kick = Math.sin(ph * 1.4);
+    tpArmL.rotation.set(1.95 + kick * 0.12, 0, -0.12);
+    tpArmR.rotation.set(1.95 - kick * 0.12, 0, 0.12);
+    tpElbowL.rotation.x = 0.12;
+    tpElbowR.rotation.x = 0.12;
+    tpLegL.rotation.x = kick * 0.22;
+    tpLegR.rotation.x = kick * 0.22;
+    tpKneeL.rotation.x = 0.18 + Math.max(0, -kick) * 0.2;
+    tpKneeR.rotation.x = 0.18 + Math.max(0, -kick) * 0.2;
+  } else if (moving) {
+    // Freestyle: alternating over-arm recovery, bent catch, flutter kick.
+    const l = Math.sin(ph), r = Math.sin(ph + Math.PI);
+    tpArmL.rotation.set(1.15 + l * 1.55 * amp, 0, -0.18 - Math.max(0, l) * 0.42);
+    tpArmR.rotation.set(1.15 + r * 1.55 * amp, 0, 0.18 + Math.max(0, r) * 0.42);
+    tpElbowL.rotation.x = 0.35 + Math.max(0, Math.sin(ph + 0.7)) * 1.0;
+    tpElbowR.rotation.x = 0.35 + Math.max(0, Math.sin(ph + Math.PI + 0.7)) * 1.0;
+    tpLegL.rotation.x = l * 0.42 * amp;
+    tpLegR.rotation.x = r * 0.42 * amp;
+    tpKneeL.rotation.x = 0.12 + Math.max(0, -l) * 0.38;
+    tpKneeR.rotation.x = 0.12 + Math.max(0, -r) * 0.38;
+  } else {
+    // Treading water: sculling arms + eggbeater legs, gentle swell bob.
+    const s = Math.sin(ph * 0.8), c = Math.cos(ph * 0.8);
+    tpArmL.rotation.set(0.55 + s * 0.22, 0, -0.95 - c * 0.18);
+    tpArmR.rotation.set(0.55 - s * 0.22, 0, 0.95 + c * 0.18);
+    tpElbowL.rotation.x = 0.65 + s * 0.2;
+    tpElbowR.rotation.x = 0.65 - s * 0.2;
+    tpLegL.rotation.x = s * 0.3;
+    tpLegR.rotation.x = -s * 0.3;
+    tpKneeL.rotation.x = 0.55 + Math.max(0, s) * 0.3;
+    tpKneeR.rotation.x = 0.55 + Math.max(0, -s) * 0.3;
+  }
+}
+
+/** First-person swim arms: alternating reaches, streamlined glide when diving. */
+function animateSwimFirstPerson() {
+  const ph = swimState.strokePhase;
+  const descending = swimState.vy < -1.1 || swimDiveHeld();
+  const diving = swimState.submerged && descending;
+  fpRight.pivot.visible = true;
+  fpLeft.pivot.visible = true;
+  if (diving) {
+    fpRight.pivot.position.set(0.17, -0.20, -0.52);
+    fpLeft.pivot.position.set(-0.17, -0.20, -0.52);
+    fpRight.pivot.rotation.set(1.15, 0, 0.10);
+    fpLeft.pivot.rotation.set(1.15, 0, -0.10);
+    return;
+  }
+  const l = Math.sin(ph), r = Math.sin(ph + Math.PI);
+  fpRight.pivot.position.set(0.30 + r * 0.06, -0.24 + Math.max(0, r) * 0.10, -0.34 - Math.max(0, r) * 0.30);
+  fpRight.pivot.rotation.set(0.45 + r * 0.85, r * 0.12, r * 0.18);
+  fpLeft.pivot.position.set(-0.30 + l * 0.06, -0.24 + Math.max(0, l) * 0.10, -0.34 - Math.max(0, l) * 0.30);
+  fpLeft.pivot.rotation.set(0.45 + l * 0.85, l * 0.12, -l * 0.18);
+}
+
+/** Oxygen warning, drowning damage and swim effort — tied to the live sim. */
+function updateSwimFeedback(dt) {
+  if (swimState.submerged) {
+    if (swimState.oxygen <= 0) {
+      swimDrownT += dt;
+      if (swimDrownT >= 0.6) {
+        swimDrownT = 0;
+        applyPlayerDamage(5, 'DROWNING');
+      }
+    } else if (swimState.oxygen < 25 && !swimO2Warned) {
+      swimO2Warned = true;
+      flashEdge('rgba(56, 189, 248, 0.35)');
+      pushFeed('OXYGEN LOW — LOOK UP + [W] TO SURFACE', 'border-l-cyan-400');
+    }
+  } else {
+    swimDrownT = 0;
+    if (swimState.oxygen > 60) swimO2Warned = false;
+  }
+  const sprinting = swimInputActive() && swimSprintHeld();
+  gameState.stamina = Math.max(0, Math.min(100, gameState.stamina + (sprinting ? -7 : 10) * dt));
+}
+
+// =============================================================================
+// Mantling / elevators / combat
+// =============================================================================
 export function findMantleTarget() {
   if (gameState.inCar || player.mantle.active || meteorDrop.active) return null;
+  // You can mantle out of the water onto piers/ledges, but not from the abyss.
+  if (swimState.active && swimState.submerged) return null;
   const fwdX = -Math.sin(player.yaw);
   const fwdZ = -Math.cos(player.yaw);
   const probeX = player.x + fwdX * 0.95;
   const probeZ = player.z + fwdZ * 0.95;
   const landX = player.x + fwdX * 1.48;
   const landZ = player.z + fwdZ * 1.48;
-
   let bestTop = null;
   for (let i = 0; i < worldBoxes.length; i++) {
     const b = worldBoxes[i];
@@ -263,7 +398,6 @@ export function findMantleTarget() {
     const nearX = probeX >= b.minX - 0.35 && probeX <= b.maxX + 0.35;
     const nearZ = probeZ >= b.minZ - 0.35 && probeZ <= b.maxZ + 0.35;
     if (!nearX || !nearZ) continue;
-
     const rise = b.maxY - player.y;
     if (rise >= 0.45 && rise <= 2.38) {
       let blockedAbove = false;
@@ -307,7 +441,6 @@ export function triggerRightHandAttack() {
   player.attackTimer = w.cooldown;
   player.hitApplied = false;
   player._copHit = false;
-
   if (w.isRanged && w.id === 'hotdog_shooter') {
     fireBallisticWiener();
     player.hitApplied = true;
@@ -344,8 +477,10 @@ export function evaluateMeleeHit() {
             sfx.smash();
             spawnParticles(c.x, c.y + 0.55, c.z, 0x92400e, 14, 6.5);
             const lootRec = destroyCrate(c, true);
-            hooks.mpWorldEvent({ t: 'crate_dead', netId: c.netId, x: c.x, y: c.y, z: c.z,
-              loot: lootRec ? { netId: lootRec.netId, type: lootRec.type, id: lootRec.id, x: lootRec.x, y: lootRec.y, z: lootRec.z } : null });
+            hooks.mpWorldEvent({
+              t: 'crate_dead', netId: c.netId, x: c.x, y: c.y, z: c.z,
+              loot: lootRec ? { netId: lootRec.netId, type: lootRec.type, id: lootRec.id, x: lootRec.x, y: lootRec.y, z: lootRec.z } : null
+            });
             pushFeed('CRATE SMASHED!', 'border-l-amber-400');
           }
         }
@@ -374,10 +509,13 @@ export function applyPlayerDamage(amount, sourceLabel) {
     gameState.stamina = 100;
     gameState.cash = Math.max(0, gameState.cash - 50);
     climb.on = false;
+    clearSwimPosture();
     player.x = aura.hospitalSpawn ? aura.hospitalSpawn.x : -11.5;
     player.y = 0.18;
     player.z = aura.hospitalSpawn ? aura.hospitalSpawn.z : 18.5;
     player.vy = 0;
+    player.pvx = 0;
+    player.pvz = 0;
     player.grounded = true;
     player.peakAirY = 0.18;
     player.slideTimer = 0;
@@ -406,7 +544,6 @@ export function triggerMeteorLanding() {
   meteorDrop.vy = -34;
   meteorDrop.vz = 0;
   meteorDrop.cameraShake = 0;
-
   if (meteorDrop.craterMesh) {
     worldRoot.remove(meteorDrop.craterMesh);
     meteorDrop.craterMesh = null;
@@ -415,7 +552,6 @@ export function triggerMeteorLanding() {
     worldRoot.remove(meteorDrop.shockwaveMesh);
     meteorDrop.shockwaveMesh = null;
   }
-
   player.x = meteorDrop.x;
   player.y = meteorDrop.y;
   player.z = meteorDrop.z;
@@ -424,14 +560,12 @@ export function triggerMeteorLanding() {
   player.pitch = -0.68;
   gameState.isAiming = false;
   inputState.isPrimaryFireHeld = false;
-
   meteorGroup.visible = true;
   meteorGroup.position.set(player.x, player.y, player.z);
   meteorReticle.visible = true;
   document.getElementById('meteor-aim-banner').style.display = 'block';
   fpRoot.visible = false;
   tpRig.visible = false;
-
   sfx.meteorDive();
   pushFeed('AIM YOUR METEOR WITH MOUSE OR WASD!', 'border-l-amber-400');
 }
@@ -440,6 +574,7 @@ let _promptT = 0;
 const _pTxt = new WeakMap(), _pCls = new WeakMap();
 function pText(el, v) { if (el && _pTxt.get(el) !== v) { _pTxt.set(el, v); el.textContent = v; } }
 function pShow(el, on) { if (el && _pCls.get(el) !== on) { _pCls.set(el, on); el.classList.toggle('hidden', !on); } }
+
 export function updateZoneAndPrompts(force = false) {
   const now = performance.now();
   if (!force && now - _promptT < 100) return;
@@ -454,13 +589,17 @@ export function updateZoneAndPrompts(force = false) {
   if (zone === 'SUNNYVALE CITY') {
     if (player.x >= 164) zone = 'REDROCK DESERT';
     else if ((player.x >= 140 && player.x <= 164) || (player.z >= 87 && player.z <= 109 && player.y > 2.2)) zone = 'I-88 INTERSTATE FREEWAY';
-    else if (biomeAt(player.x, player.z) !== 'city') zone = { alpine: 'FROSTPINE ALPINE', woods: 'EMERALD WOODS', cove: 'SUNSET COVE' }[biomeAt(player.x, player.z)];
+    else if (biomeAt(player.x, player.z) !== 'city') zone = { alpine: 'FROSTPINE ALPINE', woods: 'EMERALD WOODS', cove: 'SUNSET COVE', jungle: 'VERDANT JUNGLE' }[biomeAt(player.x, player.z)] || 'SUNNYVALE CITY';
     else if (Math.abs(player.x) < 17 && Math.abs(player.z) < 17) zone = 'CENTRAL PLAZA';
     else if (player.z < -72) zone = 'DOWNTOWN SKYSCRAPER DISTRICT';
     else if (player.x < -22 && player.z < -22) zone = 'COMMERCIAL DISTRICT';
     else if (player.x > 22 && player.z < -22) zone = 'BRICKWOOD APARTMENTS';
     else if (player.x > 22 && player.z > 22) zone = 'HARBOR CONTAINER YARD';
     else zone = 'SUBURBAN NEIGHBORHOOD';
+  }
+  if (swimState.active) {
+    const wb = getWaterBodyAt(player.x, player.z);
+    zone = wb && wb.isOcean ? 'OPEN WATER' : 'RIVER SWIM';
   }
   gameState.zoneName = zone;
   const promptEl = document.getElementById('interact-prompt');
@@ -481,11 +620,13 @@ export function updateZoneAndPrompts(force = false) {
       pShow(promptEl, true); pText(keyEl, 'F');
       pText(textEl, elev.toRoof ? `RIDE ELEVATOR TO ROOF (${elev.sk.name})` : 'RIDE ELEVATOR TO LOBBY');
     } else {
-      const nearCar = getNearestVehicle(4.2);
+      const nearCar = swimState.active ? null : getNearestVehicle(4.2);
       let nearNpc = null;
-      for (const npc of npcs) {
-        if (!npc.spawned || npc.asleep) continue;
-        if (Math.hypot(player.x - npc.x, player.z - npc.z) < 2.5 && Math.abs(player.y - 0.18) < 1.8) { nearNpc = npc; break; }
+      if (!swimState.active) {
+        for (const npc of npcs) {
+          if (!npc.spawned || npc.asleep) continue;
+          if (Math.hypot(player.x - npc.x, player.z - npc.z) < 2.5 && Math.abs(player.y - 0.18) < 1.8) { nearNpc = npc; break; }
+        }
       }
       if (nearCar) { pShow(promptEl, true); pText(keyEl, 'F'); pText(textEl, `DRIVE ${nearCar.v.name}`); }
       else if (nearNpc) { pShow(promptEl, true); pText(keyEl, 'E'); pText(textEl, `TALK TO ${nearNpc.name}`); }
@@ -511,10 +652,12 @@ function stepParticles(dt) {
   }
 }
 
+// =============================================================================
+// MAIN SIMULATION STEP
+// =============================================================================
 export function stepSimulation(dt, elapsed) {
   if (gameState.damageCooldown > 0) gameState.damageCooldown -= dt;
   if (gameState.speedBoostTimer > 0) gameState.speedBoostTimer -= dt;
-
   // Health Regeneration
   if (gameState.hp > 0 && gameState.hp < gameState.maxHp) {
     const regenRate = gameState.damageCooldown > 0 ? 0 : 3.5;
@@ -522,37 +665,30 @@ export function stepSimulation(dt, elapsed) {
       gameState.hp = Math.min(gameState.maxHp, gameState.hp + regenRate * dt);
     }
   }
-
   if (meteorDrop.active) {
+    wasSwimming = false;
     meteorDrop.timer += dt;
-
     const moveFwd = (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0) - (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0);
     const moveRight = (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0) - (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0);
     const fastDive = keys['ShiftLeft'] || keys['ShiftRight'] || keys['Space'];
-
     const fwdX = -Math.sin(player.yaw);
     const fwdZ = -Math.cos(player.yaw);
     const rightX = Math.cos(player.yaw);
     const rightZ = -Math.sin(player.yaw);
-
     const aimHorizMag = Math.max(0, Math.cos(player.pitch)) * 46;
     const targetVx = (fwdX * moveFwd + rightX * moveRight) * 68 + fwdX * aimHorizMag * 0.72;
     const targetVz = (fwdZ * moveFwd + rightZ * moveRight) * 68 + fwdZ * aimHorizMag * 0.72;
     const targetVy = fastDive ? -74 : -31;
-
     meteorDrop.vx += (targetVx - meteorDrop.vx) * Math.min(1, dt * 6.5);
     meteorDrop.vz += (targetVz - meteorDrop.vz) * Math.min(1, dt * 6.5);
     meteorDrop.vy += (targetVy - meteorDrop.vy) * Math.min(1, dt * 6.5);
-
     const meteorPosition = clampMeteorPosition(meteorDrop.x + meteorDrop.vx * dt, meteorDrop.z + meteorDrop.vz * dt);
     meteorDrop.x = meteorPosition.x;
     meteorDrop.z = meteorPosition.z;
     meteorDrop.y += meteorDrop.vy * dt;
-
     player.x = meteorDrop.x;
     player.y = meteorDrop.y;
     player.z = meteorDrop.z;
-
     const timeToImpact = Math.max(0.05, (meteorDrop.y - 0.18) / Math.max(12, Math.abs(meteorDrop.vy)));
     const predictedPosition = clampMeteorPosition(
       meteorDrop.x + meteorDrop.vx * timeToImpact * 0.55,
@@ -561,13 +697,11 @@ export function stepSimulation(dt, elapsed) {
     const predX = predictedPosition.x;
     const predZ = predictedPosition.z;
     const predSurfaceY = computeSupportFloor(predX, predZ, 90, 0.5);
-
     meteorReticle.visible = true;
     meteorReticle.position.set(predX, predSurfaceY + 0.08, predZ);
     meteorReticle.rotation.y += dt * 2.5;
     const pulseScale = 1 + Math.sin(elapsed * 10) * 0.12;
     meteorReticle.children[0].scale.setScalar(pulseScale);
-
     const targetLabelEl = document.getElementById('meteor-target-label');
     if (targetLabelEl) {
       const locTag = predX >= 164 ? 'REDROCK DESERT'
@@ -576,7 +710,6 @@ export function stepSimulation(dt, elapsed) {
         : 'SUNNYVALE CITY';
       targetLabelEl.textContent = `TARGET: ${locTag} (${Math.round(predX)}, ${Math.round(predZ)}) • ALT ${Math.max(0, Math.round(meteorDrop.y))}M`;
     }
-
     meteorGroup.visible = true;
     meteorGroup.position.set(player.x, player.y + 0.9, player.z);
     meteorGroup.lookAt(
@@ -586,16 +719,13 @@ export function stepSimulation(dt, elapsed) {
     );
     meteorCore.rotation.x += dt * 9.5;
     meteorCore.rotation.y += dt * 7.2;
-
     spawnParticles(player.x, player.y + 1.1, player.z, 0xf97316, 3, 4.5);
     spawnParticles(player.x, player.y + 1.4, player.z, 0xfacc15, 2, 3.2);
-
     const diveFov = fastDive ? 92 : 78;
     if (Math.abs(camera.fov - diveFov) > 0.2) {
       camera.fov += (diveFov - camera.fov) * Math.min(1, dt * 8);
       camera.updateProjectionMatrix();
     }
-
     const camBackDist = 9.5;
     const camOffsetX = Math.sin(player.yaw) * Math.cos(player.pitch) * camBackDist;
     const camOffsetY = -Math.sin(player.pitch) * camBackDist + 2.4;
@@ -606,14 +736,12 @@ export function stepSimulation(dt, elapsed) {
       Math.max(0.2, player.y + Math.sin(player.pitch) * 14 - 4),
       player.z - Math.cos(player.yaw) * 14
     );
-
     const surfaceAtMeteor = computeSupportFloor(player.x, player.z, player.y + 1.2, 0.5);
     if (player.y <= surfaceAtMeteor + 0.2) {
       meteorDrop.active = false;
       meteorGroup.visible = false;
       meteorReticle.visible = false;
       document.getElementById('meteor-aim-banner').style.display = 'none';
-
       player.y = surfaceAtMeteor;
       player.vy = 0;
       player.grounded = true;
@@ -621,48 +749,56 @@ export function stepSimulation(dt, elapsed) {
       player.pitch = -0.04;
       camera.fov = 72;
       camera.updateProjectionMatrix();
-
       sfx.meteorImpact();
       meteorDrop.cameraShake = 0.72;
       flashEdge('rgba(249, 115, 22, 0.65)');
+      // Ocean splashdown: the swell swallows the crater and the swim sim
+      // takes over on the very next frame.
+      const impactWb = getWaterBodyAt(player.x, player.z);
+      const impactSurf = impactWb ? getWaterHeightAt(player.x, player.z, elapsed) : null;
+      const waterImpact = impactWb && impactSurf !== null && surfaceAtMeteor < impactSurf - 0.25;
       spawnParticles(player.x, player.y + 0.4, player.z, 0xf97316, 26, 14.0);
       spawnParticles(player.x, player.y + 0.4, player.z, 0xfacc15, 20, 12.0);
       spawnParticles(player.x, player.y + 0.4, player.z, 0x44403c, 16, 10.0);
-
-      const crater = new THREE.Mesh(
-        new THREE.CircleGeometry(3.4, 24),
-        new THREE.MeshBasicMaterial({ color: 0x1c1917 })
-      );
-      crater.rotation.x = -Math.PI / 2;
-      crater.position.set(player.x, player.y + 0.035, player.z);
-      worldRoot.add(crater);
-      meteorDrop.craterMesh = crater;
-
+      if (waterImpact) {
+        player.y = impactSurf - 0.8;
+        player.vy = -1.5;
+        player.grounded = false;
+        player.peakAirY = player.y;
+        spawnParticles(player.x, impactSurf + 0.25, player.z, 0xe0f2fe, 30, 13.0);
+        spawnParticles(player.x, impactSurf + 0.1, player.z, 0x38bdf8, 22, 9.0);
+        pushFeed('METEOR SPLASHDOWN — THE OCEAN SWALLOWS THE IMPACT', 'border-l-cyan-400');
+      } else {
+        const crater = new THREE.Mesh(
+          new THREE.CircleGeometry(3.4, 24),
+          new THREE.MeshBasicMaterial({ color: 0x1c1917 })
+        );
+        crater.rotation.x = -Math.PI / 2;
+        crater.position.set(player.x, player.y + 0.035, player.z);
+        worldRoot.add(crater);
+        meteorDrop.craterMesh = crater;
+        pushFeed('METEOR TOUCHDOWN — LANDED AT YOUR TARGET!', 'border-l-amber-400');
+      }
       const shock = new THREE.Mesh(
         new THREE.RingGeometry(0.8, 1.4, 28),
         new THREE.MeshBasicMaterial({ color: 0xfacc15, side: THREE.DoubleSide, transparent: true, opacity: 0.9 })
       );
       shock.rotation.x = -Math.PI / 2;
-      shock.position.set(player.x, player.y + 0.06, player.z);
+      shock.position.set(player.x, (waterImpact ? impactSurf : player.y) + 0.06, player.z);
       worldRoot.add(shock);
       meteorDrop.shockwaveMesh = shock;
       meteorDrop.shockwaveLife = 0.65;
-
       for (const lp of lampPosts) {
         if (lp.state === 'standing' && Math.hypot(lp.x - player.x, lp.z - player.z) < 11.5) {
           knockOverLamppost(lp, Math.atan2(lp.x - player.x, lp.z - player.z), 4.2);
         }
       }
-
-      pushFeed('METEOR TOUCHDOWN — LANDED AT YOUR TARGET!', 'border-l-amber-400');
     }
-
     stepParticles(dt);
     updateZoneAndPrompts();
     hooks.updateHUD();
     return;
   }
-
   if (meteorDrop.shockwaveMesh) {
     meteorDrop.shockwaveLife -= dt;
     const sc = 1 + (0.65 - meteorDrop.shockwaveLife) * 26;
@@ -676,7 +812,6 @@ export function stepSimulation(dt, elapsed) {
   if (meteorDrop.cameraShake > 0) {
     meteorDrop.cameraShake = Math.max(0, meteorDrop.cameraShake - dt);
   }
-
   if (gameState.wheelTimer > 0) {
     gameState.wheelTimer -= dt;
     if (gameState.wheelTimer <= 0) document.getElementById('radial-menu').style.display = 'none';
@@ -685,7 +820,6 @@ export function stepSimulation(dt, elapsed) {
     gameState.dialogueTimer -= dt;
     if (gameState.dialogueTimer <= 0) document.getElementById('npc-dialogue').style.display = 'none';
   }
-
   // Rapid-fire trigger while Left-Mouse Button is held down!
   if (
     inputState.isPrimaryFireHeld &&
@@ -704,7 +838,6 @@ export function stepSimulation(dt, elapsed) {
       pushFeed('OUT OF SAUSAGES! REFILL AT AURA HOTDOGS OR PLAZA CART', 'border-l-rose-500');
     }
   }
-
   if (player.attackTimer > 0) {
     player.attackTimer = Math.max(0, player.attackTimer - dt);
     const progress = 1 - player.attackTimer / player.attackDuration;
@@ -716,7 +849,6 @@ export function stepSimulation(dt, elapsed) {
   if (player.leftUseTimer > 0) {
     player.leftUseTimer = Math.max(0, player.leftUseTimer - dt);
   }
-
   const targetFov = (!gameState.inCar && gameState.isAiming && gameState.activeRightWeapon === 'hotdog_shooter')
     ? 34
     : (gameState.inCar ? 76 : 72);
@@ -724,16 +856,21 @@ export function stepSimulation(dt, elapsed) {
     camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 12);
     camera.updateProjectionMatrix();
   }
-
   if (gameState.inCar) {
+    wasSwimming = false;
     fpRoot.visible = false;
     tpRig.visible = false;
-
     stepVehicleDriving(dt, elapsed);
-
   } else {
     sfx.updateEngine(false, 0, false);
-
+    // Splash-in dip the moment the swim system takes over.
+    if (swimState.active && !wasSwimming) {
+      player.landingDip = 0.2;
+      player.crouching = false;
+      player.slideTimer = 0;
+      player.airSlideReady = false;
+    }
+    wasSwimming = swimState.active;
     if (player.mantle.active) {
       player.mantle.timer += dt;
       const t = Math.min(1, player.mantle.timer / player.mantle.duration);
@@ -747,13 +884,28 @@ export function stepSimulation(dt, elapsed) {
         player.grounded = true;
         player.peakAirY = player.y;
       }
+    } else if (swimState.active) {
+      // ------------------------------------------------------------------
+      // DEEP WATER: water.js integrates buoyancy, currents, mouse-look
+      // dive/surface steering and collision sliding this frame (via
+      // hooks.updateWater). The walk/gravity branch fully yields so the two
+      // systems never fight over player.y.
+      // ------------------------------------------------------------------
+      player.crouching = false;
+      player.slideTimer = 0;
+      player.airSlideReady = false;
+      player.grounded = false;
+      player.coyote = 0;
+      player.pvx = 0;
+      player.pvz = 0;
+      player.peakAirY = player.y;
+      player.walkCycle = swimState.strokePhase;
     } else {
       // Input key checks for Crouch & Jump
       const crouchInput = Boolean(keys['KeyC'] || keys['ControlLeft']);
       if (!crouchInput) {
         player.crouchJumped = false;
       }
-
       // Jump input while crouching -> jump & uncrouch immediately
       if (keys['Space'] && (player.grounded || player.coyote > 0) && !player.mantle?.active) {
         player.vy = 7.5;
@@ -769,16 +921,13 @@ export function stepSimulation(dt, elapsed) {
       } else if (!crouchInput) {
         player.crouching = false;
       }
-
       const moveFwd = (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0) - (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0);
       const moveRight = (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0) - (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0);
-
       // Sprinting and Stamina Latch
       const shiftHeld = Boolean(keys['ShiftLeft'] || keys['ShiftRight']);
       if (!shiftHeld) {
         player.sprintExhausted = false;
       }
-
       const wantsSprint = shiftHeld && !player.sprintExhausted && moveFwd > 0 && !player.crouching && !gameState.isAiming && gameState.stamina > 0;
       if (wantsSprint) {
         gameState.stamina = Math.max(0, gameState.stamina - 8.5 * dt);
@@ -792,17 +941,19 @@ export function stepSimulation(dt, elapsed) {
         gameState.stamina = Math.min(100, gameState.stamina + regenRate * dt);
         player.sprintCycle = 0;
       }
-
+      // Wading: deeper water = heavier going, down to 0.55x at swim depth.
+      const wbHere = getWaterBodyAt(player.x, player.z);
+      const waterSurf = wbHere ? getWaterHeightAt(player.x, player.z, elapsed) : null;
+      const wadeDepth = (wbHere && waterSurf !== null) ? Math.max(0, waterSurf - player.y) : 0;
+      const wadeFactor = wbHere ? (1 - Math.min(1, wadeDepth / 1.12) * 0.45) : 1;
       const boost = gameState.speedBoostTimer > 0 ? 1.25 : 1.0;
       const pp_ = levelData.params.player;
       const msScale = pp_.moveSpeed / 4.7;
-      const speed = (player.crouching ? 2.6 * msScale : gameState.isAiming ? 3.2 * msScale : wantsSprint ? pp_.moveSpeed * pp_.sprintMultiplier : pp_.moveSpeed) * boost * (isInWater(player.x, player.z) ? 0.55 : 1);
-
+      const speed = (player.crouching ? 2.6 * msScale : gameState.isAiming ? 3.2 * msScale : wantsSprint ? pp_.moveSpeed * pp_.sprintMultiplier : pp_.moveSpeed) * boost * wadeFactor;
       const fwdX = -Math.sin(player.yaw);
       const fwdZ = -Math.cos(player.yaw);
       const rightX = Math.cos(player.yaw);
       const rightZ = -Math.sin(player.yaw);
-
       let vx = fwdX * moveFwd + rightX * moveRight;
       let vz = fwdZ * moveFwd + rightZ * moveRight;
       const len = Math.hypot(vx, vz);
@@ -815,10 +966,8 @@ export function stepSimulation(dt, elapsed) {
       const grip = player.grounded ? surfaceGrip(player.x, player.z) * (len > 0.001 ? 1 : 1.25) : (len > 0.001 ? 2.2 : 0.4);
       player.pvx = (player.pvx || 0) + (tvx - (player.pvx || 0)) * Math.min(1, grip * dt);
       player.pvz = (player.pvz || 0) + (tvz - (player.pvz || 0)) * Math.min(1, grip * dt);
-
       // Crouch Slide from Air (Jump/Cliff) vs Flat Ground
       const horizSpeed = Math.hypot(player.pvx || 0, player.pvz || 0);
-
       if (!player.grounded) {
         if (player.crouching && horizSpeed > 1.8) {
           player.airSlideReady = true;
@@ -838,7 +987,6 @@ export function stepSimulation(dt, elapsed) {
           player.airSlideReady = false;
         }
       }
-
       if (player.slideTimer > 0) {
         player.slideTimer -= dt;
         player.pvx = player.slideVx;
@@ -849,30 +997,49 @@ export function stepSimulation(dt, elapsed) {
           spawnParticles(player.x, player.y + 0.05, player.z, 0x9ca3af, 2, 1.5);
         }
       }
-
       vx = player.pvx; vz = player.pvz;
-
       const nextX = player.x + vx * dt;
       const nextZ = player.z + vz * dt;
       const bodyH = player.crouching ? 1.22 : player.height;
-
       if (!collidesHorizontally(nextX, player.z, player.y, bodyH, player.radius)) player.x = nextX; else player.pvx = 0;
       if (!collidesHorizontally(player.x, nextZ, player.y, bodyH, player.radius)) player.z = nextZ; else player.pvz = 0;
-
+      // Current drift nudges waders along with the flow (collision-checked).
+      if (wbHere && swimState.wading) {
+        const driftX = wbHere.currentX * dt * 0.3;
+        const driftZ = wbHere.currentZ * dt * 0.3;
+        if (!collidesHorizontally(player.x + driftX, player.z, player.y, bodyH, player.radius)) player.x += driftX;
+        if (!collidesHorizontally(player.x, player.z + driftZ, player.y, bodyH, player.radius)) player.z += driftZ;
+      }
       const previousY = player.y;
+      const inWaterColumn = wbHere !== null && waterSurf !== null && player.y < waterSurf - 0.12;
       player.vy -= 19.5 * dt * (player.vy < 0 ? 1.28 : (keys['Space'] ? 1 : 1.9));
+      if (inWaterColumn) {
+        // Buoyant drag: sink gently through the column until the swim system
+        // engages — no plummeting, no surface walking.
+        player.vy = Math.max(player.vy, -3.2);
+        player.vy *= Math.pow(0.35, dt);
+      }
       player.y += player.vy * dt;
       if (!player.grounded && player.y > player.peakAirY) player.peakAirY = player.y;
-
-      const supportY = computeSupportFloor(player.x, player.z, previousY - 0.46, player.radius);
+      let supportY = computeSupportFloor(player.x, player.z, previousY - 0.46, player.radius);
+      if (inWaterColumn) {
+        // Below the surface the real floor is the seabed / riverbed, not the
+        // invisible land heightfield — this is what lets you swim out deep.
+        const bed = getWaterBedAt(player.x, player.z);
+        if (bed !== null && bed < supportY) supportY = bed;
+      }
       if (player.y <= supportY && player.vy <= 0) {
         if (!player.grounded) {
           const fallDist = player.peakAirY - supportY;
-          if (fallDist > 3.6) {
+          // Water breaks your fall — no impact damage into the swim column.
+          if (fallDist > 3.6 && !inWaterColumn) {
             const fallDmg = Math.min(65, (fallDist - 3.6) * 8.5);
             applyPlayerDamage(fallDmg, 'FALL IMPACT');
           }
           player.landingDip = Math.min(0.24, Math.max(0.06, fallDist * 0.04));
+          if (inWaterColumn) {
+            spawnParticles(player.x, waterSurf + 0.08, player.z, 0xe0f2fe, 10, 4.5);
+          }
         }
         player.y = supportY;
         player.vy = 0;
@@ -882,24 +1049,25 @@ export function stepSimulation(dt, elapsed) {
         player.grounded = false;
       }
     }
-
     if (player.landingDip > 0) player.landingDip = Math.max(0, player.landingDip - dt * 1.4);
     player.coyote = player.grounded ? 0.12 : Math.max(0, (player.coyote || 0) - dt);
-
-    const targetEye = player.crouching ? 1.12 : 1.62;
+    // Eye height: treading keeps the head above the swell; diving tucks the
+    // camera down with the body so you actually see the seabed.
+    const targetEye = swimState.active
+      ? (swimState.submerged ? 0.85 : 1.5)
+      : (player.crouching ? 1.12 : 1.62);
     player.eyeHeight += (targetEye - player.eyeHeight) * Math.min(1, dt * 14);
-    const movingSpeed = (keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD']) && player.grounded;
+    const movingSpeed = (keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD']) && player.grounded && !swimState.active;
     const isSprintingNow = (keys['ShiftLeft'] || keys['ShiftRight']) && (keys['KeyW'] || keys['ArrowUp']) && !player.crouching && !gameState.isAiming && gameState.stamina > 0 && movingSpeed && !player.sprintExhausted;
     const bobY = movingSpeed ? Math.abs(Math.sin(player.walkCycle)) * (isSprintingNow ? 0.085 : 0.045) : 0;
+    const swimBob = swimState.active ? Math.sin(swimState.strokePhase * 2) * 0.035 : 0;
     const isStepping = movingSpeed && player.slideTimer <= 0 && !player.mantle.active;
     const biome = biomeAt(player.x, player.z);
     const stepSurface = under() ? 'metal'
-      : (player.x >= 164 || biome === 'cove') ? 'sand'
+      : (player.x >= 164 || biome === 'cove' || swimState.wading) ? 'sand'
       : (biome === 'woods' || biome === 'alpine') ? 'grass'
       : 'concrete';
     sfx.updateFootsteps(dt, isStepping, isSprintingNow, player.grounded, stepSurface);
-
-
     let swingPitch = 0;
     let punchZ = 0;
     let punchSwingX = 0;
@@ -923,8 +1091,9 @@ export function stepSimulation(dt, elapsed) {
       }
     }
     const leftRaise = player.leftUseTimer > 0 ? Math.sin((1 - player.leftUseTimer / 0.32) * Math.PI) * 0.22 : 0;
-
-    if (gameState.isAiming && gameState.activeRightWeapon === 'hotdog_shooter') {
+    if (swimState.active) {
+      animateSwimFirstPerson();
+    } else if (gameState.isAiming && gameState.activeRightWeapon === 'hotdog_shooter') {
       fpRight.pivot.visible = false;
       fpLeft.pivot.visible = false;
     } else {
@@ -932,7 +1101,6 @@ export function stepSimulation(dt, elapsed) {
       fpLeft.pivot.visible = true;
       const isRightHook = gameState.activeRightWeapon === 'fists' && player.punchCombo === 0 && player.attackTimer > 0;
       const isLeftHook = gameState.activeRightWeapon === 'fists' && player.punchCombo === 1 && player.attackTimer > 0;
-
       fpRight.pivot.position.set(
         0.32 - (isRightHook ? punchSwingX : 0),
         -0.26 - bobY * 0.5 + (isRightHook ? 0.05 : 0),
@@ -943,7 +1111,6 @@ export function stepSimulation(dt, elapsed) {
         isRightHook ? punchYaw : 0,
         isRightHook ? punchRoll : 0
       );
-
       fpLeft.pivot.position.set(
         -0.32 + (isLeftHook ? punchSwingX : 0),
         -0.26 - bobY * 0.5 + leftRaise + (isLeftHook ? 0.05 : 0),
@@ -955,17 +1122,17 @@ export function stepSimulation(dt, elapsed) {
         isLeftHook ? -punchRoll : 0
       );
     }
-
     if (gameState.thirdPerson) {
       fpRoot.visible = false;
       tpRig.visible = true;
       tpRig.position.set(player.x, player.y + bobY - player.landingDip, player.z);
-
       // Rotate playerMesh.rotation.y by + Math.PI (180 degrees) so character faces forward
       tpRig.rotation.y = player.yaw;
-
       tpHip.rotation.x = 0;
+      tpHip.rotation.z = 0;
       tpTorso.rotation.y = 0;
+      tpHead.rotation.x = 0;
+      tpHead.rotation.y = 0;
       tpArmL.rotation.set(0, 0, 0);
       tpArmR.rotation.set(0, 0, 0);
       tpElbowL.rotation.x = 0;
@@ -974,8 +1141,11 @@ export function stepSimulation(dt, elapsed) {
       tpLegR.rotation.set(0, 0, 0);
       tpKneeL.rotation.x = 0;
       tpKneeR.rotation.x = 0;
-
-      if (player.slideTimer > 0) {
+      if (swimState.active) {
+        // Full procedural swim set, phase-locked to the buoyancy sim and
+        // angled by the mouse pitch so the body points where you look.
+        animateSwimRig(dt, elapsed);
+      } else if (player.slideTimer > 0) {
         // Sliding posture animation
         tpHip.rotation.x = -0.48;
         tpLegL.rotation.x = 0.85;
@@ -1019,67 +1189,64 @@ export function stepSimulation(dt, elapsed) {
         const sPhase = player.walkCycle;
         const stride = Math.sin(sPhase);
         const oppStride = Math.sin(sPhase + Math.PI);
-
         tpHip.rotation.x = -0.26;
         tpTorso.rotation.y = -stride * 0.18;
-
         tpLegL.rotation.x = stride * 1.12;
         tpKneeL.rotation.x = Math.max(0.12, -stride * 1.15 + 0.35);
-
         tpLegR.rotation.x = oppStride * 1.12;
         tpKneeR.rotation.x = Math.max(0.12, -oppStride * 1.15 + 0.35);
-
         tpArmL.rotation.x = -stride * 1.18 + 0.15;
         tpArmL.rotation.z = -0.08;
         tpElbowL.rotation.x = 1.52;
-
         tpArmR.rotation.x = -oppStride * 1.18 + 0.15;
         tpArmR.rotation.z = 0.08;
         tpElbowR.rotation.x = 1.52;
       } else {
         const legSwing = movingSpeed ? Math.sin(player.walkCycle) * 0.58 : 0;
-        tpLegL.rotation.x = legSwing;
-        tpKneeL.rotation.x = movingSpeed ? Math.max(0, -legSwing * 0.55) : 0;
-        tpLegR.rotation.x = -legSwing;
-        tpKneeR.rotation.x = movingSpeed ? Math.max(0, legSwing * 0.55) : 0;
-
+        // Wading: forward lean, balancing arms, higher knee lift through water.
+        const wade = swimState.wading && movingSpeed;
+        if (wade) tpHip.rotation.x = -0.12;
+        tpLegL.rotation.x = legSwing * (wade ? 1.25 : 1);
+        tpKneeL.rotation.x = movingSpeed ? Math.max(0, -legSwing * 0.55) + (wade ? 0.3 : 0) : 0;
+        tpLegR.rotation.x = -legSwing * (wade ? 1.25 : 1);
+        tpKneeR.rotation.x = movingSpeed ? Math.max(0, legSwing * 0.55) + (wade ? 0.3 : 0) : 0;
         tpArmL.rotation.x = -legSwing * 0.65 + leftRaise * 3.5;
+        tpArmL.rotation.z = wade ? -0.22 : 0;
         tpElbowL.rotation.x = movingSpeed ? 0.22 : 0.08;
         tpArmR.rotation.x = legSwing * 0.65;
+        tpArmR.rotation.z = wade ? 0.22 : 0;
         tpElbowR.rotation.x = movingSpeed ? 0.22 : 0.08;
       }
-
-      if (gameState.activeRightWeapon === 'hotdog_shooter') {
-        tpArmR.rotation.set(1.48 + swingPitch, 0, 0);
-        tpElbowR.rotation.x = 0.18;
-      } else if (player.attackTimer > 0) {
-        const t = 1 - player.attackTimer / player.attackDuration;
-        const hookArc = Math.sin(t * Math.PI);
-        if (gameState.activeRightWeapon === 'fists') {
-          if (player.punchCombo === 0) {
-            tpArmR.rotation.set(1.35 * hookArc, 0, -0.78 * hookArc);
-            tpElbowR.rotation.x = 0.85 * hookArc;
-            tpTorso.rotation.y = 0.48 * hookArc;
+      if (!swimState.active) {
+        if (gameState.activeRightWeapon === 'hotdog_shooter') {
+          tpArmR.rotation.set(1.48 + swingPitch, 0, 0);
+          tpElbowR.rotation.x = 0.18;
+        } else if (player.attackTimer > 0) {
+          const t = 1 - player.attackTimer / player.attackDuration;
+          const hookArc = Math.sin(t * Math.PI);
+          if (gameState.activeRightWeapon === 'fists') {
+            if (player.punchCombo === 0) {
+              tpArmR.rotation.set(1.35 * hookArc, 0, -0.78 * hookArc);
+              tpElbowR.rotation.x = 0.85 * hookArc;
+              tpTorso.rotation.y = 0.48 * hookArc;
+            } else {
+              tpArmL.rotation.set(1.35 * hookArc, 0, 0.78 * hookArc);
+              tpElbowL.rotation.x = 0.85 * hookArc;
+              tpTorso.rotation.y = -0.48 * hookArc;
+            }
           } else {
-            tpArmL.rotation.set(1.35 * hookArc, 0, 0.78 * hookArc);
-            tpElbowL.rotation.x = 0.85 * hookArc;
-            tpTorso.rotation.y = -0.48 * hookArc;
+            tpArmR.rotation.x = -swingPitch * 1.4;
+            tpElbowR.rotation.x = 0.35;
           }
-        } else {
-          tpArmR.rotation.x = -swingPitch * 1.4;
-          tpElbowR.rotation.x = 0.35;
         }
       }
-
       tpHip.scale.y = player.crouching ? 0.72 : 1.0;
       tpHip.position.y = player.crouching ? 0.65 : 0.90;
-
-      const pivotY = player.y + (player.crouching ? 1.15 : 1.56);
+      const pivotY = swimState.active ? player.y + 1.1 : player.y + (player.crouching ? 1.15 : 1.56);
       const camDist = 3.65;
       const idealX = player.x + Math.sin(player.yaw) * Math.cos(player.pitch) * camDist;
       const idealY = pivotY - Math.sin(player.pitch) * camDist + 0.35;
       const idealZ = player.z + Math.cos(player.yaw) * Math.cos(player.pitch) * camDist;
-
       let safeDist = camDist;
       for (let s = 0.25; s <= 1.0; s += 0.25) {
         const tx = player.x + (idealX - player.x) * s;
@@ -1091,23 +1258,33 @@ export function stepSimulation(dt, elapsed) {
         }
       }
       const ratio = safeDist / camDist;
-      camera.position.set(
-        player.x + (idealX - player.x) * ratio,
-        Math.max(0.55, terrainH(player.x + (idealX - player.x) * ratio, player.z + (idealZ - player.z) * ratio) + 0.7, pivotY + (idealY - pivotY) * ratio),
-        player.z + (idealZ - player.z) * ratio
-      );
+      const camX = player.x + (idealX - player.x) * ratio;
+      const camZ = player.z + (idealZ - player.z) * ratio;
+      let camY = pivotY + (idealY - pivotY) * ratio;
+      if (swimState.active) {
+        // Follow the diver underwater — clamp to the seabed, not the surface.
+        const bed = getWaterBedAt(camX, camZ);
+        camY = Math.max(bed !== null ? bed + 0.3 : 0.3, camY);
+      } else {
+        camY = Math.max(0.55, terrainH(camX, camZ) + 0.7, camY);
+      }
+      camera.position.set(camX, camY, camZ);
+      camera.rotation.z = 0;
       camera.lookAt(player.x - Math.sin(player.yaw) * 4, pivotY + Math.sin(player.pitch) * 4, player.z - Math.cos(player.yaw) * 4);
     } else {
       fpRoot.visible = true;
       tpRig.visible = false;
       const shakeX = meteorDrop.cameraShake > 0 ? (Math.random() - 0.5) * meteorDrop.cameraShake * 0.45 : 0;
       const shakeY = meteorDrop.cameraShake > 0 ? (Math.random() - 0.5) * meteorDrop.cameraShake * 0.45 : 0;
-      camera.position.set(player.x + shakeX, player.y + player.eyeHeight + bobY - player.landingDip + shakeY, player.z);
+      camera.position.set(player.x + shakeX, player.y + player.eyeHeight + bobY + swimBob - player.landingDip + shakeY, player.z);
       camera.rotation.y = player.yaw;
       camera.rotation.x = player.pitch;
+      // Stroke roll + slow underwater sway sell the swim in first person.
+      camera.rotation.z = swimState.active
+        ? Math.sin(swimState.strokePhase) * 0.055 + (swimState.submerged ? Math.sin(elapsed * 1.3) * 0.02 : 0)
+        : 0;
     }
   }
-
   for (let i = worldPickups.length - 1; i >= 0; i--) {
     const p = worldPickups[i];
     p.phase += dt * 2.8;
@@ -1140,20 +1317,16 @@ export function stepSimulation(dt, elapsed) {
       }
     }
   }
-
   stepParticles(dt);
-
   for (let i = 0; i < aviationBeacons.length; i++) {
     const pulse = Math.sin(elapsed * 4.5 + i * 1.4) > 0.25;
     aviationBeacons[i].visible = pulse;
   }
-
   updateProjectileWieners(dt);
   updateLampposts(dt, elapsed);
   updateBuildingLods();
   updateSkyscraperInteriors();
   updateNPCs(dt, elapsed);
-
   const sunY = Math.max(0, player.y);
   const shadowMoved = !aura._shadowAt
     || Math.hypot(player.x - aura._shadowAt.x, player.z - aura._shadowAt.z) > 8
@@ -1167,7 +1340,6 @@ export function stepSimulation(dt, elapsed) {
     aura._shadowAt = { x: player.x, y: sunY, z: player.z };
     aura._shadowT = performance.now();
   }
-
   updateZoneAndPrompts();
   hooks.updateHUD();
 }
@@ -1180,40 +1352,70 @@ export function enhancePerFrame(dt, elapsed) {
     }
   }
   updatePickpocket(dt);
+  // Water tick: world.js may already drive it (guarded once-per-frame); this
+  // call guarantees it runs even if the atmosphere pass didn't. The yaw guard
+  // keeps water.js's +Z-convention swim yaw from spinning the -Z camera.
+  const yawBeforeWater = player.yaw;
   updateBiomeAtmosphere(dt, elapsed);
+  if (typeof hooks.updateWater === 'function') hooks.updateWater(dt, elapsed);
+  if (swimState.active) {
+    player.yaw = yawBeforeWater;
+    updateSwimFeedback(dt);
+  } else {
+    swimO2Warned = false;
+    swimDrownT = 0;
+  }
   auraFrame(dt, elapsed);
   if (!pp.hinted && elapsed > 6) { pp.hinted = true; pushFeed('TIP: SNEAK BEHIND A CITIZEN & HOLD [G] TO PICKPOCKET', 'border-l-emerald-400'); }
 }
 
-export function nearestManhole(r){for(let i=0;i<manholes.length;i++)if(Math.hypot(player.x-manholes[i][0],player.z-manholes[i][1])<r)return i;return -1;}
-
-export function startClimb(dir,i){climb.on=true;climb.dir=dir;if(dir<0)reviveRats();climb.t=0;climb.i=i;sfx.mantle();
-  pushFeed(dir<0?'CLIMBING DOWN INTO THE SEWERS':'CLIMBING OUT',dir<0?'border-l-emerald-400':'border-l-sky-400');}
-
-export function climbFrame(dt){
-  if(!climb.on)return;
-  climb.t=Math.min(1,climb.t+dt/2.2);
-  const e=climb.t*climb.t*(3-2*climb.t),top=.18,bot=SFY+.02,m=manholes[climb.i];
-  player.x=m[0];player.z=m[1];player.vy=0;player.grounded=true;
-  player.y=climb.dir<0?top+(bot-top)*e:bot+(top-bot)*e;player.peakAirY=player.y;
-  if(climb.t>=1){climb.on=false;manholeCovers[climb.i].visible=true;}
+export function nearestManhole(r) { for (let i = 0; i < manholes.length; i++) if (Math.hypot(player.x - manholes[i][0], player.z - manholes[i][1]) < r) return i; return -1; }
+export function startClimb(dir, i) {
+  climb.on = true; climb.dir = dir; if (dir < 0) reviveRats(); climb.t = 0; climb.i = i; sfx.mantle();
+  pushFeed(dir < 0 ? 'CLIMBING DOWN INTO THE SEWERS' : 'CLIMBING OUT', dir < 0 ? 'border-l-emerald-400' : 'border-l-sky-400');
 }
-
-export const hazeC=new THREE.Color(0xb8d4ea);
-
-export function auraFrame(dt,t){
-  climbFrame(dt);ratFrame(dt,t);if(aura.ahCull)aura.ahCull(dt);
-  const u=under();
-  if(u!==AT.on){AT.on=u;if(u){scene.background=new THREE.Color(0x070a09);skyGroup.visible=false;}else{scene.background=AT.bg;skyGroup.visible=true;{const hi=gameState.settings.graphics==='high';sunLight.intensity=hi?1.65:1.45;hemiLight.intensity=hi?.96:.88;}}sewerLights.forEach(l=>l.visible=u);uLight.visible=u;}
-  if(u){scene.fog.color.set(0x0a100d);scene.fog.density=.016;sunLight.intensity=0;hemiLight.intensity=.22;uLight.position.set(player.x,player.y+2.2,player.z);
-    sewerLights.forEach((l,i)=>{if(i<10&&Math.random()<.01)l.intensity=10+Math.random()*30;else if(i<10)l.intensity+=(30-l.intensity)*.1;});}
-  else if(player.z<-175){scene.fog.color.lerp(hazeC,.02);}
-  copFrame(dt,t);suspFrame(dt,t);
-  const cp=document.getElementById('ao-compass');if(cp){const d=['N','NE','E','SE','S','SW','W','NW'][((Math.round(((-player.yaw%6.283)+6.283)%6.283/.7854))+4)%8];cp.textContent=u?`SEWERS  ·  DEPTH ${Math.round(-player.y)}m`:`${d}  ·  ALT ${Math.max(0,Math.round(player.y))}m`;}
-  const tp=document.getElementById('ao-tip');let msg='';
-  if(!gameState.inCar){if(u){for(let i=0;i<manholes.length;i++)if(Math.hypot(player.x-manholes[i][0],player.z-manholes[i][1])<3.2)msg='[F] CLIMB LADDER TO SURFACE';}
-    else{const i=nearestManhole(2.4);if(i>=0)msg=manholeOpen[i]?'[F] CLIMB DOWN':'[F] OPEN MANHOLE';else if(aura.ahHint){const h2=aura.ahHint();if(h2)msg=h2;}}}
-  if(tp){tp.style.display=msg?'block':'none';tp.textContent=msg;}
+export function climbFrame(dt) {
+  if (!climb.on) return;
+  climb.t = Math.min(1, climb.t + dt / 2.2);
+  const e = climb.t * climb.t * (3 - 2 * climb.t), top = .18, bot = SFY + .02, m = manholes[climb.i];
+  player.x = m[0]; player.z = m[1]; player.vy = 0; player.grounded = true;
+  player.y = climb.dir < 0 ? top + (bot - top) * e : bot + (top - bot) * e; player.peakAirY = player.y;
+  if (climb.t >= 1) { climb.on = false; manholeCovers[climb.i].visible = true; }
+}
+export const hazeC = new THREE.Color(0xb8d4ea);
+export function auraFrame(dt, t) {
+  climbFrame(dt); ratFrame(dt, t); if (aura.ahCull) aura.ahCull(dt);
+  const u = under();
+  if (u !== AT.on) { AT.on = u; if (u) { scene.background = new THREE.Color(0x070a09); skyGroup.visible = false; } else { scene.background = AT.bg; skyGroup.visible = true; { const hi = gameState.settings.graphics === 'high'; sunLight.intensity = hi ? 1.65 : 1.45; hemiLight.intensity = hi ? 0.96 : 0.88; } } sewerLights.forEach(l => l.visible = u); uLight.visible = u; }
+  if (u) {
+    scene.fog.color.set(0x0a100d); scene.fog.density = .016; sunLight.intensity = 0; hemiLight.intensity = .22; uLight.position.set(player.x, player.y + 2.2, player.z);
+    sewerLights.forEach((l, i) => { if (i < 10 && Math.random() < .01) l.intensity = 10 + Math.random() * 30; else if (i < 10) l.intensity += (30 - l.intensity) * .1; });
+  }
+  else if (player.z < -175) { scene.fog.color.lerp(hazeC, .02); }
+  copFrame(dt, t); suspFrame(dt, t);
+  const cp = document.getElementById('ao-compass');
+  if (cp) {
+    if (swimState.active) {
+      const surf = getWaterHeightAt(player.x, player.z, t);
+      const depth = Math.max(0, (surf !== null ? surf : 0.2) - player.y);
+      cp.textContent = swimState.submerged
+        ? `O₂ ${Math.round(swimState.oxygen)}% · DEPTH ${depth.toFixed(1)}M`
+        : `SWIMMING · O₂ ${Math.round(swimState.oxygen)}%`;
+    } else {
+      const d = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][((Math.round(((-player.yaw % 6.283) + 6.283) % 6.283 / .7854)) + 4) % 8];
+      cp.textContent = u ? `SEWERS · DEPTH ${Math.round(-player.y)}m` : `${d} · ALT ${Math.max(0, Math.round(player.y))}m`;
+    }
+  }
+  const tp = document.getElementById('ao-tip'); let msg = '';
+  if (swimState.active) {
+    msg = swimState.submerged
+      ? '[WASD] STROKE · LOOK ↑↓ TO STEER · [SPACE] QUICK SURFACE'
+      : '[WASD] SWIM · LOOK DOWN TO DIVE · LOOK UP TO SURFACE · [SHIFT] SPRINT';
+  } else if (!gameState.inCar) {
+    if (u) { for (let i = 0; i < manholes.length; i++) if (Math.hypot(player.x - manholes[i][0], player.z - manholes[i][1]) < 3.2) msg = '[F] CLIMB LADDER TO SURFACE'; }
+    else { const i = nearestManhole(2.4); if (i >= 0) msg = manholeOpen[i] ? '[F] CLIMB DOWN' : '[F] OPEN MANHOLE'; else if (aura.ahHint) { const h2 = aura.ahHint(); if (h2) msg = h2; } }
+  }
+  if (tp) { tp.style.display = msg ? 'block' : 'none'; tp.textContent = msg; }
 }
 hooks.getRightMountWorldPosition = (out) => fpRight.itemMount.getWorldPosition(out);
 

@@ -21,10 +21,76 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 let initialized = false;
 let bunker = null;
 let jet = null;
-let flame = [];
+let flameBlades = [];
+let flameTextures = [];
+let flameAspect = 2.05;
+let lastFlameSwap = -1;
 let chute = null;
 let chuteActive = false;
 let stepOverride = false;
+
+// Load metallic scratch texture overlay
+const textureLoader = new THREE.TextureLoader();
+const metalScratchTex = textureLoader.load('assets/textures/metal.png');
+metalScratchTex.wrapS = THREE.RepeatWrapping;
+metalScratchTex.wrapT = THREE.RepeatWrapping;
+metalScratchTex.repeat.set(4, 4);
+
+// Jet Shoot Sound handling with Web Audio API & HTML5 Audio fallback for pitch variation
+let jetShootBuffer = null;
+let jetShootAudioRaw = null;
+
+function loadJetShootSFX() {
+  if (typeof window === 'undefined') return;
+  fetch('assets/audio/jetshoot.mp3')
+    .then(res => res.arrayBuffer())
+    .then(arrayBuf => {
+      jetShootAudioRaw = arrayBuf;
+      if (sfx.ctx && sfx.ctx.state !== 'closed') {
+        return sfx.ctx.decodeAudioData(arrayBuf.slice(0));
+      }
+      return null;
+    })
+    .then(buf => {
+      if (buf) jetShootBuffer = buf;
+    })
+    .catch(() => {});
+}
+loadJetShootSFX();
+
+function playJetShootSound() {
+  if (!sfx.enabled) return;
+  const pitchShift = 0.93 + Math.random() * 0.14; // Slight pitch variation
+
+  if (sfx.ctx && !jetShootBuffer && jetShootAudioRaw) {
+    sfx.ctx.decodeAudioData(jetShootAudioRaw.slice(0)).then(buf => {
+      jetShootBuffer = buf;
+    }).catch(() => {});
+  }
+
+  if (sfx.ctx && jetShootBuffer) {
+    try {
+      const src = sfx.ctx.createBufferSource();
+      src.buffer = jetShootBuffer;
+      src.playbackRate.value = pitchShift;
+      const gain = sfx.ctx.createGain();
+      gain.gain.value = 0.35;
+      src.connect(gain);
+      gain.connect(sfx.ctx.destination);
+      src.start(0);
+      return;
+    } catch (_) {}
+  }
+
+  try {
+    const audio = new Audio('assets/audio/jetshoot.mp3');
+    audio.playbackRate = pitchShift;
+    audio.volume = 0.35;
+    audio.play().catch(() => {});
+  } catch (_) {
+    sfx.tone(170 + Math.random() * 50, 70, 0.07, 'square', 0.045);
+  }
+}
 
 const jetState = {
   flying: false, pos: new THREE.Vector3(-384, AIRFIELD.y + GEAR, AIRFIELD.rz),
@@ -46,11 +112,8 @@ function groundHeight(x, z) {
   if (x < -196 && x > -560 && z > -172 && z < 172) return hillsH(x, z);
   if (z < -170 && z > -590 && x > -138 && x < 370) return Math.max(0.18, terrainH(x, z));
   if (x >= 368 && x <= 533 && z >= -180 && z <= 240) return 1.5;
-  // Northern ocean strait between main city and Los Aura
   if (z > 208 && z < 380 && x >= -260 && x <= 500) return 0.20;
-  // Northern expansion landmass: Santa Aura, Downtown Los Aura, LAX Airport & Speedway
   if (x >= -250 && x <= 490 && z >= 380 && z <= 930) {
-    // Los Aura International Airport (LAX) tarmac & runways
     if (x >= 180 && x <= 468 && z >= 435 && z <= 695) return 0.24;
     return 0.18;
   }
@@ -74,6 +137,96 @@ function box(parent, mat, x, y, z, w, h, d) {
 
 function solid(x0, x1, y0, y1, z0, z1) {
   return addWorldBox(x0, x1, y0, y1, z0, z1, 'solid', false);
+}
+
+function createFallbackFlameTexture() {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 256;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createRadialGradient(64, 210, 8, 64, 150, 120);
+  grad.addColorStop(0, 'rgba(255, 252, 210, 1)');
+  grad.addColorStop(0.35, 'rgba(255, 165, 35, 0.9)');
+  grad.addColorStop(0.75, 'rgba(235, 65, 15, 0.45)');
+  grad.addColorStop(1, 'rgba(180, 20, 0, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 128, 256);
+  const tex = new THREE.CanvasTexture(c);
+  if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function initFlameTextures() {
+  if (flameTextures.length) return;
+  flameTextures = [createFallbackFlameTexture()];
+
+  const img = new Image();
+  img.onload = () => {
+    const w = img.naturalWidth || img.width || 256;
+    const h = img.naturalHeight || img.height || 512;
+    flameAspect = h / Math.max(1, w);
+
+    const buildVariant = drawFn => {
+      const c = document.createElement('canvas');
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext('2d');
+      drawFn(ctx, w, h);
+      const tex = new THREE.CanvasTexture(c);
+      if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.needsUpdate = true;
+      return tex;
+    };
+
+    const variantDrawers = [
+      (ctx, cw, ch) => { ctx.drawImage(img, 0, 0, cw, ch); },
+      (ctx, cw, ch) => {
+        ctx.save();
+        ctx.translate(cw, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(img, 0, 0, cw, ch);
+        ctx.restore();
+      },
+      (ctx, cw, ch) => {
+        const slices = 32, sh = ch / slices;
+        for (let i = 0; i < slices; i++) {
+          const sy = i * sh, tipFactor = 1 - i / slices;
+          const shift = Math.sin(tipFactor * Math.PI * 2.6) * cw * 0.065 * tipFactor;
+          ctx.drawImage(img, 0, sy, cw, sh + 1, shift, sy, cw, sh + 1);
+        }
+      },
+      (ctx, cw, ch) => {
+        const slices = 32, sh = ch / slices;
+        for (let i = 0; i < slices; i++) {
+          const sy = i * sh, tipFactor = 1 - i / slices;
+          const shift = Math.cos(tipFactor * Math.PI * 2.4) * cw * 0.07 * tipFactor;
+          ctx.save();
+          ctx.translate(cw + shift, sy);
+          ctx.scale(-1, 1);
+          ctx.drawImage(img, 0, sy, cw, sh + 1, 0, 0, cw, sh + 1);
+          ctx.restore();
+        }
+      },
+      (ctx, cw, ch) => {
+        const inset = cw * 0.07;
+        ctx.drawImage(img, inset, 0, cw - inset * 2, ch);
+      }
+    ];
+
+    const oldTextures = flameTextures;
+    flameTextures = variantDrawers.map(buildVariant);
+    for (let i = 0; i < flameBlades.length; i++) {
+      const blade = flameBlades[i];
+      blade.texIdx = i % flameTextures.length;
+      blade.mat.map = flameTextures[blade.texIdx];
+      blade.mat.needsUpdate = true;
+    }
+    oldTextures.forEach(t => t.dispose());
+  };
+  img.src = 'assets/textures/flame.png';
 }
 
 function buildBunker() {
@@ -163,12 +316,16 @@ function planform(points, depth) {
 }
 
 function buildJet() {
+  initFlameTextures();
   jet = new THREE.Group();
-  const body = material(0x6f7985, { metalness: 0.55, roughness: 0.38 });
-  const dark = material(0x2b3038, { metalness: 0.6, roughness: 0.4 });
-  const red = material(0xd92b2b, { roughness: 0.5 });
+
+  // Materials enhanced with the metallic scratch texture overlay
+  const body = material(0x6f7985, { metalness: 0.8, roughness: 0.3, roughnessMap: metalScratchTex, metalnessMap: metalScratchTex });
+  const dark = material(0x2b3038, { metalness: 0.85, roughness: 0.25, roughnessMap: metalScratchTex, metalnessMap: metalScratchTex });
+  const red = material(0xd92b2b, { metalness: 0.6, roughness: 0.35, roughnessMap: metalScratchTex, metalnessMap: metalScratchTex });
   const canopy = material(0x0d2236, { metalness: 0.9, roughness: 0.08, emissive: 0x07121d });
-  const double = material(0x59616c, { metalness: 0.5, roughness: 0.4, side: THREE.DoubleSide });
+  const double = material(0x59616c, { metalness: 0.75, roughness: 0.35, side: THREE.DoubleSide, roughnessMap: metalScratchTex, metalnessMap: metalScratchTex });
+
   const fuselage = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.3, 11, 14), body); fuselage.rotation.x = Math.PI / 2; fuselage.position.z = -0.8; fuselage.scale.z = 0.82; jet.add(fuselage);
   const nose = new THREE.Mesh(new THREE.ConeGeometry(0.95, 5.4, 14), body); nose.rotation.x = Math.PI / 2; nose.position.z = 7.4; nose.scale.z = 0.82; jet.add(nose);
   const can = new THREE.Mesh(new THREE.SphereGeometry(0.8, 14, 10), canopy); can.position.set(0, 0.78, 3.2); can.scale.set(0.78, 0.62, 2.3); jet.add(can); jet.userData.can = can;
@@ -176,6 +333,19 @@ function buildJet() {
   box(jet, body, 0, 0.85, -2.6, 0.7, 0.35, 6);
   const wingShape = planform([[0.9, 3.6], [6, -2.4], [6, -4], [0.9, -5.2]], 0.2);
   const tailShape = planform([[0.9, -4.4], [3.6, -6], [3.6, -7], [0.9, -7]], 0.14);
+
+  const flameGeo = new THREE.PlaneGeometry(1, 1);
+  flameGeo.translate(0, 0.5, 0);
+
+  const starConfig = [
+    { angle: 0, width: 1.18, lengthMult: 1.0, minOp: 0.42, maxOp: 0.78, tint: 0xffffff },
+    { angle: Math.PI / 4, width: 1.18, lengthMult: 0.98, minOp: 0.42, maxOp: 0.78, tint: 0xffe6cc },
+    { angle: Math.PI / 2, width: 1.18, lengthMult: 1.0, minOp: 0.42, maxOp: 0.78, tint: 0xffffff },
+    { angle: (3 * Math.PI) / 4, width: 1.18, lengthMult: 0.98, minOp: 0.42, maxOp: 0.78, tint: 0xffe6cc },
+    { angle: Math.PI / 8, width: 0.78, lengthMult: 0.78, minOp: 0.62, maxOp: 0.96, tint: 0xfff6d6 },
+    { angle: (5 * Math.PI) / 8, width: 0.78, lengthMult: 0.78, minOp: 0.62, maxOp: 0.96, tint: 0xfff6d6 }
+  ];
+
   for (const s of [-1, 1]) {
     const wing = new THREE.Mesh(wingShape(s), double); wing.position.y = -0.15; jet.add(wing);
     jet.add(new THREE.Mesh(tailShape(s), double));
@@ -184,9 +354,39 @@ function buildJet() {
     const fin = new THREE.Mesh(finGeo, red); fin.position.set(s * 1.2, 0.55, -3.9); fin.rotation.z = -s * 0.32; jet.add(fin);
     const missile = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 3.2, 8), material(0xe5e7eb)); missile.rotation.x = Math.PI / 2; missile.position.set(s * 6.15, -0.1, -2.6); jet.add(missile);
     const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.5, 1.8, 12), dark); nozzle.rotation.x = Math.PI / 2; nozzle.position.set(s * 0.72, -0.05, -6.5); jet.add(nozzle);
-    for (const [radius, color, opacity] of [[0.46, 0xffa94a, 0.8], [0.26, 0xfff4cc, 0.95]]) {
-      const fire = new THREE.Mesh(new THREE.ConeGeometry(radius, 1, 10), basic(color, { transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false }));
-      fire.geometry.translate(0, 0.5, 0); const pivot = new THREE.Group(); pivot.position.set(s * 0.72, -0.05, -7.4); pivot.rotation.x = -Math.PI / 2; pivot.add(fire); jet.add(pivot); flame.push(pivot);
+
+    const pivot = new THREE.Group();
+    pivot.position.set(s * 0.72, -0.05, -7.32);
+    pivot.rotation.x = -Math.PI / 2;
+    jet.add(pivot);
+
+    for (let k = 0; k < starConfig.length; k++) {
+      const cfg = starConfig[k];
+      const texIdx = (k + (s > 0 ? 2 : 0)) % flameTextures.length;
+      const mat = new THREE.MeshBasicMaterial({
+        map: flameTextures[texIdx],
+        color: cfg.tint,
+        transparent: true,
+        opacity: cfg.maxOp,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const mesh = new THREE.Mesh(flameGeo, mat);
+      mesh.rotation.y = cfg.angle;
+      mesh.renderOrder = 2;
+      pivot.add(mesh);
+      flameBlades.push({
+        mesh,
+        mat,
+        baseWidth: cfg.width,
+        lengthMult: cfg.lengthMult,
+        minOp: cfg.minOp,
+        maxOp: cfg.maxOp,
+        baseOpacity: (cfg.minOp + cfg.maxOp) * 0.5,
+        flip: k % 2 ? -1 : 1,
+        texIdx
+      });
     }
   }
   const gear = new THREE.Group(); jet.add(gear); jet.userData.gear = gear;
@@ -202,6 +402,51 @@ function buildJet() {
   jet.userData.muzzle = [];
   for (const x of [-1.15, 1.15]) { const m = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6), muzzleMat); m.position.set(x, -0.15, 2.9); m.visible = false; jet.add(m); jet.userData.muzzle.push(m); }
   scene.add(jet);
+}
+
+function updateJetFlame(throttle, afterburner, active, elapsed) {
+  if (!flameBlades.length) return;
+  const t = clamp(throttle || 0, 0, 1);
+
+  const shouldSwap = elapsed < lastFlameSwap || elapsed - lastFlameSwap >= 0.04;
+  if (shouldSwap) {
+    lastFlameSwap = elapsed;
+    const count = flameTextures.length;
+    for (let i = 0; i < flameBlades.length; i++) {
+      const blade = flameBlades[i];
+      if (count > 1) {
+        let nextIdx = Math.floor(Math.random() * count);
+        if (nextIdx === blade.texIdx) nextIdx = (nextIdx + 1) % count;
+        blade.texIdx = nextIdx;
+        blade.mat.map = flameTextures[nextIdx];
+        blade.mat.needsUpdate = true;
+      }
+      blade.flip = Math.random() < 0.5 ? -1 : 1;
+      blade.baseOpacity = blade.minOp + Math.random() * (blade.maxOp - blade.minOp);
+    }
+  }
+
+  const stretch = active
+    ? (0.22 + t * 0.78 + (afterburner ? 0.34 : 0))
+    : 0.04;
+
+  const throttleAlpha = active ? (0.45 + t * 0.55) : 0.2;
+
+  for (let i = 0; i < flameBlades.length; i++) {
+    const blade = flameBlades[i];
+    const wJitter = active ? (0.94 + Math.random() * 0.12) : 0.65;
+    const hJitter = active ? (0.93 + Math.random() * 0.14) : 1.0;
+    const width = blade.baseWidth * wJitter;
+    const naturalHeight = blade.baseWidth * flameAspect;
+    const height = Math.max(0.05, naturalHeight * stretch * blade.lengthMult * hJitter);
+
+    blade.mesh.scale.set(width * blade.flip, height, 1);
+    blade.mat.opacity = clamp(
+      blade.baseOpacity * throttleAlpha * (0.86 + Math.random() * 0.26),
+      0.08,
+      1.0
+    );
+  }
 }
 
 function placePlayerAt(x, z, fx, fz) {
@@ -310,7 +555,7 @@ export function leaveJet() {
   } else {
     boom(jetState.pos, 0.5); endJetFlight(); jet.visible = false; jetState.dead = 5;
     chute = chute || buildParachute(); chute.visible = true; chuteActive = true;
-    player.x = jetState.pos.x; player.z = jetState.pos.z; player.y = jetState.pos.y; player.vy = -12; player.pvx = player.pvz = 0; player.grounded = false; player.peakAirY = player.y;
+    player.x = jetState.pos.x; player.z = jetState.pos.z; player.y = jetState.pos.y; player.vy = -4; player.pvx = player.pvz = 0; player.grounded = false; player.peakAirY = player.y;
     jetState.speed = 0; jetState.throttle = 0; pushFeed('EJECTED — PARACHUTE DEPLOYED', 'border-l-sky-400');
     hooks.mpWorldEvent({ t: 'jet_exit', eject: true, x: jetState.pos.x, y: jetState.pos.y, z: jetState.pos.z });
   }
@@ -318,7 +563,6 @@ export function leaveJet() {
 
 function crashExplosion(position) {
   boom(position, 2.6);
-  // Staggered secondary fireballs & thick smoke/ember plumes
   for (let i = 0; i < 3; i++) {
     const offset = new THREE.Vector3((Math.random() - 0.5) * 9, Math.random() * 4.5, (Math.random() - 0.5) * 9);
     const p = position.clone().add(offset);
@@ -331,14 +575,11 @@ function crashExplosion(position) {
       sfx.tone(95 - i * 15, 22, 1.1, 'sawtooth', 0.28);
     }, i * 140);
   }
-  // Extra dense smoke & fire burst at ground zero
   [0xf97316, 0xfacc15, 0xef4444, 0x1f2937, 0x111827].forEach(c => spawnParticles(position.x, position.y + 0.6, position.z, c, 22, 24));
-  // Bright explosion flash light
   const flashLight = new THREE.PointLight(0xff7b1c, 950, 140, 2);
   flashLight.position.copy(position).add(new THREE.Vector3(0, 3, 0));
   scene.add(flashLight);
   setTimeout(() => scene.remove(flashLight), 420);
-  // Flying flaming wreckage chunks
   const chunkMats = [material(0x4b5563, { metalness: 0.6, roughness: 0.4 }), material(0x1f2937), material(0xd92b2b)];
   for (let i = 0; i < 12; i++) {
     const chunk = new THREE.Mesh(new THREE.BoxGeometry(0.5 + Math.random() * 1.1, 0.25 + Math.random() * 0.4, 0.6 + Math.random() * 1.3), chunkMats[i % chunkMats.length]);
@@ -401,12 +642,11 @@ function fireCannon(dt) {
     const origin=new THREE.Vector3(s*1.15,-0.15,2.8).applyQuaternion(jetState.q).add(jetState.pos);
     const direction=Z_FORWARD.clone().applyQuaternion(jetState.q);direction.x+=(Math.random()-0.5)*0.008;direction.y+=(Math.random()-0.5)*0.008;direction.normalize();
     const distance=rayHit(origin,direction,900);const end=origin.clone().addScaledVector(direction,Math.min(distance,170));
-    // tracer line; remove after 70 ms
     const geo=new THREE.BufferGeometry().setFromPoints([origin.clone().addScaledVector(direction,14),end]);
     const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:0xffd24a,transparent:true,opacity:0.9}));worldRoot.add(line);setTimeout(()=>{worldRoot.remove(line);geo.dispose();line.material.dispose();},70);
     if(distance<900)impact(end.x,end.y,end.z);
   }
-  sfx.tone(170+Math.random()*50,70,0.07,'square',0.045);
+  playJetShootSound();
 }
 
 function makeBombMesh() {
@@ -415,8 +655,7 @@ function makeBombMesh() {
   const cone = new THREE.Mesh(new THREE.ConeGeometry(0.38, 1, 12), ol); cone.rotation.x = Math.PI / 2; cone.position.z = 1.8; group.add(cone);
   return group;
 }
-// Networked nuke: every client simulates the same ballistic bomb; only the host
-// applies NPC/cop/car damage on detonation (everyone gets the explosion FX).
+
 export function spawnNetBomb(x, y, z, vx, vy, vz) {
   const group = makeBombMesh();
   const position = new THREE.Vector3(x, y, z), velocity = new THREE.Vector3(vx, vy, vz);
@@ -424,6 +663,7 @@ export function spawnNetBomb(x, y, z, vx, vy, vz) {
   scene.add(group);
   bombs.push({ mesh: group, position, velocity });
 }
+
 export function dropNuke() {
   if (jetState.nukes <= 0) { pushFeed('OUT OF NUKES — LAND AT THE AURA AIR BUNKER OR LAX TO REARM', 'border-l-amber-400'); return false; }
   if (jetState.nukeCooldown > 0) return false;
@@ -457,7 +697,7 @@ function updateBombs(dt) {
       const impactPos = bomb.position.clone().addScaledVector(direction, hit);
       scene.remove(bomb.mesh);
       if (authority) detonateBomb(impactPos);
-      else boom(impactPos, 2.2); // guests: identical FX, host owns the damage
+      else boom(impactPos, 2.2);
       bombs.splice(bombs.indexOf(bomb), 1);
     } else {
       bomb.position.add(movement);
@@ -505,7 +745,6 @@ function jetUpdate(dt) {
   const up = Y_UP.clone().applyQuaternion(jetState.q);
   const key = c => keysJet[c] ? 1 : 0;
 
-  // Mouse down -> positive sy -> pitches nose UP; mouse up -> negative sy -> pitches nose DOWN
   const keyPitch = (key('ArrowUp') - key('ArrowDown'));
   const rawPitch = clamp(keyPitch + jetState.sy, -1, 1);
   const rawRoll = clamp(key('KeyD') - key('KeyA') + jetState.sx, -1, 1);
@@ -516,7 +755,6 @@ function jetUpdate(dt) {
   jetState.rollRate += (rawRoll - jetState.rollRate) * ease;
   jetState.yawRate += (clamp(rawYaw, -1, 1) - jetState.yawRate) * ease;
 
-  // Quick, clean stick centering when mouse stops moving so there is no unwanted drift
   jetState.sx *= Math.exp(-dt * 5.5);
   jetState.sy *= Math.exp(-dt * 5.5);
 
@@ -529,7 +767,6 @@ function jetUpdate(dt) {
   const climbDrag = forward.y * 9 * dt;
   jetState.speed = clamp(jetState.speed + clamp(target - jetState.speed, -deceleration * dt, (jetState.afterburner ? 58 : 36) * dt) - climbDrag, 0, 260);
 
-  // Higher low-speed control authority so takeoffs, slow passes and landings feel effortless
   const authority = Math.min(1, 0.55 + jetState.speed / 50);
   const px = jetState.pos.x, py = jetState.pos.y, pz = jetState.pos.z;
   jetState.warning = '';
@@ -538,14 +775,11 @@ function jetUpdate(dt) {
     const roll = Math.atan2(left.y, up.y);
     let pitch = jetState.pitchRate * 1.1 * authority;
     let rollInput = jetState.rollRate * 1.85 * authority;
-    // Coordinated bank-to-turn yaw so banking smoothly turns the jet
     let yaw = (jetState.yawRate * 0.8 + left.y * 0.65) * authority;
 
-    // Gentle auto-level assist when hands-off roll
     if (Math.abs(jetState.rollRate) < 0.06) {
       rollInput -= clamp(roll, -1.4, 1.4) * 1.45 * (1 - 0.55 * Math.abs(jetState.pitchRate));
     }
-    // Gentle nose-up stability assist when hands-off pitch in a shallow dive
     if (Math.abs(jetState.pitchRate) < 0.05 && forward.y < -0.12 && forward.y > -0.75) {
       pitch += clamp(-forward.y * 0.45, 0, 0.25);
     }
@@ -564,7 +798,6 @@ function jetUpdate(dt) {
     const dq = new THREE.Quaternion().setFromEuler(euler);
     jetState.q.multiply(dq).normalize();
 
-    // Expanded Airspace covering main city, ocean bridge, Santa Aura, Downtown Los Aura, LAX & Speedway
     if (jetState.pos.x < AIRSPACE.minX || jetState.pos.x > AIRSPACE.maxX || jetState.pos.z < AIRSPACE.minZ || jetState.pos.z > AIRSPACE.maxZ) {
       const tx = AIRSPACE.centerX - jetState.pos.x;
       const tz = AIRSPACE.centerZ - jetState.pos.z;
@@ -698,8 +931,13 @@ function jetVisuals(elapsed) {
   jet.userData.gear.visible = jetState.ground || ((jetState.agl || 99) < 16 && jetState.speed < 95);
   jet.userData.bomb.visible = jetState.nukes > 0;
   if (jet.userData.can) jet.userData.can.visible = !(jetState.flying && jetState.cameraMode);
-  const len = jetState.flying ? 0.5 + jetState.throttle * 2.2 + (jetState.afterburner ? 2.6 : 0) : 0.05;
-  flame.forEach((pivot, i) => pivot.scale.y = Math.max(0.05, len * (i % 2 ? 0.7 : 1) * (0.85 + Math.random() * 0.3)));
+  const flameActive = jetState.flying || jetState.throttle > 0.01;
+  updateJetFlame(
+    jetState.flying ? jetState.throttle : 0,
+    jetState.flying && jetState.afterburner,
+    flameActive,
+    elapsed
+  );
   for (const m of jet.userData.muzzle) m.visible = jetState.muzzle > 0;
 }
 
@@ -776,6 +1014,25 @@ export function updateAircraft(dt, elapsed, { stepPlayer = true } = {}) {
   if (!initialized) initAircraft();
   updateBombs(dt);
   for (const beacon of beaconMeshes) beacon.visible = Math.sin(elapsed * 6) > 0;
+
+  // Active parachute simulation following player ejection
+  if (chuteActive) {
+    if (chute) {
+      chute.visible = true;
+      chute.position.set(player.x, player.y, player.z);
+    }
+    player.vy = Math.max(player.vy, -5.5);
+    player.peakAirY = player.y;
+    const gh = groundHeight(player.x, player.z);
+    if (player.grounded || player.y <= gh + 0.4) {
+      chuteActive = false;
+      if (chute) chute.visible = false;
+      player.vy = 0;
+      player.grounded = true;
+      player.y = Math.max(player.y, gh);
+    }
+  }
+
   if (jetState.dead > 0) {
     jetState.dead -= dt;
     if (jetState.dead <= 0) {
@@ -787,7 +1044,7 @@ export function updateAircraft(dt, elapsed, { stepPlayer = true } = {}) {
     jetState.tipShown = true;
     pushFeed('NEW: PRESS [J] TO WARP TO THE AURA AIR BUNKER (STRIKE JET + NUKES)', 'border-l-sky-400');
   }
-  // Dramatic crash explosion camera so the player sees the fireball and debris before respawning at the bunker
+
   if (!jetState.flying && jetState.crashCamTimer > 0) {
     jetState.crashCamTimer -= dt;
     if (stepPlayer) enhancePerFrame(dt, elapsed);
@@ -804,7 +1061,6 @@ export function updateAircraft(dt, elapsed, { stepPlayer = true } = {}) {
   }
   if (!jetState.flying) {
     if (stepPlayer) stepSimulation(dt, elapsed);
-    // Someone else may be flying our shared jet — the net layer poses it.
     if (!hooks.mpJetRenderRemote()) jetVisuals(elapsed);
     if (stepPlayer) enhancePerFrame(dt, elapsed);
     return false;
@@ -839,14 +1095,13 @@ export function updateAircraft(dt, elapsed, { stepPlayer = true } = {}) {
   player.x = jetState.pos.x; player.y = jetState.pos.y; player.z = jetState.pos.z; player.vy = 0; player.pvx = 0; player.pvz = 0; player.grounded = true; player.peakAirY = player.y;
   const forward = Z_FORWARD.clone().applyQuaternion(jetState.q); player.yaw = Math.atan2(-forward.x, -forward.z); player.pitch = 0; fpRoot.visible = false;
   jetVisuals(elapsed); jetCamera(dt); jetHUD(elapsed); engineAudio(true); const crosshair = document.getElementById('crosshair'); if (crosshair) crosshair.style.display = 'none';
-  // Stream our jet to everyone (throttled inside the net layer).
+
   hooks.mpWorldEvent({ t: 'jet_xform', x: jetState.pos.x, y: jetState.pos.y, z: jetState.pos.z,
     qx: jetState.q.x, qy: jetState.q.y, qz: jetState.q.z, qw: jetState.q.w,
     speed: jetState.speed, throttle: jetState.throttle, ground: jetState.ground, dead: jetState.dead > 0, nukes: jetState.nukes, ab: jetState.afterburner });
   if (stepPlayer) enhancePerFrame(dt, elapsed); return true;
 }
-// Pose the shared jet from a remote pilot's streamed transform. Returns true when
-// it took over rendering this frame (so local parked visuals don't fight it).
+
 export function applyRemoteJet(d) {
   if (!initialized || jetState.flying) return false;
   if (!d) { if (jetState.dead <= 0) { jet.visible = true; } return false; }
@@ -857,11 +1112,11 @@ export function applyRemoteJet(d) {
   jet.userData.gear.visible = d.ground || (d.y < 60 && d.speed < 95);
   jet.userData.bomb.visible = (d.nukes ?? 0) > 0;
   if (jet.userData.can) jet.userData.can.visible = true;
-  const len = 0.5 + (d.throttle || 0) * 2.2 + (d.ab ? 2.6 : 0);
-  flame.forEach((pivot, i) => pivot.scale.y = Math.max(0.05, len * (i % 2 ? 0.7 : 1) * (0.85 + Math.random() * 0.3)));
+  updateJetFlame(d.throttle || 0, !!d.ab, true, performance.now() * 0.001);
   for (const m of jet.userData.muzzle) m.visible = false;
   return true;
 }
+
 export function jetDigest() {
   return { owner: hooks.mpLocalId(), flying: jetState.flying, dead: jetState.dead > 0,
     x: jetState.pos.x, y: jetState.pos.y, z: jetState.pos.z,
