@@ -1,22 +1,40 @@
 // =============================================================================
-// world.js — Roads, the continuous I-88 interstate, biomes, walk-in interiors,
-// skyscrapers, Aura Hills, sewers, Los Aura expansion and the entity spawner.
+// world.js — Grand Theft Aura
+// Roads, the continuous I-88 interstate, biomes, walk-in interiors, the
+// data-driven skyscraper system, Aura Hills, sewers, the Los Aura expansion,
+// Los Aura International Airport, the AURA ARMORY and the entity spawner.
 //
-// WATER UPDATE INTEGRATION:
-//   • All static water planes replaced by live PS3 water bodies (water.js)
-//   • Continuous 3D ocean seabed (buildOceanSeabed) under cove / ocean / strait
-//   • Carved, swimmable jungle river + wading Emerald Woods stream
-//   • Real interactive rivers in the northern mountains & Frostpine valley
-//   • Floating sailboats, dinghies, channel buoys and drifting logs
-//   • Frostpine National Park loop road (Yosemite-style) with guardrails,
-//     vista pullouts, stone arch bridge, lodge driveway & park entrance
+// PHASE 1 — Skyscrapers
+//   • Four exterior archetypes (glass / deco / slab / brutalist) and three
+//     interior archetypes (corporate / finance / residential) share ONE unit
+//     box geometry and a material cache.
+//   • Every tower is one line in TOWER_PLACEMENTS, validated against reserved
+//     road footprints + the live collider registry before it is built, so a
+//     tower can never spawn on a carriageway again.
+//   • Detached lobby caches are disposed on rebuild (GPU leak closed).
+//   • Studio paths are stable, name-based keys.
+//
+// PHASE 2 — Ground integrity & the county line
+//   • Northern range extended west/east to match the collision heightfield.
+//   • Shoreline gaps patched, jungle floor skirted, Forest Road given real
+//     thickness and opened over the Emerald stream.
+//   • Dark backstop planes under all land so no ray ever reaches the void.
+//   • A themed perimeter barrier that fades in as you approach it.
+//
+// PHASE 3 — Content
+//   • Los Aura International: landside lobby, departures board, security
+//     checkpoint, gate lounge, baggage carousel and covered jet walkways.
+//   • AURA ARMORY: buy with cash [E], or find the sledgehammer in the dumpster
+//     behind the store and smash the display glass with [F].
+//   • Northern mountains reforested (groved pines, trunks, snow line species)
+//     and Frostpine valley densified.
 // =============================================================================
 import * as THREE from 'three';
 import { colorToHex, levelData, terrainHeightOffset } from './levelData.js';
 import {
-  AHC, I88, SFY, addDriveableRamp, addWorldBox, ahRy, ahRz, ahRzD, aura, aviationBeacons,
-  biomeAt, buildingLods, collidesHorizontally, crime, driveableRamps, enterableZones,
-  fbm, gameState, hazardBarrels, hillsH, hooks, iceZones, isInWater, keys, lampPosts,
+  AHC, I88, MAX_HOTDOG_AMMO, SFY, WORLD_BOUNDS, addDriveableRamp, addWorldBox, ahRy, ahRz, ahRzD,
+  aura, aviationBeacons, biomeAt, buildingLods, collidesHorizontally, crime, driveableRamps,
+  enterableZones, fbm, gameState, hazardBarrels, hillsH, hooks, iceZones, isInWater, keys, lampPosts,
   manholeCovers, manholeHoles, manholeOpen, manholes, mapShapes, pick, player, pushFeed,
   recomputeWorldBounds, registerBuildingLod, resetWorldState, riverX, rnd, roadC, roadH,
   sRects, sausageRefillZones, skyscrapers, smashableCrates, sstep, terrainBaseH, terrainH,
@@ -28,8 +46,8 @@ import {
 import { applyEntityColor, applyEntityTexture, applyModelPreset, loadTexture } from './assets.js';
 import { sfx } from './audio.js';
 import {
-  buildBarrelMesh, buildCrateMesh, buildPickupMesh, spawnHazardBarrel, spawnParticles,
-  spawnSmashCrate, spawnWorldPickup
+  RIGHT_WEAPONS, buildBarrelMesh, buildCrateMesh, buildPickupMesh, spawnHazardBarrel,
+  spawnParticles, spawnSmashCrate, spawnWorldPickup
 } from './items.js';
 import { buildSportsCar, buildSportsCarMesh, vehicles } from './vehicles.js';
 import {
@@ -39,22 +57,253 @@ import {
 
 export const rockMat = new THREE.MeshStandardMaterial({ color: 0x5a554d, roughness: 1, flatShading: true });
 export const pipeMat = new THREE.MeshStandardMaterial({ color: 0x6f7f77, roughness: .8, metalness: .35, side: THREE.BackSide });
+
 const treeBarkTexture = loadTexture('assets/textures/bark.png', { repeatX: 1, repeatY: 4 });
 const treeLeafTexture = loadTexture('assets/textures/lushfoliage.png', { repeatX: 2, repeatY: 2 });
 const treeBarkMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, map: treeBarkTexture, roughness: 0.92, flatShading: true });
 const treeLeafMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, map: treeLeafTexture, roughness: 0.88, flatShading: true, side: THREE.DoubleSide, alphaTest: 0.35 });
-
-/**
- * Studio road entities superseded by the built-in continuous I-88 viaduct.
- * They stacked conflicting driveable ramps and z-fighting decks over the same
- * corridor. Skipped here so existing localStorage saves are cleaned up too;
- * they should also be deleted from levelData.entities.
- */
-const RETIRED_ENTITY_IDS = new Set(['road_mwr8epy21', 'road_mwr8fxyy2', 'road_mwsebg0p1']);
+treeBarkMaterial.userData.shared = true;
+treeLeafMaterial.userData.shared = true;
+rockMat.userData.shared = true;
 
 // -----------------------------------------------------------------------------
-// Water-system frame guard: updateWater runs exactly once per frame whether the
-// main loop calls hooks.updateWater directly or only updateBiomeAtmosphere.
+// Real ground textures
+// -----------------------------------------------------------------------------
+const GROUND_TEXTURES = {
+  grass: loadTexture('assets/textures/grass.png', { repeatX: 1, repeatY: 1 }),
+  dirt: loadTexture('assets/textures/dirt.png', { repeatX: 1, repeatY: 1 }),
+  rock: loadTexture('assets/textures/rock.png', { repeatX: 1, repeatY: 1 }),
+  sand: loadTexture('assets/textures/sand.png', { repeatX: 1, repeatY: 1 }),
+  concrete: loadTexture('assets/textures/concrete.png', { repeatX: 1, repeatY: 1 })
+};
+
+for (const tex of Object.values(GROUND_TEXTURES)) {
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+}
+
+const groundMatCache = new Map();
+
+/** Simple tiled ground material for flat / mostly-single-surface ground. */
+function makeGroundMat(kind, {
+  color = 0xffffff,
+  repeatX = 1,
+  repeatY = 1,
+  roughness = 0.95,
+  metalness = 0
+} = {}) {
+  const key = `${kind}|${color}|${repeatX}|${repeatY}|${roughness}|${metalness}`;
+  if (groundMatCache.has(key)) return groundMatCache.get(key);
+
+  const tex = GROUND_TEXTURES[kind].clone();
+  tex.needsUpdate = true;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeatX, repeatY);
+
+  const mat = new THREE.MeshStandardMaterial({
+    color,
+    map: tex,
+    roughness,
+    metalness
+  });
+
+  groundMatCache.set(key, mat);
+  return mat;
+}
+
+// -----------------------------------------------------------------------------
+// Seamless natural-terrain blending: grass / dirt / rock / sand / concrete
+// -----------------------------------------------------------------------------
+function makeTerrainBlendMaterial({ roughness = 1, metalness = 0 } = {}) {
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    roughness,
+    metalness
+  });
+
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uGrass = { value: GROUND_TEXTURES.grass };
+    shader.uniforms.uDirt = { value: GROUND_TEXTURES.dirt };
+    shader.uniforms.uRock = { value: GROUND_TEXTURES.rock };
+    shader.uniforms.uSand = { value: GROUND_TEXTURES.sand };
+    shader.uniforms.uConcrete = { value: GROUND_TEXTURES.concrete };
+
+    // World-space texture density. Larger number = smaller/tighter tiles.
+    shader.uniforms.uGrassScale = { value: new THREE.Vector2(0.12, 0.12) };
+    shader.uniforms.uDirtScale = { value: new THREE.Vector2(0.10, 0.10) };
+    shader.uniforms.uRockScale = { value: new THREE.Vector2(0.06, 0.06) };
+    shader.uniforms.uSandScale = { value: new THREE.Vector2(0.14, 0.14) };
+    shader.uniforms.uConcreteScale = { value: new THREE.Vector2(0.08, 0.08) };
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        attribute vec4 terrainSplat;
+        attribute float terrainConcrete;
+        varying vec4 vSplat;
+        varying float vConcrete;
+        varying vec2 vGroundXZ;`
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vSplat = terrainSplat;
+        vConcrete = terrainConcrete;
+        vGroundXZ = (modelMatrix * vec4(transformed, 1.0)).xz;`
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform sampler2D uGrass;
+        uniform sampler2D uDirt;
+        uniform sampler2D uRock;
+        uniform sampler2D uSand;
+        uniform sampler2D uConcrete;
+        uniform vec2 uGrassScale;
+        uniform vec2 uDirtScale;
+        uniform vec2 uRockScale;
+        uniform vec2 uSandScale;
+        uniform vec2 uConcreteScale;
+        varying vec4 vSplat;
+        varying float vConcrete;
+        varying vec2 vGroundXZ;`
+      )
+      .replace(
+        '#include <map_fragment>',
+        `
+        vec2 groundUV = vGroundXZ;
+
+        vec3 grassCol = texture2D(uGrass, groundUV * uGrassScale).rgb;
+        vec3 dirtCol  = texture2D(uDirt,  groundUV * uDirtScale).rgb;
+        vec3 rockCol  = texture2D(uRock,  groundUV * uRockScale).rgb;
+        vec3 sandCol  = texture2D(uSand,  groundUV * uSandScale).rgb;
+        vec3 concCol  = texture2D(uConcrete, groundUV * uConcreteScale).rgb;
+
+        float total = vSplat.x + vSplat.y + vSplat.z + vSplat.w + vConcrete + 0.0001;
+
+        vec3 blendedGround =
+          grassCol * vSplat.x +
+          dirtCol  * vSplat.y +
+          rockCol  * vSplat.z +
+          sandCol  * vSplat.w +
+          concCol  * vConcrete;
+
+        blendedGround /= total;
+        diffuseColor.rgb *= blendedGround;
+        `
+      );
+  };
+
+  mat.customProgramCacheKey = () => 'aura-terrain-blend-v1';
+  return mat;
+}
+
+/** Paints per-vertex grass/dirt/rock/sand/concrete weights onto a terrain geometry. */
+function paintTerrainSplat(geometry, mode, offsetX = 0, offsetZ = 0) {
+  const pos = geometry.attributes.position;
+  const count = pos.count;
+
+  const splat = new Float32Array(count * 4); // grass, dirt, rock, sand
+  const concrete = new Float32Array(count);
+
+  // Blend shader uses vertexColors; make sure a color attribute exists.
+  if (!geometry.attributes.color) {
+    const white = new Float32Array(count * 3);
+    white.fill(1);
+    geometry.setAttribute('color', new THREE.BufferAttribute(white, 3));
+  }
+
+  for (let i = 0; i < count; i++) {
+    const x = pos.getX(i) + offsetX;
+    const z = pos.getZ(i) + offsetZ;
+
+    const h = terrainBaseH(x, z);
+    const slope =
+      Math.abs(terrainBaseH(x + 3, z) - terrainBaseH(x - 3, z)) / 6 +
+      Math.abs(terrainBaseH(x, z + 3) - terrainBaseH(x, z - 3)) / 6;
+
+    let grass = 0, dirt = 0, rock = 0, sand = 0, conc = 0;
+
+    if (mode === 'mountains') {
+      const riverBed = 1 - sstep(4, 14, Math.abs(x - riverX(z)));
+
+      grass = 1 - sstep(55, 105, h);
+      dirt = sstep(35, 85, h) * (1 - sstep(105, 150, h));
+      rock = sstep(95, 150, h) + sstep(0.35, 0.75, slope);
+      sand = riverBed * 0.8;
+    }
+    else if (mode === 'hills') {
+      grass = 1 - sstep(45, 85, h);
+      dirt = sstep(30, 70, h) * 0.5;
+      rock = sstep(60, 100, h) + sstep(0.4, 0.8, slope);
+    }
+    else if (mode === 'alpine') {
+      const creekBed = 1 - sstep(3, 9, Math.abs(x - frostCreekX(z)));
+
+      grass = 1 - sstep(5, 9, h);
+      dirt = sstep(4, 8, h) * 0.4;
+      rock = sstep(7, 11, h) + sstep(0.35, 0.7, slope);
+      sand = creekBed * 0.7;
+    }
+    else if (mode === 'jungle') {
+      grass = 1;
+      dirt = sstep(0.2, 0.5, slope) * 0.4;
+    }
+    else if (mode === 'woods') {
+      grass = 1;
+      dirt = (1 - sstep(3, 8, Math.abs(z - 150))) * 0.6;
+    }
+    else if (mode === 'desert') {
+      sand = 1;
+      rock = sstep(0.35, 0.7, slope) * 0.7;
+      dirt = sstep(20, 70, h) * 0.25;
+    }
+    else if (mode === 'cove') {
+      sand = 1;
+    }
+    else if (mode === 'north') {
+      grass = 1;
+      dirt = sstep(0.25, 0.6, slope) * 0.3;
+    }
+    else {
+      grass = 1;
+    }
+
+    const sum = grass + dirt + rock + sand + conc || 1;
+
+    splat[i * 4 + 0] = grass / sum;
+    splat[i * 4 + 1] = dirt / sum;
+    splat[i * 4 + 2] = rock / sum;
+    splat[i * 4 + 3] = sand / sum;
+    concrete[i] = conc / sum;
+  }
+
+  geometry.setAttribute('terrainSplat', new THREE.BufferAttribute(splat, 4));
+  geometry.setAttribute('terrainConcrete', new THREE.BufferAttribute(concrete, 1));
+  geometry.userData.terrainSplatMode = mode;
+}
+
+function paintMeshTerrainSplat(mesh, mode) {
+  paintTerrainSplat(mesh.geometry, mode, mesh.position.x, mesh.position.z);
+  mesh.userData.terrainSplatMode = mode;
+}
+
+/** Studio road entities superseded by the built-in continuous I-88 viaduct. */
+const RETIRED_ENTITY_IDS = new Set(['road_mwr8epy21', 'road_mwr8fxyy2', 'road_mwsebg0p1']);
+
+/**
+ * Roots that existed before the first world build (player rig, engine helpers).
+ * They survive every rebuild; everything else in worldRoot is world-owned.
+ */
+let foreignRoots = null;
+
+// -----------------------------------------------------------------------------
+// Water-system frame guard
 // -----------------------------------------------------------------------------
 let lastWaterFrame = -Infinity;
 function updateWaterOnce(dt, elapsed) {
@@ -67,6 +316,7 @@ function updateWaterOnce(dt, elapsed) {
 // Terrain sculpting
 // -----------------------------------------------------------------------------
 export const sculptableTerrainMeshes = [];
+
 function registerSculptableTerrain(mesh) {
   const positions = mesh.geometry.attributes.position;
   mesh.userData.terrainBaseY = Float32Array.from(positions.array.filter((_, index) => index % 3 === 1));
@@ -80,6 +330,7 @@ function registerSculptableTerrain(mesh) {
   refreshTerrainSculpt(mesh.position.x, mesh.position.z, Infinity, mesh);
   return mesh;
 }
+
 /** Update visible terrain meshes after a sculpt stroke or undo/redo. */
 export function refreshTerrainSculpt(centerX = null, centerZ = null, radius = Infinity, onlyMesh = null) {
   const meshes = onlyMesh ? [onlyMesh] : sculptableTerrainMeshes;
@@ -98,12 +349,22 @@ export function refreshTerrainSculpt(centerX = null, centerZ = null, radius = In
       changed = true;
     }
     if (changed) {
-      positions.needsUpdate = true;
-      mesh.geometry.computeVertexNormals();
-      mesh.geometry.computeBoundingSphere();
-    }
+  positions.needsUpdate = true;
+  mesh.geometry.computeVertexNormals();
+  mesh.geometry.computeBoundingSphere();
+
+  if (mesh.userData.terrainSplatMode) {
+    paintTerrainSplat(
+      mesh.geometry,
+      mesh.userData.terrainSplatMode,
+      mesh.position.x,
+      mesh.position.z
+    );
   }
 }
+  }
+}
+
 function terrainPlane(width, depth, x, y, z, material) {
   const geometry = new THREE.PlaneGeometry(width, depth, Math.ceil(width / 2), Math.ceil(depth / 2));
   geometry.rotateX(-Math.PI / 2);
@@ -113,6 +374,7 @@ function terrainPlane(width, depth, x, y, z, material) {
   registerSculptableTerrain(mesh);
   return mesh;
 }
+
 /** Highest natural ground over a rectangular footprint (for founding buildings). */
 function maxTerrainOver(x0, x1, z0, z1) {
   let m = -Infinity;
@@ -131,12 +393,14 @@ export function buildWallWithRealWindow(parent, width, height, thick, winW, winH
   const sideW = Math.max(0.1, (width - winW) / 2);
   const botH = Math.max(0.1, winCenterY - winH / 2);
   const topH = Math.max(0.1, height - (winCenterY + winH / 2));
+
   const leftWall = new THREE.Mesh(new THREE.BoxGeometry(sideW, height, thick), wallMat);
   leftWall.position.set(-(winW / 2 + sideW / 2), height / 2, 0);
   leftWall.castShadow = true;
   leftWall.receiveShadow = true;
   const rightWall = leftWall.clone();
   rightWall.position.x = winW / 2 + sideW / 2;
+
   const botWall = new THREE.Mesh(new THREE.BoxGeometry(winW, botH, thick), wallMat);
   botWall.position.set(0, botH / 2, 0);
   botWall.castShadow = true;
@@ -144,17 +408,18 @@ export function buildWallWithRealWindow(parent, width, height, thick, winW, winH
   const topWall = new THREE.Mesh(new THREE.BoxGeometry(winW, topH, thick), wallMat);
   topWall.position.set(0, winCenterY + winH / 2 + topH / 2, 0);
   topWall.castShadow = true;
-  // Two single-sided panes: keeps the cheap FrontSide material but is visible
-  // from inside AND outside.
+
   const paneGeo = new THREE.PlaneGeometry(winW, winH);
   const glassOut = new THREE.Mesh(paneGeo, realWindowGlassMat);
   glassOut.position.set(0, winCenterY, 0.012);
   const glassIn = new THREE.Mesh(paneGeo, realWindowGlassMat);
   glassIn.position.set(0, winCenterY, -0.012);
   glassIn.rotation.y = Math.PI;
+
   const sill = new THREE.Mesh(new THREE.BoxGeometry(winW + 0.16, 0.08, thick + 0.12), makeMat(0xf8fafc));
   sill.position.set(0, winCenterY - winH / 2, 0);
   group.add(leftWall, rightWall, botWall, topWall, glassOut, glassIn, sill);
+
   if (addMullions) {
     const mH = new THREE.Mesh(new THREE.BoxGeometry(winW, 0.05, 0.06), makeMat(0xf8fafc));
     mH.position.set(0, winCenterY, 0);
@@ -167,36 +432,48 @@ export function buildWallWithRealWindow(parent, width, height, thick, winW, winH
 }
 
 // -----------------------------------------------------------------------------
-// Neon signs — auto-fitting text, plain sides
+// Neon signs — auto-fitting text, cached by text + colours
 // -----------------------------------------------------------------------------
+const signCache = new Map();
+
 export function createNeonSign(parent, text, x, y, z, bgHex, textHex, w = 4.4, h = 1.1) {
-  const c = document.createElement('canvas');
-  c.width = 512; c.height = 128;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = bgHex;
-  ctx.fillRect(0, 0, 512, 128);
-  ctx.strokeStyle = textHex;
-  ctx.lineWidth = 6;
-  ctx.strokeRect(6, 6, 500, 116);
-  ctx.fillStyle = textHex;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  let fontSize = 42;
-  for (;;) {
-    ctx.font = `bold ${fontSize}px Oswald, sans-serif`;
-    if (ctx.measureText(text).width <= 476 || fontSize <= 14) break;
-    fontSize -= 2;
+  const key = `${text}|${bgHex}|${textHex}`;
+  let cached = signCache.get(key);
+  if (!cached) {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 128;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = bgHex;
+    ctx.fillRect(0, 0, 512, 128);
+    ctx.strokeStyle = textHex;
+    ctx.lineWidth = 6;
+    ctx.strokeRect(6, 6, 500, 116);
+    ctx.fillStyle = textHex;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    let fontSize = 42;
+    for (;;) {
+      ctx.font = `bold ${fontSize}px Oswald, sans-serif`;
+      if (ctx.measureText(text).width <= 476 || fontSize <= 14) break;
+      fontSize -= 2;
+    }
+    ctx.fillText(text, 256, 66);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    const faceMat = new THREE.MeshStandardMaterial({
+      map: tex, emissive: new THREE.Color(textHex), emissiveMap: tex,
+      emissiveIntensity: 0.75, roughness: 0.25, metalness: 0.4
+    });
+    const sideMat = makeMat(colorToHex(bgHex, 0x0f172a), { roughness: 0.4, metalness: 0.5 });
+    faceMat.userData.shared = true;
+    sideMat.userData.shared = true;
+    cached = { faceMat, sideMat };
+    signCache.set(key, cached);
   }
-  ctx.fillText(text, 256, 66);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
-  const faceMat = new THREE.MeshStandardMaterial({
-    map: tex, emissive: new THREE.Color(textHex), emissiveMap: tex,
-    emissiveIntensity: 0.75, roughness: 0.25, metalness: 0.4
-  });
-  const sideMat = makeMat(colorToHex(bgHex, 0x0f172a), { roughness: 0.4, metalness: 0.5 });
-  const sign = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.22), [sideMat, sideMat, sideMat, sideMat, faceMat, faceMat]);
+  const { faceMat, sideMat } = cached;
+  const sign = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.22),
+    [sideMat, sideMat, sideMat, sideMat, faceMat, faceMat]);
   sign.position.set(x, y, z);
   sign.userData.studioName = `Sign: ${text}`;
   parent.add(sign);
@@ -206,16 +483,9 @@ export function createNeonSign(parent, text, x, y, z, bgHex, textHex, w = 4.4, h
 // =============================================================================
 // SHARED RIBBON / RIVER / SCENIC-ROAD TOOLKIT
 // =============================================================================
-/** Animated river-flow materials (texture scroll driven by the biome update). */
 const riverFlowMats = [];
-
-/** Frostpine valley creek centreline — shared by terrain tinting & the water. */
 const frostCreekX = (z) => -420 + Math.sin(z * 0.05) * 30 + Math.sin(z * 0.017 + 1.3) * 18;
 
-/**
- * Generic swept ribbon along a polyline. pts need {x,y,z}. `cols` are lateral
- * stations in [-1..1]; `offset` shifts the whole ribbon along its normal.
- */
 function ribbonGeometry(pts, halfWidth, yAt, { cols = [-1, 1], offset = 0, uvScale = 8, colorAt = null } = {}) {
   const pos = [], uv = [], col = [], idx = [];
   const c = new THREE.Color();
@@ -248,12 +518,6 @@ function ribbonGeometry(pts, halfWidth, yAt, { cols = [-1, 1], offset = 0, uvSca
   return g;
 }
 
-/**
- * A real mountain river: animated PS3-style ribbon water + a chain of water
- * physics bodies (wading, splash FX, currents, buoyant props). The riverbed is
- * the collision heightfield itself — the terrain mesh is tinted wet-rock along
- * the channel by its builder, so visuals and collision can never disagree.
- */
 function buildRiverSystem({
   id, parent = worldRoot, centerX, z0, z1, halfWidth = 5, step = 3, lift = 0.24,
   waveScale = 0.14, currentX = 0, currentZ = 0.8,
@@ -268,12 +532,14 @@ function buildRiverSystem({
   const smoothed = pts.map((p, i) =>
     (pts[Math.max(0, i - 1)].y + p.y * 2 + pts[Math.min(pts.length - 1, i + 1)].y) / 4);
   pts.forEach((p, i) => { p.y = smoothed[i]; });
+
   const surfAt = (z) => {
     const t = THREE.MathUtils.clamp((z - z0) / step, 0, pts.length - 1);
     const i = Math.floor(t), f = t - i;
     const a = pts[i], b = pts[Math.min(pts.length - 1, i + 1)];
     return a.y + (b.y - a.y) * f;
   };
+
   const cShallow = new THREE.Color(shallowColor), cDeep = new THREE.Color(deepColor);
   const geo = ribbonGeometry(pts, halfWidth, (p, s) => p.y - 0.03 * Math.abs(s), {
     cols: [-1, -0.42, 0.42, 1], uvScale: 7,
@@ -297,8 +563,7 @@ function buildRiverSystem({
   mesh.renderOrder = 2;
   mesh.userData.studioName = `River: ${id}`;
   parent.add(mesh);
-  // Physics: short AABB slices hugging the meander. bedFn returns the real
-  // collision ground so wading depth always matches what the player stands on.
+
   for (let za = z0, n = 0; za < z1 - 0.5; za += segment, n++) {
     const zb = Math.min(z1, za + segment);
     let minX = Infinity, maxX = -Infinity;
@@ -318,7 +583,6 @@ function buildRiverSystem({
   return { pts, surfAt };
 }
 
-/** Wooden footbridge or stone arch bridge across a river (standable). */
 function buildRiverBridge(parent, cx, z, deckY, span, { stone = false, deckW = 4.4 } = {}) {
   const mat = stone
     ? makeMat(0x9aa0a6, { texType: 'cobblestone', repeatX: 5, repeatY: 2, roughness: 0.9 })
@@ -353,7 +617,6 @@ function buildRiverBridge(parent, cx, z, deckY, span, { stone = false, deckW = 4
   }
 }
 
-/** Drifting log registered with the buoyancy system. */
 function spawnRiverLog(parent, x, z) {
   const log = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.3, 3.6, 7), treeBarkMaterial);
   log.rotation.z = Math.PI / 2;
@@ -365,7 +628,6 @@ function spawnRiverLog(parent, x, z) {
   registerFloatingProp(log, x, z, 0.02, 0.5);
 }
 
-/** Channel buoy with a bobbing marker light. */
 function buildChannelBuoy(parent, x, z, hex = 0xdc2626) {
   const g = new THREE.Group();
   g.position.set(x, 0.3, z);
@@ -382,7 +644,6 @@ function buildChannelBuoy(parent, x, z, hex = 0xdc2626) {
   registerFloatingProp(g, x, z, 0.02, 1.1);
 }
 
-/** Small rowboat / dinghy heaving on the waves. */
 function buildRowboat(parent, x, z, hullHex = 0x926c44) {
   const g = new THREE.Group();
   g.position.set(x, 0.3, z);
@@ -402,12 +663,9 @@ function buildRowboat(parent, x, z, hullHex = 0x926c44) {
 }
 
 // -----------------------------------------------------------------------------
-// FROSTPINE NATIONAL PARK — Yosemite-style scenic loop road
-// Paved two-lane loop hugging the alpine valley: double-yellow centre line,
-// edge lines, guardrails on drop-offs, vista pullouts, a stone arch bridge over
-// Frostpine Creek, park entrance arch and a driveable ski-lodge driveway.
+// FROSTPINE NATIONAL PARK — scenic loop road
 // -----------------------------------------------------------------------------
-function buildFrostpineLoopRoad(grp, keep, creek, lodgeX, lodgeZ, lodgeY) {
+function buildFrostpineLoopRoad(grp, keep) {
   const loopPts = [
     [-92, 130], [-170, 120], [-268, 116], [-372, 122], [-470, 130],
     [-566, 132], [-664, 138], [-678, 190], [-672, 248], [-612, 286],
@@ -423,6 +681,7 @@ function buildFrostpineLoopRoad(grp, keep, creek, lodgeX, lodgeZ, lodgeY) {
     return (a + b * 2 + p.y * 4 + c * 2 + d) / 10;
   });
   pts.forEach((p, i) => { p.y = sm[i]; });
+
   const ROAD_DY = 0.12, HW = 4.5;
   const normalAt = (i) => {
     const prev = pts[(i - 1 + pts.length) % pts.length], next = pts[(i + 1) % pts.length];
@@ -430,24 +689,19 @@ function buildFrostpineLoopRoad(grp, keep, creek, lodgeX, lodgeZ, lodgeY) {
     return { nx: tz / l, nz: -tx / l, yaw: Math.atan2(tx, tz) };
   };
 
-  // --- Carriageway ---
   const asphalt = makeMat(0x2b3138, { texType: 'asphalt', repeatX: 2, repeatY: 1, roughness: 0.86, bumpScale: 0.015 });
   if (asphalt.map) { asphalt.map.wrapS = asphalt.map.wrapT = THREE.RepeatWrapping; }
-  const roadGeo = ribbonGeometry(pts, HW, (p) => p.y + ROAD_DY, { uvScale: 9 });
-  const road = new THREE.Mesh(roadGeo, asphalt);
+  const road = new THREE.Mesh(ribbonGeometry(pts, HW, (p) => p.y + ROAD_DY, { uvScale: 9 }), asphalt);
   road.receiveShadow = true;
   road.userData.studioName = 'Frostpine Loop Road';
   grp.add(road);
 
-  // --- Solid white edge lines ---
   const edgeMat = new THREE.MeshBasicMaterial({ color: 0xf1f5f9, side: THREE.DoubleSide });
   for (const s of [-1, 1]) {
-    const edge = new THREE.Mesh(
-      ribbonGeometry(pts, 0.11, (p) => p.y + ROAD_DY + 0.02, { offset: s * (HW - 0.35) }), edgeMat);
-    grp.add(edge);
+    grp.add(new THREE.Mesh(
+      ribbonGeometry(pts, 0.11, (p) => p.y + ROAD_DY + 0.02, { offset: s * (HW - 0.35) }), edgeMat));
   }
 
-  // --- Double-yellow centre dashes (instanced, tangent-aligned) ---
   const dashT = [];
   const dm = new THREE.Object3D();
   for (let i = 0; i < pts.length - 1; i += 2) {
@@ -465,17 +719,16 @@ function buildFrostpineLoopRoad(grp, keep, creek, lodgeX, lodgeZ, lodgeY) {
   dashes.instanceMatrix.needsUpdate = true;
   grp.add(dashes);
 
-  // --- Guardrails wherever the shoulder drops away ---
   const railMat = makeMat(0xcbd5e1, { texType: 'brushedsteel', metalness: 0.85, roughness: 0.3, flatShading: false });
   const postGeo = new THREE.CylinderGeometry(0.09, 0.11, 0.95, 6);
   let railBeams = 0;
   for (const side of [-1, 1]) {
     let prevStation = null;
     for (let i = 0; i < pts.length - 1; i += 2) {
-      const p = pts[i], { nx, nz, yaw } = normalAt(i);
+      const p = pts[i], { nx, nz } = normalAt(i);
       const ex = p.x + nx * side * (HW + 0.35), ez = p.z + nz * side * (HW + 0.35);
       const drop = p.y - terrainH(p.x + nx * side * (HW + 3.2), p.z + nz * side * (HW + 3.2));
-      if (drop > 2.3 && railBeams < 150) {
+      if (drop > 2.3 && railBeams < 190) {
         const post = new THREE.Mesh(postGeo, railMat);
         post.position.set(ex, p.y + ROAD_DY + 0.45, ez);
         post.castShadow = true;
@@ -500,7 +753,6 @@ function buildFrostpineLoopRoad(grp, keep, creek, lodgeX, lodgeZ, lodgeY) {
     }
   }
 
-  // --- Vista pullouts with bench, telescope & interpretive sign ---
   const pullouts = [
     { f: 0.16, name: 'GLACIER POINT VISTA' },
     { f: 0.46, name: 'FROSTPINE VALLEY VIEW' },
@@ -521,6 +773,7 @@ function buildFrostpineLoopRoad(grp, keep, creek, lodgeX, lodgeZ, lodgeY) {
     pad.userData.studioName = `Pullout: ${po.name}`;
     grp.add(pad);
     addWorldBox(cx - 4.6, cx + 4.6, p.y + ROAD_DY - 0.14, p.y + ROAD_DY + 0.04, cz - 4.6, cz + 4.6, 'vista_pullout', true);
+
     const ox = p.x + nx * side * (HW + 5.4), oz = p.z + nz * side * (HW + 5.4);
     const bench = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.12, 0.7), benchWood);
     bench.position.set(ox, p.y + 0.62, oz);
@@ -540,6 +793,7 @@ function buildFrostpineLoopRoad(grp, keep, creek, lodgeX, lodgeZ, lodgeY) {
     scopeHead.rotation.y = yaw;
     scopeHead.position.set(scopePole.position.x, p.y + 1.35, scopePole.position.z);
     grp.add(scopePole, scopeHead);
+
     const signG = new THREE.Group();
     signG.position.set(p.x + nx * side * (HW + 1.4), p.y, p.z + nz * side * (HW + 1.4));
     signG.rotation.y = Math.atan2(-nx * side, -nz * side);
@@ -555,7 +809,6 @@ function buildFrostpineLoopRoad(grp, keep, creek, lodgeX, lodgeZ, lodgeY) {
     mapShapes.push({ x: cx, z: cz, w: 8, d: 8, color: '#475569', border: '#fcd34d', enterable: false });
   }
 
-  // --- Curve advisory signs ---
   for (const f of [0.3, 0.62]) {
     const i = Math.floor(f * N) % pts.length;
     const p = pts[i], { nx, nz } = normalAt(i);
@@ -570,25 +823,11 @@ function buildFrostpineLoopRoad(grp, keep, creek, lodgeX, lodgeZ, lodgeY) {
     createNeonSign(grp, '25', sx, p.y + 2.2, sz + 0.06, '#facc15', '#1c1917', 0.62, 0.5);
   }
 
-  // --- Stone arch bridge where the loop crosses Frostpine Creek ---
-  let crossI = -1, crossD = Infinity;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p = pts[i];
-    if (p.z < 270 || p.z > 316) continue;
-    const d = Math.abs(p.x - frostCreekX(p.z));
-    if (d < crossD) { crossD = d; crossI = i; }
-  }
-  if (crossI >= 0) {
-    const p = pts[crossI];
-    const bz = p.z, bx = frostCreekX(bz);
-    const span = 3.2 * 2 + 6;
-    const deckY = Math.max(creek.surfAt(bz), p.y + ROAD_DY) + 0.3;
-  }
   return { pts, normalAt, ROAD_DY, HW };
 }
 
 // =============================================================================
-// I-88 INTERSTATE — one continuous professional freeway
+// I-88 INTERSTATE
 // =============================================================================
 function buildInterstate88() {
   const F = I88;
@@ -597,6 +836,7 @@ function buildInterstate88() {
   const grp = new THREE.Group();
   grp.userData.studioName = 'I-88 Interstate';
   worldRoot.add(grp);
+
   const fwyMat = makeMat(0x1f2937, { texType: 'asphalt', repeatX: 4, repeatY: 90, roughness: 0.84, bumpScale: 0.015 });
   const deckMat = makeMat(0x27303d, { texType: 'concrete', repeatX: 4, repeatY: 40, roughness: 0.86 });
   const barrierMat = makeMat(0xd1d5db, { texType: 'concrete', repeatX: 24, repeatY: 1, roughness: 0.88 });
@@ -605,6 +845,7 @@ function buildInterstate88() {
   const yellowMat = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
   const whiteMat = new THREE.MeshBasicMaterial({ color: 0xf8fafc });
   const studMat = new THREE.MeshBasicMaterial({ color: 0xffb020 });
+
   const box = (w, h, d, mat, x, y, z, cast = false) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.set(x, y, z);
@@ -613,6 +854,7 @@ function buildInterstate88() {
     grp.add(m);
     return m;
   };
+
   const yellowT = [], whiteT = [], studT = [];
   const md = new THREE.Object3D();
   const mark = (list, x, y, z, sx, sy, sz, rx = 0) => {
@@ -627,16 +869,10 @@ function buildInterstate88() {
     const len = z1 - z0;
     const ym = yAt(mid);
     const lift = 0.035;
-    for (const off of [-0.3, 0.3]) {
-      mark(yellowT, X + off, ym + lift, mid, 0.22, 0.05, len - 0.4, angle);
-    }
-    for (const off of [-(HW - 0.9), HW - 0.9]) {
-      mark(whiteT, X + off, ym + lift, mid, 0.22, 0.05, len - 0.4, angle);
-    }
+    for (const off of [-0.3, 0.3]) mark(yellowT, X + off, ym + lift, mid, 0.22, 0.05, len - 0.4, angle);
+    for (const off of [-(HW - 0.9), HW - 0.9]) mark(whiteT, X + off, ym + lift, mid, 0.22, 0.05, len - 0.4, angle);
     for (let z = z0 + 4; z < z1 - 3; z += 8) {
-      for (const off of [-5.5, 5.5]) {
-        mark(whiteT, X + off, yAt(z) + lift, z, 0.24, 0.05, 3.4, angle);
-      }
+      for (const off of [-5.5, 5.5]) mark(whiteT, X + off, yAt(z) + lift, z, 0.24, 0.05, 3.4, angle);
       mark(studT, X, yAt(z) + lift + 0.02, z, 0.2, 0.05, 0.2, angle);
     }
   };
@@ -694,13 +930,11 @@ function buildInterstate88() {
     for (const [a, b] of cuts) { seg(cursor, a); cursor = b; }
     seg(cursor, z1);
   };
-  // 1. Southern at-grade section
+
   flat(F.southEnd, F.rampUpStart, F.groundY);
   barrierRun(F.southEnd, F.rampUpStart, F.groundY, F.westOpenings.concat(F.eastOpenings));
-  // 2. Climb onto the viaduct
   ramp(F.rampUpStart, F.rampUpEnd, F.groundY, F.deckY);
   slopedRail(F.rampUpStart, F.rampUpEnd, F.groundY, F.deckY);
-  // 3. Elevated viaduct
   flat(F.deckStart, F.deckEnd, F.deckY, 0.5, deckMat);
   flatRail(F.deckStart, F.deckEnd, F.deckY);
   for (let z = F.deckStart + 6; z <= F.deckEnd - 4; z += 18) {
@@ -714,12 +948,11 @@ function buildInterstate88() {
     }
     box(W - 1.4, 0.55, 1.6, barrierMat, X, F.deckY - 0.72, z, true);
   }
-  // 4. Bridge approach
   ramp(F.bridgeRampStart, F.bridgeRampEnd, F.deckY, F.bridgeY);
   slopedRail(F.bridgeRampStart, F.bridgeRampEnd, F.deckY, F.bridgeY);
-  // 5. Ocean suspension span (over the live strait water body)
   flat(F.bridgeStart, F.bridgeEnd, F.bridgeY, 0.65, deckMat);
   flatRail(F.bridgeStart, F.bridgeEnd, F.bridgeY);
+
   const towerTopY = 48.0;
   const towerZs = [248, 332];
   for (const tz of towerZs) {
@@ -745,8 +978,9 @@ function buildInterstate88() {
       return F.bridgeY + 1.2 + (towerTopY - F.bridgeY - 2.0) * t * t;
     }
     if (z >= towerZs[1]) {
-      const t = Math.max(0, (F.bridgeEnd - z) / (F.bridgeEnd - towerZs[1]));
-      return F.bridgeY + 1.2 + (towerTopY - F.bridgeY - 2.0) * t * t;
+      const t = Math.max(0, (F.bridgeEnd - z) / (towerZs[1] - F.bridgeEnd + towerZs[1]));
+      const u = Math.max(0, (F.bridgeEnd - z) / (F.bridgeEnd - towerZs[1]));
+      return F.bridgeY + 1.2 + (towerTopY - F.bridgeY - 2.0) * u * u;
     }
     const mid = (towerZs[0] + towerZs[1]) / 2;
     const u = (z - mid) / ((towerZs[1] - towerZs[0]) / 2);
@@ -762,12 +996,11 @@ function buildInterstate88() {
       if (h > 0.6) box(0.08, h, 0.08, steelMat, cx, F.bridgeY + h / 2, z);
     }
   }
-  // 6. Descent to the northern landmass
   ramp(F.rampDownStart, F.rampDownEnd, F.bridgeY, F.northY);
   slopedRail(F.rampDownStart, F.rampDownEnd, F.bridgeY, F.northY);
-  // 7. Northern at-grade section
   flat(F.rampDownEnd, F.northEnd, F.northY);
   barrierRun(F.rampDownEnd, F.northEnd, F.northY, F.westOpenings.concat(F.eastOpenings));
+
   const flush = (list, mat) => {
     if (!list.length) return;
     const im = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mat, list.length);
@@ -779,6 +1012,7 @@ function buildInterstate88() {
   flush(yellowT, yellowMat);
   flush(whiteT, whiteMat);
   flush(studT, studMat);
+
   const poleT = [], headT = [];
   const ld = new THREE.Object3D();
   const lampAt = (x, y, z, s) => {
@@ -787,18 +1021,10 @@ function buildInterstate88() {
     ld.position.set(x - s * 1.1, y + 9.0, z); ld.updateMatrix();
     headT.push(ld.matrix.clone());
   };
-  for (let z = F.southEnd + 10; z < F.rampUpStart - 4; z += 27) {
-    for (const s of [-1, 1]) lampAt(X + s * (HW + 1.6), F.groundY, z, s);
-  }
-  for (let z = F.rampDownEnd + 12; z < F.northEnd - 6; z += 27) {
-    for (const s of [-1, 1]) lampAt(X + s * (HW + 1.6), F.northY, z, s);
-  }
-  for (let z = F.deckStart + 10; z < F.deckEnd; z += 24) {
-    for (const s of [-1, 1]) lampAt(X + s * (HW - 0.1), F.deckY, z, s);
-  }
-  for (let z = F.bridgeStart + 12; z < F.bridgeEnd; z += 24) {
-    for (const s of [-1, 1]) lampAt(X + s * (HW - 0.1), F.bridgeY, z, s);
-  }
+  for (let z = F.southEnd + 10; z < F.rampUpStart - 4; z += 27) for (const s of [-1, 1]) lampAt(X + s * (HW + 1.6), F.groundY, z, s);
+  for (let z = F.rampDownEnd + 12; z < F.northEnd - 6; z += 27) for (const s of [-1, 1]) lampAt(X + s * (HW + 1.6), F.northY, z, s);
+  for (let z = F.deckStart + 10; z < F.deckEnd; z += 24) for (const s of [-1, 1]) lampAt(X + s * (HW - 0.1), F.deckY, z, s);
+  for (let z = F.bridgeStart + 12; z < F.bridgeEnd; z += 24) for (const s of [-1, 1]) lampAt(X + s * (HW - 0.1), F.bridgeY, z, s);
   if (poleT.length) {
     const poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.12, 0.16, 9, 8), makeMat(0x6b7280, { metalness: 0.6 }), poleT.length);
     poleT.forEach((m, i) => poles.setMatrixAt(i, m));
@@ -808,6 +1034,7 @@ function buildInterstate88() {
     heads.instanceMatrix.needsUpdate = true;
     grp.add(poles, heads);
   }
+
   const gantry = (z, y, text, bg = '#065f46', fg = '#f8fafc', w = 15) => {
     for (const s of [-1, 1]) box(0.45, 7.4, 0.45, steelMat, X + s * (HW + 0.7), y + 3.7, z, true);
     box(W + 2.4, 0.4, 0.4, steelMat, X, y + 7.2, z, true);
@@ -820,6 +1047,7 @@ function buildInterstate88() {
   gantry(462, F.northY, 'DOWNTOWN LOS AURA   EXIT 14');
   gantry(556, F.northY, 'LOS AURA INTL AIRPORT   EXIT 16');
   gantry(730, F.northY, 'MOTOR SPEEDWAY   EXIT 18');
+
   mapShapes.push({
     x: X, z: (F.southEnd + F.northEnd) / 2, w: W, d: F.northEnd - F.southEnd,
     color: '#334155', border: '#f59e0b', enterable: false
@@ -827,42 +1055,78 @@ function buildInterstate88() {
   mapShapes.push({ x: X, z: 290, w: W, d: 208, color: '#dc2626', border: '#facc15', enterable: false });
 }
 
+// =============================================================================
+// RESERVED FOOTPRINTS — roads & civic surfaces that are not colliders.
+// Every building placement is tested against these, so nothing can ever be
+// dropped on a carriageway, a sidewalk corridor or a plaza again.
+// =============================================================================
+const reservedFootprints = [];
+
+export function reserveFootprint(minX, maxX, minZ, maxZ, tag = 'reserved') {
+  reservedFootprints.push({ minX, maxX, minZ, maxZ, tag });
+}
+
+/** True when a w×d footprint at (cx,cz) is clear of roads, props and the spawn. */
+export function footprintClear(cx, cz, w, d, pad = 2.5) {
+  const x0 = cx - w / 2 - pad, x1 = cx + w / 2 + pad;
+  const z0 = cz - d / 2 - pad, z1 = cz + d / 2 + pad;
+  for (let i = 0; i < reservedFootprints.length; i++) {
+    const r = reservedFootprints[i];
+    if (x0 < r.maxX && x1 > r.minX && z0 < r.maxZ && z1 > r.minZ) return false;
+  }
+  for (let a = -w / 2; a <= w / 2 + 0.01; a += 4) {
+    for (let b = -d / 2; b <= d / 2 + 0.01; b += 4) {
+      if (collidesHorizontally(cx + a, cz + b, 0.2, 1.8, 1.2)) return false;
+    }
+  }
+  for (const m of manholes) if (Math.hypot(cx - m[0], cz - m[1]) < Math.max(w, d)) return false;
+  if (Math.hypot(cx + 11.5, cz - 18.5) < 26) return false;
+  return true;
+}
+
 // -----------------------------------------------------------------------------
 // City roads & desert highway
 // -----------------------------------------------------------------------------
 export function buildRoadsFreewayAndDesert() {
-  const cityGround = terrainPlane(360, 440, -16, 0, -30, makeMat(0x61a153, { texType: 'grass', repeatX: 52, repeatY: 64, roughness: 0.94 }));
+  const cityGround = terrainPlane(360, 440, -16, 0, -30,makeGroundMat('grass', { repeatX: 52, repeatY: 64, roughness: 0.94 }));
   cityGround.userData.studioName = 'City ground';
   worldRoot.add(cityGround);
-  const desertGround = terrainPlane(260, 460, 294, 0.02, -10, makeMat(0xd99b52, { texType: 'sand', repeatX: 38, repeatY: 64, roughness: 0.95, bumpScale: 0.02 }));
+
+  const desertGround = terrainPlane(260, 460, 294, 0.02, -10, makeGroundMat('sand', { repeatX: 38, repeatY: 64, roughness: 0.95 }));
   desertGround.userData.studioName = 'Redrock desert ground';
   worldRoot.add(desertGround);
+
   const nsRoads = [-120, -72, -24, 24, 72, 120];
   const ewRoads = [-168, -120, -72, -24, 24, 72];
   const asphaltNS = makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 36, roughness: 0.86, bumpScale: 0.015 });
   const asphaltEW = makeMat(0x313946, { texType: 'asphalt', repeatX: 36, repeatY: 2, roughness: 0.86, bumpScale: 0.015 });
   const yellowMat = makeMat(0xfacc15, { roughness: 0.55 });
   const whiteMat = makeMat(0xf1f5f9, { roughness: 0.55 });
+
   const nsDashTransforms = [];
   nsRoads.forEach((rx) => {
     const r = new THREE.Mesh(new THREE.BoxGeometry(12, 0.08, 252), asphaltNS);
     r.position.set(rx, 0.04, -48);
     r.receiveShadow = true;
     worldRoot.add(r);
+    reserveFootprint(rx - 7, rx + 7, -175, 79, 'road');
     for (let z = -170; z <= 74; z += 6) {
       if (!ewRoads.some((iz) => Math.abs(z - iz) < 7.5)) nsDashTransforms.push([rx, 0.05, z]);
     }
   });
+
   const ewDashTransforms = [];
   ewRoads.forEach((rz) => {
     const r = new THREE.Mesh(new THREE.BoxGeometry(252, 0.08, 12), asphaltEW);
     r.position.set(0, 0.04, rz);
     r.receiveShadow = true;
     worldRoot.add(r);
+    reserveFootprint(-127, 127, rz - 7, rz + 7, 'road');
     for (let x = -122; x <= 122; x += 6) {
       if (!nsRoads.some((ix) => Math.abs(x - ix) < 7.5)) ewDashTransforms.push([x, 0.05, rz]);
     }
   });
+
   {
     const dm = new THREE.Object3D();
     const nsDashes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.26, 0.09, 2.5), yellowMat, nsDashTransforms.length);
@@ -893,10 +1157,11 @@ export function buildRoadsFreewayAndDesert() {
     cwEW.instanceMatrix.needsUpdate = true;
     worldRoot.add(cwNS, cwEW);
   }
-  const curbMat = makeMat(0x94a3b8, { texType: 'concrete', repeatX: 16, repeatY: 1, roughness: 0.9 });
-  const sidewalkMat = makeMat(0xcbd5e1, { texType: 'sidewalk', repeatX: 12, repeatY: 12, roughness: 0.85 });
-  const lawnMat = makeMat(0x69ae59, { texType: 'grass', repeatX: 8, repeatY: 8, roughness: 0.94 });
-  const downtownPlazaMat = makeMat(0x94a3b8, { texType: 'cobblestone', repeatX: 14, repeatY: 14, roughness: 0.82 });
+
+const curbMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 16, repeatY: 1, roughness: 0.9 });
+const sidewalkMat = makeGroundMat('concrete', { color: 0xcbd5e1, repeatX: 12, repeatY: 12, roughness: 0.85 });
+const downtownPlazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repeatY: 14, roughness: 0.82 });
+const lawnMat = makeGroundMat('grass', { color: 0x5ca450, repeatX: 10, repeatY: 10, roughness: 0.94 });
   [-96, -48, 0, 48, 96].forEach((bx) => {
     [-144, -96, -48, 0, 48].forEach((bz) => {
       const curb = new THREE.Mesh(new THREE.BoxGeometry(36.3, 0.16, 36.3), curbMat);
@@ -911,17 +1176,22 @@ export function buildRoadsFreewayAndDesert() {
       worldRoot.add(curb, sw, inner);
     });
   });
+
   buildInterstate88();
+
   [-24, 72].forEach((cz) => {
     const conn = new THREE.Mesh(new THREE.BoxGeometry(46, 0.09, 12), asphaltEW);
     conn.position.set(141, 0.045, cz);
     conn.receiveShadow = true;
     worldRoot.add(conn);
+    reserveFootprint(118, 164, cz - 7, cz + 7, 'road');
   });
+
   const desertHwy = new THREE.Mesh(new THREE.BoxGeometry(198, 0.09, 12), asphaltEW);
   desertHwy.position.set(261, 0.055, 40);
   desertHwy.receiveShadow = true;
   worldRoot.add(desertHwy);
+  reserveFootprint(162, 360, 33, 47, 'road');
   {
     const positions = [];
     for (let x = 168; x <= 354; x += 7) positions.push([x, 0.065, 40]);
@@ -1008,6 +1278,7 @@ export function buildSuburbanHouseBase({ x, z, w = 8.4, d = 7.4, h = 3.6, wallCo
   const backWall = new THREE.Mesh(new THREE.BoxGeometry(w, h, wallThick), wallMat);
   backWall.position.set(0, h / 2, -d / 2 + wallThick / 2);
   backWall.castShadow = true;
+
   const frontWall = new THREE.Group();
   frontWall.position.set(0, 0, d / 2 - wallThick / 2);
   const fLeft = new THREE.Group();
@@ -1021,6 +1292,7 @@ export function buildSuburbanHouseBase({ x, z, w = 8.4, d = 7.4, h = 3.6, wallCo
   const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.2, 0.14), makeMat(0x78350f, { texType: 'wood' }));
   door.position.set(0, 1.1, 0.1);
   frontWall.add(fLeft, fRight, centerCol, door);
+
   const leftWall = new THREE.Group();
   leftWall.position.set(-w / 2 + wallThick / 2, 0, 0);
   leftWall.rotation.y = Math.PI / 2;
@@ -1029,11 +1301,13 @@ export function buildSuburbanHouseBase({ x, z, w = 8.4, d = 7.4, h = 3.6, wallCo
   rightWall.position.set(w / 2 - wallThick / 2, 0, 0);
   rightWall.rotation.y = -Math.PI / 2;
   buildWallWithRealWindow(rightWall, d - wallThick * 2, h, wallThick, 1.5, 1.25, 1.9, wallMat);
+
   const inTable = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.65, 1.0), makeMat(0x78350f, { texType: 'wood' }));
   inTable.position.set(-1.6, 0.4, 1.2);
   const inSofa = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.72, 0.9), makeMat(0x334155, { texType: 'fabric' }));
   inSofa.position.set(1.6, 0.42, 0.8);
   group.add(floor, backWall, frontWall, leftWall, rightWall, inTable, inSofa);
+
   const roofH = 2.2, overhang = 0.55;
   const shape = new THREE.Shape();
   shape.moveTo(-(w / 2 + overhang), 0);
@@ -1046,10 +1320,12 @@ export function buildSuburbanHouseBase({ x, z, w = 8.4, d = 7.4, h = 3.6, wallCo
   roof.position.y = h;
   roof.castShadow = true;
   group.add(roof);
+
   const awning = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.24, 1.8), makeMat(roofColor, { texType: 'shingles', repeatX: 2, repeatY: 1 }));
   awning.position.set(0, 2.25, d / 2 + 0.85);
   awning.castShadow = true;
   group.add(awning);
+
   const lodGroup = new THREE.Group();
   const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.85, 2.2, 0.85), makeMat(0x9a3412, { texType: 'brick', repeatX: 1, repeatY: 2, bumpScale: 0.02 }));
   chimney.position.set(w * 0.28, h + 1.4, -d * 0.15);
@@ -1058,6 +1334,7 @@ export function buildSuburbanHouseBase({ x, z, w = 8.4, d = 7.4, h = 3.6, wallCo
   group.add(lodGroup);
   registerBuildingLod(x, z, lodGroup);
   worldRoot.add(group);
+
   const cos = Math.abs(Math.cos(rotY)), sin = Math.abs(Math.sin(rotY));
   const worldW = w * cos + d * sin;
   const worldD = w * sin + d * cos;
@@ -1082,10 +1359,12 @@ export function buildWalkInHouse({ x, z, w = 9.8, d = 8.6, h = 4.0, wallColor, r
   floor.position.y = 0.04;
   floor.receiveShadow = true;
   group.add(floor);
+
   const backWallGroup = new THREE.Group();
   backWallGroup.position.set(0, 0, -d / 2 + wallThick / 2);
   buildWallWithRealWindow(backWallGroup, w, h, wallThick, 2.2, 1.35, 2.0, wallMat);
   group.add(backWallGroup);
+
   const leftWallGroup = new THREE.Group();
   leftWallGroup.position.set(-w / 2 + wallThick / 2, 0, 0);
   leftWallGroup.rotation.y = Math.PI / 2;
@@ -1095,6 +1374,7 @@ export function buildWalkInHouse({ x, z, w = 9.8, d = 8.6, h = 4.0, wallColor, r
   rightWallGroup.rotation.y = -Math.PI / 2;
   buildWallWithRealWindow(rightWallGroup, d - wallThick * 2, h, wallThick, 1.8, 1.35, 2.0, wallMat);
   group.add(leftWallGroup, rightWallGroup);
+
   const segW = (w - doorW) / 2;
   const frontL = new THREE.Group();
   frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - wallThick / 2);
@@ -1111,6 +1391,7 @@ export function buildWalkInHouse({ x, z, w = 9.8, d = 8.6, h = 4.0, wallColor, r
   const trimR = trimL.clone();
   trimR.position.x = doorW / 2;
   group.add(frontL, frontR, header, trimL, trimR);
+
   const roofH = 2.3, overhang = 0.55;
   const shape = new THREE.Shape();
   shape.moveTo(-(w / 2 + overhang), 0);
@@ -1123,6 +1404,7 @@ export function buildWalkInHouse({ x, z, w = 9.8, d = 8.6, h = 4.0, wallColor, r
   roof.position.y = h;
   roof.castShadow = true;
   group.add(roof);
+
   const sofa = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.72, 2.5), makeMat(0x334155, { texType: 'fabric', repeatX: 2, repeatY: 4, roughness: 0.95 }));
   sofa.position.set(-w / 2 + 1.0, 0.42, -0.2);
   addWorldBox(x - w / 2 + 0.45, x - w / 2 + 1.55, baseY, baseY + 0.72, z - 1.45, z + 1.05, 'sofa', true);
@@ -1144,6 +1426,7 @@ export function buildWalkInHouse({ x, z, w = 9.8, d = 8.6, h = 4.0, wallColor, r
   addWorldBox(x - w / 2 + 0.45, x - w / 2 + 2.45, baseY, baseY + 0.77, z - d / 2 + 0.45, z - d / 2 + 1.85, 'bed', true);
   const rug = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.03, 2.5), makeMat(0x0284c7, { texType: 'fabric', repeatX: 4, repeatY: 3, roughness: 0.96 }));
   rug.position.set(-1.5, 0.09, -0.2);
+
   const indoorLod = new THREE.Group();
   const lampStand = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.14, 1.5, 8), makeMat(0xfbbf24, { metalness: 0.85 }));
   lampStand.position.set(-w / 2 + 0.9, 0.85, d / 2 - 1.2);
@@ -1154,6 +1437,7 @@ export function buildWalkInHouse({ x, z, w = 9.8, d = 8.6, h = 4.0, wallColor, r
   registerBuildingLod(x, z, indoorLod);
   group.add(sofa, table, counter, graniteTop, steelFridge, bedFrame, mattress, rug);
   worldRoot.add(group);
+
   const minX = x - w / 2, maxX = x + w / 2, minZ = z - d / 2, maxZ = z + d / 2;
   addWorldBox(minX, maxX, baseY, baseY + h, minZ, minZ + wallThick, 'wall', false);
   addWorldBox(minX, minX + wallThick, baseY, baseY + h, minZ, maxZ, 'wall', false);
@@ -1201,6 +1485,7 @@ export function buildHotdogStore(x, z) {
   const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 0.6, 0.36, d + 0.6), redTrimMat);
   roof.position.y = h + 0.18;
   roof.castShadow = true;
+
   const mascotGroup = new THREE.Group();
   mascotGroup.position.set(0, h + 1.15, 0.5);
   const bunMat = makeMat(0xd97706, { roughness: 0.6 });
@@ -1216,6 +1501,7 @@ export function buildHotdogStore(x, z) {
   mustard.position.set(0, 0.48, 0);
   mascotGroup.add(bunL, bunR, wiener, mustard);
   createNeonSign(group, 'AURA HOTDOGS', 0, 3.55, d / 2 + 0.08, '#991b1b', '#fef08a', 5.2, 1.05);
+
   const frontCounter = new THREE.Mesh(new THREE.BoxGeometry(4.4, 1.0, 1.0), redTrimMat);
   frontCounter.position.set(-2.4, 0.55, -0.5);
   const frontTop = new THREE.Mesh(new THREE.BoxGeometry(4.5, 0.1, 1.1), makeMat(0xf8fafc, { metalness: 0.7 }));
@@ -1232,6 +1518,7 @@ export function buildHotdogStore(x, z) {
   indoorPadRing.position.set(2.4, 0.10, -2.2);
   group.add(floor, backW, leftW, rightW, frontL, frontR, header, roof, mascotGroup, frontCounter, frontTop, backCounter, refillVat, vatWater, indoorPadRing);
   worldRoot.add(group);
+
   const minX = x - w / 2, maxX = x + w / 2, minZ = z - d / 2, maxZ = z + d / 2;
   addWorldBox(minX, maxX, 0.18, 0.18 + h, minZ, minZ + wallThick, 'wall', false);
   addWorldBox(minX, minX + wallThick, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
@@ -1413,96 +1700,430 @@ export function buildReserveBank(x, z) {
   mapShapes.push({ x, z, w, d, color: '#f8fafc', border: '#f59e0b', enterable: true });
 }
 
-// -----------------------------------------------------------------------------
-// Skyscrapers
-// -----------------------------------------------------------------------------
-export function buildSkyscraperBase({ x, z, w = 13.5, d = 13.5, h = 44, glassHex = 0x0ea5e9, frameHex = 0x1e293b, name = 'AURA TOWER', hasHelipad = true }) {
-  const group = new THREE.Group();
-  group.userData.studioName = name;
-  group.position.set(x, 0.18, z);
-  const lobbyH = 4.6, upperH = h - lobbyH, wallThick = 0.48, doorW = 3.2;
-  const frameMat = makeMat(frameHex, { texType: 'brushedsteel', repeatX: 4, repeatY: 12, metalness: 0.88, roughness: 0.24, flatShading: false });
-  const glassMat = makeMat(glassHex, {
-    metalness: 0.90, roughness: 0.10, clearcoat: 1.0, clearcoatRoughness: 0.05,
-    envMapIntensity: 2.1, emissive: glassHex, emissiveIntensity: 0.14, flatShading: false
-  });
-  const lobbyFloor = new THREE.Mesh(new THREE.BoxGeometry(w - 0.2, 0.08, d - 0.2), makeMat(0xf8fafc, { texType: 'marble', repeatX: 5, repeatY: 5, roughness: 0.18, clearcoat: 0.85, flatShading: false }));
-  lobbyFloor.position.y = 0.04;
-  const backW = new THREE.Mesh(new THREE.BoxGeometry(w, lobbyH, wallThick), frameMat);
-  backW.position.set(0, lobbyH / 2, -d / 2 + wallThick / 2);
-  const leftW = new THREE.Group();
-  leftW.position.set(-w / 2 + wallThick / 2, 0, 0);
-  leftW.rotation.y = Math.PI / 2;
-  buildWallWithRealWindow(leftW, d - wallThick * 2, lobbyH, wallThick, d - 3.0, 2.7, 2.0, frameMat, false);
-  const rightW = new THREE.Group();
-  rightW.position.set(w / 2 - wallThick / 2, 0, 0);
-  rightW.rotation.y = -Math.PI / 2;
-  buildWallWithRealWindow(rightW, d - wallThick * 2, lobbyH, wallThick, d - 3.0, 2.7, 2.0, frameMat, false);
-  const segW = (w - doorW) / 2;
-  const frontL = new THREE.Group();
-  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontL, segW, lobbyH, wallThick, segW - 0.9, 2.7, 2.0, frameMat, false);
-  const frontR = new THREE.Group();
-  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontR, segW, lobbyH, wallThick, segW - 0.9, 2.7, 2.0, frameMat, false);
-  const header = new THREE.Mesh(new THREE.BoxGeometry(doorW, 1.3, wallThick), frameMat);
-  header.position.set(0, 3.95, d / 2 - wallThick / 2);
-  const towerBody = new THREE.Mesh(new THREE.BoxGeometry(w, upperH, d), glassMat);
-  towerBody.position.y = lobbyH + upperH / 2;
-  towerBody.castShadow = true;
-  towerBody.receiveShadow = true;
-  const roofCap = new THREE.Mesh(new THREE.BoxGeometry(w + 0.5, 0.55, d + 0.5), frameMat);
-  roofCap.position.y = h + 0.275;
-  const lodGroup = new THREE.Group();
-  for (let y = lobbyH + 6; y < h; y += 6) {
-    const band = new THREE.Mesh(new THREE.BoxGeometry(w + 0.16, 0.26, d + 0.16), frameMat);
-    band.position.y = y;
-    lodGroup.add(band);
+// =============================================================================
+// SKYSCRAPER SYSTEM — four exterior archetypes, three interior archetypes,
+// one shared unit box, one material cache, one validated placement table.
+// =============================================================================
+const TOWER_BASE_Y = 0.18;
+const TOWER_LOBBY_H = 4.6;
+const TOWER_WALL_T = 0.48;
+const TOWER_DOOR_W = 3.2;
+
+const towerGeos = [];
+const towerMats = [];
+const towerMatCache = new Map();
+const towerFacadeCache = new Map();
+let TOWER_UNIT = null;
+
+function towerUnit() {
+  if (!TOWER_UNIT) {
+    TOWER_UNIT = new THREE.BoxGeometry(1, 1, 1);
+    TOWER_UNIT.userData.shared = true;
+    towerGeos.push(TOWER_UNIT);
   }
-  [[-w / 2, -d / 2], [w / 2, -d / 2], [-w / 2, d / 2], [w / 2, d / 2]].forEach(([cx, cz]) => {
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.32, h, 0.32), frameMat);
-    fin.position.set(cx, h / 2, cz);
-    lodGroup.add(fin);
-  });
-  group.add(lodGroup);
-  registerBuildingLod(x, z, lodGroup);
-  if (hasHelipad) {
-    const pad = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.2, 0.12, 20), makeMat(0x334155));
-    pad.position.y = h + 0.60;
-    const ring = new THREE.Mesh(new THREE.RingGeometry(3.5, 3.95, 24), new THREE.MeshBasicMaterial({ color: 0xfacc15, side: THREE.DoubleSide }));
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = h + 0.67;
-    const hBarL = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.08, 2.6), makeMat(0xf8fafc));
-    hBarL.position.set(-0.9, h + 0.68, 0);
-    const hBarR = hBarL.clone();
-    hBarR.position.x = 0.9;
-    const hCross = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.08, 0.45), makeMat(0xf8fafc));
-    hCross.position.set(0, h + 0.68, 0);
-    group.add(pad, ring, hBarL, hBarR, hCross);
+  return TOWER_UNIT;
+}
+function tGeo(g) { g.userData.shared = true; towerGeos.push(g); return g; }
+function tMat(m) { m.userData.shared = true; towerMats.push(m); return m; }
+
+function towerFrameMat(hex) {
+  const k = 'f' + hex;
+  if (!towerMatCache.has(k)) {
+    towerMatCache.set(k, tMat(makeMat(hex, {
+      texType: 'brushedsteel', repeatX: 4, repeatY: 12,
+      metalness: 0.88, roughness: 0.24, flatShading: false
+    })));
   }
-  const roofLiftPad = new THREE.Mesh(new THREE.RingGeometry(0.85, 1.15, 20), new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide }));
-  roofLiftPad.rotation.x = -Math.PI / 2;
-  roofLiftPad.position.set(0, h + 0.58, d / 2 - 1.8);
-  group.add(roofLiftPad);
-  createNeonSign(group, name, 0, 3.9, d / 2 + 0.1, '#090d14', '#38bdf8', Math.min(w - 2, 7.6), 0.95);
-  group.add(lobbyFloor, backW, leftW, rightW, frontL, frontR, header, towerBody, roofCap);
-  worldRoot.add(group);
+  return towerMatCache.get(k);
+}
+function towerGlassMat(hex) {
+  const k = 'g' + hex;
+  if (!towerMatCache.has(k)) {
+    towerMatCache.set(k, tMat(makeMat(hex, {
+      metalness: 0.90, roughness: 0.10, clearcoat: 1.0, clearcoatRoughness: 0.05,
+      envMapIntensity: 2.1, emissive: hex, emissiveIntensity: 0.14, flatShading: false
+    })));
+  }
+  return towerMatCache.get(k);
+}
+function towerPlainMat(hex, opts) {
+  const k = 'p' + hex + JSON.stringify(opts || {});
+  if (!towerMatCache.has(k)) towerMatCache.set(k, tMat(makeMat(hex, opts || {})));
+  return towerMatCache.get(k);
+}
+function towerMarbleMat() {
+  return towerPlainMat(0xf8fafc, {
+    texType: 'marble', repeatX: 5, repeatY: 5,
+    roughness: 0.18, clearcoat: 0.85, flatShading: false
+  });
+}
+function towerFacadeMat(hex, cols, rows) {
+  const k = hex + ':' + cols + 'x' + rows;
+  if (towerFacadeCache.has(k)) return towerFacadeCache.get(k);
+  const cv = document.createElement('canvas');
+  cv.width = 64; cv.height = 128;
+  const c = cv.getContext('2d');
+  c.fillStyle = '#' + new THREE.Color(hex).getHexString();
+  c.fillRect(0, 0, 64, 128);
+  for (let r = 0; r < 16; r++) {
+    for (let col = 0; col < 8; col++) {
+      const lit = Math.sin((r * 9 + col * 3 + hex) * 12.9898) * 43758.5453;
+      c.fillStyle = (lit - Math.floor(lit)) < 0.34 ? '#ffe9a8' : '#2f4a63';
+      c.fillRect(col * 8 + 1, r * 8 + 1, 6, 6);
+    }
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(cols, rows);
+  const m = tMat(new THREE.MeshStandardMaterial({
+    map: t, emissiveMap: t, emissive: 0xffffff, emissiveIntensity: 0.22,
+    roughness: 0.34, metalness: 0.38
+  }));
+  towerFacadeCache.set(k, m);
+  return m;
+}
+
+/** Scaled unit-box mesh — the whole tower system draws from one geometry. */
+function tbx(parent, m, x, y, z, sx, sy, sz, cast = true) {
+  const o = new THREE.Mesh(towerUnit(), m);
+  o.position.set(x, y, z);
+  o.scale.set(sx, sy, sz);
+  o.castShadow = cast;
+  o.receiveShadow = true;
+  parent.add(o);
+  return o;
+}
+
+/** Repeated horizontal bands as a single instanced draw call. */
+function towerBands(parent, m, w, d, y0, y1, step, thick = 0.26, grow = 0.16) {
+  const n = Math.max(0, Math.floor((y1 - y0) / step));
+  if (!n) return null;
+  const im = new THREE.InstancedMesh(towerUnit(), m, n);
+  const dm = new THREE.Object3D();
+  for (let i = 0; i < n; i++) {
+    dm.position.set(0, y0 + i * step, 0);
+    dm.scale.set(w + grow, thick, d + grow);
+    dm.updateMatrix();
+    im.setMatrixAt(i, dm.matrix);
+  }
+  im.instanceMatrix.needsUpdate = true;
+  im.castShadow = true;
+  parent.add(im);
+  return im;
+}
+
+const TOWER_ARCHETYPES = {
+  glass: {
+    lobby: 'corporate',
+    shaft(g, p, fm, gm, lod) {
+      const upper = p.h - TOWER_LOBBY_H;
+      tbx(g, gm, 0, TOWER_LOBBY_H + upper / 2, 0, p.w, upper, p.d);
+      towerBands(lod, fm, p.w, p.d, TOWER_LOBBY_H + 6, p.h, 6);
+      for (const cx of [-p.w / 2, p.w / 2]) {
+        for (const cz of [-p.d / 2, p.d / 2]) tbx(lod, fm, cx, p.h / 2, cz, 0.32, p.h, 0.32);
+      }
+    }
+  },
+  deco: {
+    lobby: 'finance',
+    shaft(g, p, fm, gm, lod) {
+      const tiers = [[1.00, 0.50], [0.78, 0.30], [0.56, 0.20]];
+      let y = TOWER_LOBBY_H;
+      for (const [scale, frac] of tiers) {
+        const th = (p.h - TOWER_LOBBY_H) * frac;
+        tbx(g, gm, 0, y + th / 2, 0, p.w * scale, th, p.d * scale);
+        tbx(g, fm, 0, y + th, 0, p.w * scale + 0.7, 0.4, p.d * scale + 0.7);
+        y += th;
+      }
+      towerBands(lod, fm, p.w, p.d, TOWER_LOBBY_H + 4, TOWER_LOBBY_H + (p.h - TOWER_LOBBY_H) * 0.5, 5, 0.3, 0.3);
+      for (const cx of [-p.w * 0.36, p.w * 0.36]) {
+        tbx(lod, fm, cx, TOWER_LOBBY_H + (p.h - TOWER_LOBBY_H) * 0.25, p.d / 2 + 0.06, 0.5, (p.h - TOWER_LOBBY_H) * 0.5, 0.24);
+      }
+      tbx(lod, towerPlainMat(0xfacc15, { emissive: 0xca8a04, emissiveIntensity: 0.5 }), 0, p.h + 1.6, 0, 0.5, 3.2, 0.5);
+    }
+  },
+  slab: {
+    lobby: 'residential',
+    shaft(g, p, fm, gm, lod) {
+      const upper = p.h - TOWER_LOBBY_H;
+      const wall = towerFacadeMat(p.frameHex, Math.max(1, Math.round(p.w / 4)), Math.max(2, Math.round(p.h / 7)));
+      tbx(g, wall, 0, TOWER_LOBBY_H + upper / 2, 0, p.w, upper, p.d);
+      tbx(g, fm, 0, TOWER_LOBBY_H + upper / 2, p.d / 2 + 0.05, p.w * 0.22, upper, 0.18);
+      towerBands(lod, fm, p.w, p.d, TOWER_LOBBY_H + 3.2, p.h, 3.2, 0.18, 0.9);
+      tbx(lod, fm, 0, p.h + 0.9, 0, p.w * 0.9, 1.8, p.d * 0.9);
+    }
+  },
+  brutalist: {
+    lobby: 'corporate',
+    shaft(g, p, fm, gm, lod) {
+      const upper = p.h - TOWER_LOBBY_H;
+      const concrete = towerPlainMat(p.frameHex, { texType: 'concrete', repeatX: 4, repeatY: 10, roughness: 0.9 });
+      tbx(g, concrete, 0, TOWER_LOBBY_H + upper / 2, 0, p.w, upper, p.d);
+      const strip = towerGlassMat(p.glassHex);
+      const rows = Math.max(2, Math.floor(upper / 4));
+      const im = new THREE.InstancedMesh(towerUnit(), strip, rows * 2);
+      const dm = new THREE.Object3D();
+      let i = 0;
+      for (let r = 0; r < rows; r++) {
+        for (const s of [-1, 1]) {
+          dm.position.set(0, TOWER_LOBBY_H + 2.4 + r * 4, s * (p.d / 2 + 0.04));
+          dm.scale.set(p.w * 0.86, 1.5, 0.12);
+          dm.updateMatrix();
+          im.setMatrixAt(i++, dm.matrix);
+        }
+      }
+      im.instanceMatrix.needsUpdate = true;
+      lod.add(im);
+      for (const cx of [-p.w / 2, p.w / 2]) tbx(lod, concrete, cx, TOWER_LOBBY_H + upper / 2, 0, 0.6, upper, p.d + 0.3);
+      tbx(lod, concrete, 0, p.h + 1.1, 0, p.w + 0.8, 2.2, p.d + 0.8);
+    }
+  }
+};
+
+function towerElevatorKit(g, sk, steel) {
+  tbx(g, steel, 0, 1.74, -sk.d / 2 + 1.25, 2.8, 3.4, 1.6);
+  const ring = new THREE.Mesh(
+    tGeo(new THREE.RingGeometry(0.85, 1.15, 20)),
+    tMat(new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide }))
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(0, 0.10, -sk.d / 2 + 2.4);
+  g.add(ring);
+  return {
+    minX: sk.x - 1.4, maxX: sk.x + 1.4, minY: TOWER_BASE_Y, maxY: 3.6,
+    minZ: sk.z - sk.d / 2 + 0.45, maxZ: sk.z - sk.d / 2 + 2.05, tag: 'elev_shaft', climbable: false
+  };
+}
+
+const TOWER_INTERIORS = {
+  corporate(sk, g) {
+    const dark = towerPlainMat(0x0f172a);
+    const gold = towerPlainMat(0xf59e0b, { metalness: 0.85, roughness: 0.2 });
+    const couch = towerPlainMat(0x334155, { texType: 'fabric', roughness: 0.9 });
+    const steel = towerPlainMat(0xdbeafe, { texType: 'brushedsteel', metalness: 0.9, roughness: 0.2, flatShading: false });
+    tbx(g, dark, -2.2, 0.56, 0.4, 4.2, 1.05, 1.2);
+    tbx(g, gold, -2.2, 1.12, 0.4, 4.3, 0.08, 1.3);
+    tbx(g, couch, -sk.w / 2 + 1.3, 0.42, -1.2, 1.1, 0.72, 2.8);
+    tbx(g, couch, sk.w / 2 - 1.3, 0.42, -1.2, 1.1, 0.72, 2.8);
+    const planter = new THREE.Mesh(tGeo(new THREE.CylinderGeometry(0.55, 0.45, 0.75, 10)), towerPlainMat(0x78350f));
+    planter.position.set(3.2, 0.42, 1.4); g.add(planter);
+    const plant = new THREE.Mesh(tGeo(new THREE.DodecahedronGeometry(0.75, 0)), towerPlainMat(0x16a34a));
+    plant.position.set(3.2, 1.15, 1.4); g.add(plant);
+    return [
+      { minX: sk.x - 4.3, maxX: sk.x - 0.1, minY: TOWER_BASE_Y, maxY: 1.32, minZ: sk.z - 0.2, maxZ: sk.z + 1.0, tag: 'lobby_desk', climbable: true },
+      towerElevatorKit(g, sk, steel)
+    ];
+  },
+  finance(sk, g) {
+    const marble = towerMarbleMat();
+    const granite = towerPlainMat(0x1e293b, { texType: 'granite', repeatX: 3, repeatY: 1, roughness: 0.25, flatShading: false });
+    const gold = towerPlainMat(0xfbbf24, { metalness: 0.94, roughness: 0.15, flatShading: false });
+    const steel = towerPlainMat(0x94a3b8, { texType: 'brushedsteel', metalness: 0.94, roughness: 0.18, flatShading: false });
+    const rope = towerPlainMat(0x7f1d1d, { roughness: 0.8 });
+    tbx(g, marble, -1.8, 0.58, -0.6, 6.4, 1.05, 1.1);
+    tbx(g, granite, -1.8, 1.15, -0.6, 6.6, 0.12, 1.25);
+    const glass = new THREE.Mesh(towerUnit(), realWindowGlassMat);
+    glass.position.set(-1.8, 1.75, -0.6); glass.scale.set(6.0, 1.1, 0.08); g.add(glass);
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) {
+      tbx(g, gold, sk.w / 2 - 2.4 + c * 0.5, 0.24 + r * 0.19, -sk.d / 2 + 1.6, 0.42, 0.18, 0.22);
+    }
+    for (const px of [-3.4, -0.2, 3.0]) {
+      tbx(g, steel, px, 0.5, 2.4, 0.1, 1.0, 0.1);
+      tbx(g, rope, px + 1.6, 0.86, 2.4, 3.2, 0.06, 0.06);
+    }
+    return [
+      { minX: sk.x - 5.0, maxX: sk.x + 1.4, minY: TOWER_BASE_Y, maxY: 1.4, minZ: sk.z - 1.2, maxZ: sk.z, tag: 'lobby_teller', climbable: true },
+      towerElevatorKit(g, sk, steel)
+    ];
+  },
+  residential(sk, g) {
+    const wall = towerPlainMat(0xe2e8f0, { texType: 'siding', repeatX: 3, repeatY: 2 });
+    const brass = towerPlainMat(0xd97706, { metalness: 0.85, roughness: 0.3 });
+    const couch = towerPlainMat(0x475569, { texType: 'fabric', roughness: 0.92 });
+    const steel = towerPlainMat(0xcbd5e1, { texType: 'brushedsteel', metalness: 0.9, roughness: 0.22, flatShading: false });
+    tbx(g, wall, -sk.w / 2 + 0.9, 1.3, 0.6, 0.5, 2.2, 4.4);
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 6; c++) {
+      tbx(g, brass, -sk.w / 2 + 1.2, 0.55 + r * 0.5, -1.3 + c * 0.62, 0.08, 0.4, 0.52);
+    }
+    tbx(g, couch, sk.w / 2 - 1.5, 0.42, 1.0, 1.2, 0.72, 2.6);
+    tbx(g, towerPlainMat(0x78350f, { texType: 'wood' }), sk.w / 2 - 3.0, 0.3, 1.0, 1.0, 0.5, 1.4);
+    for (let i = 0; i < 3; i++) tbx(g, steel, -1.0 + i * 0.9, 0.55, -sk.d / 2 + 3.4, 0.08, 1.1, 0.7);
+    return [
+      { minX: sk.x - sk.w / 2 + 0.4, maxX: sk.x - sk.w / 2 + 1.4, minY: TOWER_BASE_Y, maxY: 2.4, minZ: sk.z - 1.6, maxZ: sk.z + 2.8, tag: 'lobby_mail', climbable: false },
+      towerElevatorKit(g, sk, steel)
+    ];
+  }
+};
+
+function buildTower(p) {
+  const A = TOWER_ARCHETYPES[p.a] || TOWER_ARCHETYPES.glass;
+  const w = p.w, d = p.d, h = p.h, x = p.x, z = p.z;
+  const baseY = p.baseY == null ? TOWER_BASE_Y : p.baseY;
+  const fm = towerFrameMat(p.frameHex);
+  const gm = towerGlassMat(p.glassHex);
+
+  const g = new THREE.Group();
+  g.position.set(x, baseY, z);
+  g.userData.studioName = p.name;
+
+  tbx(g, towerMarbleMat(), 0, 0.04, 0, w - 0.2, 0.08, d - 0.2, false);
+  tbx(g, fm, 0, TOWER_LOBBY_H / 2, -d / 2 + TOWER_WALL_T / 2, w, TOWER_LOBBY_H, TOWER_WALL_T);
+  tbx(g, fm, -w / 2 + TOWER_WALL_T / 2, TOWER_LOBBY_H / 2, 0, TOWER_WALL_T, TOWER_LOBBY_H, d);
+  tbx(g, fm, w / 2 - TOWER_WALL_T / 2, TOWER_LOBBY_H / 2, 0, TOWER_WALL_T, TOWER_LOBBY_H, d);
+  const segW = (w - TOWER_DOOR_W) / 2;
+  tbx(g, fm, -(TOWER_DOOR_W / 2 + segW / 2), TOWER_LOBBY_H / 2, d / 2 - TOWER_WALL_T / 2, segW, TOWER_LOBBY_H, TOWER_WALL_T);
+  tbx(g, fm, TOWER_DOOR_W / 2 + segW / 2, TOWER_LOBBY_H / 2, d / 2 - TOWER_WALL_T / 2, segW, TOWER_LOBBY_H, TOWER_WALL_T);
+  tbx(g, fm, 0, TOWER_LOBBY_H - 0.65, d / 2 - TOWER_WALL_T / 2, TOWER_DOOR_W, 1.3, TOWER_WALL_T);
+
+  const lod = new THREE.Group();
+  A.shaft(g, p, fm, gm, lod);
+  tbx(g, fm, 0, h + 0.275, 0, w + 0.5, 0.55, d + 0.5);
+
+  const glazing = towerGlassMat(p.glassHex);
+  tbx(lod, glazing, -w / 2 - 0.02, 2.0, 0, 0.1, 2.7, d - 3.0, false);
+  tbx(lod, glazing, w / 2 + 0.02, 2.0, 0, 0.1, 2.7, d - 3.0, false);
+  tbx(lod, glazing, 0, 2.0, -d / 2 - 0.02, w - 3.0, 2.7, 0.1, false);
+  for (const s of [-1, 1]) tbx(lod, glazing, s * (TOWER_DOOR_W / 2 + segW / 2), 2.0, d / 2 + 0.02, segW - 0.9, 2.7, 0.1, false);
+  createNeonSign(lod, p.name, 0, 3.9, d / 2 + 0.1, '#090d14', '#38bdf8', Math.min(w - 2, 7.6), 0.95);
+
+  const dark = towerPlainMat(0x0f172a, { metalness: 0.8, roughness: 0.3 });
+  tbx(lod, dark, 0, h + 0.5, d / 2 - 0.15, w, 1.0, 0.3);
+  tbx(lod, dark, 0, h + 0.5, -d / 2 + 0.15, w, 1.0, 0.3);
+  tbx(lod, dark, w / 2 - 0.15, h + 0.5, 0, 0.3, 1.0, d);
+  tbx(lod, dark, -w / 2 + 0.15, h + 0.5, 0, 0.3, 1.0, d);
+  tbx(lod, towerPlainMat(0x64748b), -w / 2 + 2.2, h + 0.7, -d / 2 + 2.0, 2.2, 1.3, 1.6);
+  const mast = new THREE.Mesh(tGeo(new THREE.CylinderGeometry(0.08, 0.12, 10, 6)), dark);
+  mast.position.set(w / 2 - 1.2, h + 5, -d / 2 + 1.2);
+  lod.add(mast);
+  const beacon = new THREE.Mesh(tGeo(new THREE.SphereGeometry(0.28, 8, 8)), tMat(new THREE.MeshBasicMaterial({ color: 0xef4444 })));
+  beacon.position.set(w / 2 - 1.2, h + 10.2, -d / 2 + 1.2);
+  aviationBeacons.push(beacon);
+  lod.add(beacon);
+
+  if (p.heli) {
+    const pad = new THREE.Mesh(tGeo(new THREE.CylinderGeometry(4.2, 4.2, 0.12, 20)), towerPlainMat(0x334155));
+    pad.position.y = h + 0.60; g.add(pad);
+    const ring = new THREE.Mesh(tGeo(new THREE.RingGeometry(3.5, 3.95, 24)), tMat(new THREE.MeshBasicMaterial({ color: 0xfacc15, side: THREE.DoubleSide })));
+    ring.rotation.x = -Math.PI / 2; ring.position.y = h + 0.67; lod.add(ring);
+    const white = towerPlainMat(0xf8fafc);
+    tbx(lod, white, -0.9, h + 0.68, 0, 0.45, 0.08, 2.6, false);
+    tbx(lod, white, 0.9, h + 0.68, 0, 0.45, 0.08, 2.6, false);
+    tbx(lod, white, 0, h + 0.68, 0, 1.8, 0.08, 0.45, false);
+  } else {
+    tbx(lod, dark, 0, h + 1.2, 0, w * 0.7, 2.2, d * 0.7);
+    tbx(lod, tMat(new THREE.MeshBasicMaterial({ color: p.glassHex })), 0, h + 3.4, 0, w * 0.4, 2.2, d * 0.4);
+  }
+
+  const liftRing = new THREE.Mesh(tGeo(new THREE.RingGeometry(0.85, 1.15, 20)), tMat(new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide })));
+  liftRing.rotation.x = -Math.PI / 2;
+  liftRing.position.set(0, h + 0.58, d / 2 - 1.8);
+  lod.add(liftRing);
+
+  g.add(lod);
+  registerBuildingLod(x, z, lod);
+  worldRoot.add(g);
+
   const minX = x - w / 2, maxX = x + w / 2, minZ = z - d / 2, maxZ = z + d / 2;
-  addWorldBox(minX, maxX, 0.18, 0.18 + lobbyH, minZ, minZ + wallThick, 'wall', false);
-  addWorldBox(minX, minX + wallThick, 0.18, 0.18 + lobbyH, minZ, maxZ, 'wall', false);
-  addWorldBox(maxX - wallThick, maxX, 0.18, 0.18 + lobbyH, minZ, maxZ, 'wall', false);
-  addWorldBox(minX, x - doorW / 2, 0.18, 0.18 + lobbyH, maxZ - wallThick, maxZ, 'wall', false);
-  addWorldBox(x + doorW / 2, maxX, 0.18, 0.18 + lobbyH, maxZ - wallThick, maxZ, 'wall', false);
-  addWorldBox(minX, maxX, 0.18 + lobbyH, 0.18 + h + 0.55, minZ, maxZ, 'skyscraper_roof', true);
-  const roofY = 0.18 + h + 0.55;
-  skyscrapers.push({
-    x, z, w, d, h, roofY, name, minX, maxX, minZ, maxZ,
-    lobbyPad: { x, y: 0.18, z: z - d / 2 + 2.0 },
+  addWorldBox(minX, maxX, baseY, baseY + TOWER_LOBBY_H, minZ, minZ + TOWER_WALL_T, 'wall', false);
+  addWorldBox(minX, minX + TOWER_WALL_T, baseY, baseY + TOWER_LOBBY_H, minZ, maxZ, 'wall', false);
+  addWorldBox(maxX - TOWER_WALL_T, maxX, baseY, baseY + TOWER_LOBBY_H, minZ, maxZ, 'wall', false);
+  addWorldBox(minX, x - TOWER_DOOR_W / 2, baseY, baseY + TOWER_LOBBY_H, maxZ - TOWER_WALL_T, maxZ, 'wall', false);
+  addWorldBox(x + TOWER_DOOR_W / 2, maxX, baseY, baseY + TOWER_LOBBY_H, maxZ - TOWER_WALL_T, maxZ, 'wall', false);
+  addWorldBox(minX, maxX, baseY + TOWER_LOBBY_H, baseY + h + 0.55, minZ, maxZ, 'skyscraper_roof', true);
+
+  const roofY = baseY + h + 0.55;
+  const rec = {
+    x, z, w, d, h, roofY, name: p.name, minX, maxX, minZ, maxZ,
+    archetype: p.a, interiorKind: A.lobby,
+    lobbyPad: { x, y: baseY, z: z - d / 2 + 2.0 },
     roofPad: { x, y: roofY, z: z + d / 2 - 1.8 },
-    interiorLoaded: false, interiorGroup: null, interiorBoxes: []
-  });
-  enterableZones.push({ minX: minX + 0.3, maxX: maxX - 0.3, minZ: minZ + 0.3, maxZ: maxZ - 0.2, name: `${name} LOBBY` });
+    interiorLoaded: false, interiorGroup: null, interiorBoxes: [], interiorCache: null, interiorSpecs: null
+  };
+  skyscrapers.push(rec);
+  enterableZones.push({ minX: minX + 0.3, maxX: maxX - 0.3, minZ: minZ + 0.3, maxZ: maxZ - 0.2, name: `${p.name} LOBBY` });
   mapShapes.push({ x, z, w, d, color: '#0284c7', border: '#38bdf8', enterable: true });
+  return rec;
+}
+
+/** One line per tower. `pad` builds a sidewalk plinth under an out-of-grid lot. */
+const TOWER_PLACEMENTS = [
+  // Sunnyvale financial district
+  { a: 'glass', x: -48, z: -96, w: 14.5, d: 14.5, h: 48, glassHex: 0x0284c7, frameHex: 0x0f172a, name: 'AURA CORP HQ', heli: true },
+  { a: 'glass', x: 48, z: -96, w: 14.5, d: 14.5, h: 54, glassHex: 0x0d9488, frameHex: 0x1e293b, name: 'SUNNYVALE EXCHANGE', heli: false },
+  { a: 'glass', x: -96, z: -96, w: 14.0, d: 14.0, h: 42, glassHex: 0x2563eb, frameHex: 0x1e293b, name: 'WESTSIDE TOWER', heli: true },
+  { a: 'glass', x: 96, z: -96, w: 14.0, d: 14.0, h: 46, glassHex: 0x0369a1, frameHex: 0x0f172a, name: 'EASTGATE PLAZA', heli: false },
+  { a: 'deco', x: 0, z: -144, w: 16.0, d: 16.0, h: 64, glassHex: 0x38bdf8, frameHex: 0x090d14, name: 'APEX PINNACLE', heli: true },
+  { a: 'glass', x: -48, z: -144, w: 14.5, d: 14.5, h: 52, glassHex: 0x1d4ed8, frameHex: 0x1e293b, name: 'HORIZON FINANCIAL', heli: false },
+  { a: 'glass', x: 48, z: -144, w: 14.5, d: 14.5, h: 56, glassHex: 0x0f766e, frameHex: 0x0f172a, name: 'PACIFIC TOWERS', heli: true },
+  { a: 'glass', x: -96, z: -144, w: 14.0, d: 14.0, h: 44, glassHex: 0x4f46e5, frameHex: 0x1e293b, name: 'NORTHERN STAR', heli: false },
+  { a: 'glass', x: 96, z: -144, w: 14.0, d: 14.0, h: 50, glassHex: 0x0284c7, frameHex: 0x0f172a, name: 'HARBOR VIEW HQ', heli: true },
+  // Sunnyvale west terrace (replaces the old illegal random infill)
+  { a: 'slab', x: -162, z: -96, w: 14, d: 14, h: 38, glassHex: 0x7dd3fc, frameHex: 0x8c8172, name: 'TERRACE COURT', heli: false, pad: true },
+  { a: 'brutalist', x: -162, z: -48, w: 14, d: 14, h: 44, glassHex: 0x93c5fd, frameHex: 0x6b7280, name: 'WESTBANK HOUSE', heli: false, pad: true },
+  { a: 'slab', x: -162, z: 0, w: 14, d: 14, h: 34, glassHex: 0xfcd34d, frameHex: 0x9a8478, name: 'MERIDIAN FLATS', heli: false, pad: true },
+  { a: 'brutalist', x: -162, z: 48, w: 14, d: 14, h: 46, glassHex: 0x67e8f9, frameHex: 0x57534e, name: 'CIVIC ANNEX', heli: false, pad: true },
+  { a: 'slab', x: -162, z: 96, w: 14, d: 14, h: 32, glassHex: 0xa7f3d0, frameHex: 0x8c8172, name: 'NORTHGATE FLATS', heli: false, pad: true },
+  // Downtown Los Aura landmarks
+  { a: 'glass', x: -36, z: 540, w: 18.0, d: 18.0, h: 86, glassHex: 0x38bdf8, frameHex: 0xe2e8f0, name: 'US AURA TOWER', heli: true },
+  { a: 'glass', x: 12, z: 540, w: 16.5, d: 15.0, h: 80, glassHex: 0x0284c7, frameHex: 0x0f172a, name: 'WILSHIRE GRAND', heli: false },
+  { a: 'glass', x: -84, z: 540, w: 15.5, d: 15.5, h: 72, glassHex: 0x1e3a8a, frameHex: 0xf8fafc, name: 'AON AURA CENTER', heli: true },
+  { a: 'glass', x: 60, z: 540, w: 16.0, d: 16.0, h: 68, glassHex: 0x0f766e, frameHex: 0x1e293b, name: 'SOCAL GAS TOWER', heli: false },
+  { a: 'deco', x: -36, z: 636, w: 18.0, d: 18.0, h: 52, glassHex: 0xe2e8f0, frameHex: 0xf8fafc, name: 'LOS AURA CITY HALL', heli: false },
+  { a: 'glass', x: 12, z: 636, w: 15.0, d: 15.0, h: 62, glassHex: 0x2563eb, frameHex: 0x0f172a, name: 'FIGUEROA AT WILSHIRE', heli: true },
+  { a: 'glass', x: 60, z: 588, w: 14.5, d: 14.5, h: 58, glassHex: 0x0d9488, frameHex: 0x1e293b, name: 'BUNKER HILL PLAZA', heli: false },
+  { a: 'glass', x: 60, z: 636, w: 14.5, d: 14.5, h: 54, glassHex: 0x0369a1, frameHex: 0x0f172a, name: 'BROADWAY TRADE CENTER', heli: true },
+  { a: 'glass', x: 104, z: 540, w: 13.5, d: 14.5, h: 50, glassHex: 0x4f46e5, frameHex: 0x1e293b, name: 'ARTS DISTRICT TOWER', heli: false },
+  { a: 'glass', x: 104, z: 588, w: 13.5, d: 14.5, h: 46, glassHex: 0x0284c7, frameHex: 0x1e293b, name: 'LITTLE TOKYO PLAZA', heli: true },
+  // Downtown infill on validated empty blocks (104/492 is the AURA ARMORY)
+  { a: 'deco', x: -84, z: 492, w: 16, d: 16, h: 56, glassHex: 0xfbbf24, frameHex: 0x1c1917, name: 'SOUTHERN EXCHANGE', heli: false },
+  { a: 'brutalist', x: -36, z: 588, w: 16, d: 16, h: 60, glassHex: 0x93c5fd, frameHex: 0x6b7280, name: 'HARBOR COMMERCE', heli: true },
+  { a: 'slab', x: -84, z: 636, w: 16, d: 16, h: 48, glassHex: 0xfcd34d, frameHex: 0x9a8478, name: 'CIVIC GARDENS', heli: false },
+  { a: 'glass', x: 104, z: 636, w: 14, d: 14, h: 52, glassHex: 0x22d3ee, frameHex: 0x0f172a, name: 'EASTLAKE TOWER', heli: false },
+  // Los Aura west bank — new district with its own access spine
+  { a: 'glass', x: -175, z: 480, w: 16, d: 16, h: 64, glassHex: 0x0ea5e9, frameHex: 0x0f172a, name: 'WEST BANK ONE', heli: true, pad: true },
+  { a: 'slab', x: -215, z: 480, w: 16, d: 16, h: 44, glassHex: 0xfcd34d, frameHex: 0x8c8172, name: 'SHORELINE FLATS', heli: false, pad: true },
+  { a: 'deco', x: -175, z: 540, w: 16, d: 16, h: 70, glassHex: 0x38bdf8, frameHex: 0xe2e8f0, name: 'PACIFIC CROWN', heli: true, pad: true },
+  { a: 'brutalist', x: -215, z: 540, w: 16, d: 16, h: 50, glassHex: 0x93c5fd, frameHex: 0x57534e, name: 'WEST BANK CIVIC', heli: false, pad: true },
+  { a: 'glass', x: -175, z: 600, w: 16, d: 16, h: 58, glassHex: 0x0d9488, frameHex: 0x1e293b, name: 'CHANNEL HOUSE', heli: false, pad: true },
+  { a: 'slab', x: -215, z: 600, w: 16, d: 16, h: 40, glassHex: 0xa7f3d0, frameHex: 0x9a8478, name: 'MARINA COURT', heli: false, pad: true },
+  { a: 'brutalist', x: -175, z: 660, w: 16, d: 16, h: 54, glassHex: 0x67e8f9, frameHex: 0x6b7280, name: 'NORTHSHORE ANNEX', heli: false, pad: true },
+  { a: 'glass', x: -215, z: 660, w: 16, d: 16, h: 46, glassHex: 0x2563eb, frameHex: 0x0f172a, name: 'NORTHSHORE TOWER', heli: false, pad: true }
+];
+
+function buildWestBankRoads() {
+  const asphalt = towerPlainMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 30, roughness: 0.86 });
+  const kerb = towerPlainMat(0xcbd5e1, { texType: 'sidewalk', repeatX: 8, repeatY: 8, roughness: 0.85 });
+  const pave = (w, d, x, z) => {
+    tbx(worldRoot, asphalt, x, 0.20, z, w, 0.08, d, false);
+    addWorldBox(x - w / 2, x + w / 2, 0.16, 0.24, z - d / 2, z + d / 2, 'westbank_road', true);
+    reserveFootprint(x - w / 2 - 1, x + w / 2 + 1, z - d / 2 - 1, z + d / 2 + 1, 'road');
+  };
+  pave(12, 248, -145, 570);
+  mapShapes.push({ x: -145, z: 570, w: 12, d: 248, color: '#334155', border: '#475569', enterable: false });
+  for (const z of [480, 540, 600, 660]) {
+    pave(26, 12, -126, z);
+    tbx(worldRoot, kerb, -195, 0.21, z, 60, 0.10, 44, false);
+  }
+}
+
+/** Build every tower in the table. Rejected lots are logged, never forced. */
+export function buildTowerDistricts() {
+  buildWestBankRoads();
+  const kerb = towerPlainMat(0xcbd5e1, { texType: 'sidewalk', repeatX: 8, repeatY: 8, roughness: 0.85 });
+  let built = 0;
+  for (const p of TOWER_PLACEMENTS) {
+    if (!footprintClear(p.x, p.z, p.w, p.d)) {
+      console.warn('[towers] lot rejected (blocked):', p.name, p.x, p.z);
+      continue;
+    }
+    if (p.pad) {
+      tbx(worldRoot, kerb, p.x, (p.baseY == null ? TOWER_BASE_Y : p.baseY) + 0.03, p.z, p.w + 9, 0.12, p.d + 9, false);
+    }
+    buildTower(p);
+    built++;
+  }
+  console.log(`[towers] ${built}/${TOWER_PLACEMENTS.length} towers placed`);
 }
 
 export function updateSkyscraperInteriors() {
@@ -1514,37 +2135,15 @@ export function updateSkyscraperInteriors() {
       let ig = sk.interiorCache;
       if (!ig) {
         ig = new THREE.Group();
-        ig.position.set(sk.x, 0.18, sk.z);
-        const deskMat = makeMat(0x0f172a);
-        const goldTrim = makeMat(0xf59e0b, { metalness: 0.85, roughness: 0.2 });
-        const couchMat = makeMat(0x334155, { texType: 'fabric', roughness: 0.9 });
-        const steelMat = makeMat(0xdbeafe, { texType: 'brushedsteel', metalness: 0.9, roughness: 0.2, flatShading: false });
-        const desk = new THREE.Mesh(new THREE.BoxGeometry(4.2, 1.05, 1.2), deskMat);
-        desk.position.set(-2.2, 0.56, 0.4);
-        const deskTop = new THREE.Mesh(new THREE.BoxGeometry(4.3, 0.08, 1.3), goldTrim);
-        deskTop.position.set(-2.2, 1.12, 0.4);
-        const elevShaft = new THREE.Mesh(new THREE.BoxGeometry(2.8, 3.4, 1.6), steelMat);
-        elevShaft.position.set(0, 1.74, -sk.d / 2 + 1.25);
-        const elevPadRing = new THREE.Mesh(new THREE.RingGeometry(0.85, 1.15, 20), new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide }));
-        elevPadRing.rotation.x = -Math.PI / 2;
-        elevPadRing.position.set(0, 0.10, -sk.d / 2 + 2.4);
-        const couchL = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.72, 2.8), couchMat);
-        couchL.position.set(-sk.w / 2 + 1.3, 0.42, -1.2);
-        const couchR = couchL.clone();
-        couchR.position.x = sk.w / 2 - 1.3;
-        const planter = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.45, 0.75, 10), makeMat(0x78350f));
-        planter.position.set(3.2, 0.42, 1.4);
-        const plantTop = new THREE.Mesh(new THREE.DodecahedronGeometry(0.75, 0), makeMat(0x16a34a));
-        plantTop.position.set(3.2, 1.15, 1.4);
-        ig.add(desk, deskTop, elevShaft, elevPadRing, couchL, couchR, planter, plantTop);
+        ig.position.set(sk.x, TOWER_BASE_Y, sk.z);
+        const maker = TOWER_INTERIORS[sk.interiorKind] || TOWER_INTERIORS.corporate;
+        sk.interiorSpecs = maker(sk, ig);
         sk.interiorCache = ig;
       }
       worldRoot.add(ig);
       sk.interiorGroup = ig;
-      sk.interiorBoxes = [
-        addWorldBox(sk.x - 4.3, sk.x - 0.1, 0.18, 1.32, sk.z - 0.2, sk.z + 1.0, 'lobby_desk', true),
-        addWorldBox(sk.x - 1.4, sk.x + 1.4, 0.18, 3.6, sk.z - sk.d / 2 + 0.45, sk.z - sk.d / 2 + 2.05, 'elev_shaft', false)
-      ];
+      sk.interiorBoxes = (sk.interiorSpecs || []).map((b) =>
+        addWorldBox(b.minX, b.maxX, b.minY, b.maxY, b.minZ, b.maxZ, b.tag, b.climbable));
       sk.interiorLoaded = true;
     } else if (sk.interiorLoaded && dist > UNLOAD_DIST) {
       if (sk.interiorGroup) { worldRoot.remove(sk.interiorGroup); sk.interiorGroup = null; }
@@ -1556,6 +2155,66 @@ export function updateSkyscraperInteriors() {
       sk.interiorLoaded = false;
     }
   }
+}
+
+function disposeTowerInteriors() {
+  for (const sk of skyscrapers) {
+    const ig = sk.interiorCache;
+    if (ig && ig.parent) ig.parent.remove(ig);
+    sk.interiorCache = null;
+    sk.interiorGroup = null;
+    sk.interiorBoxes = [];
+    sk.interiorSpecs = null;
+    sk.interiorLoaded = false;
+  }
+}
+
+function resetTowerSystem() {
+  reservedFootprints.length = 0;
+  towerMatCache.clear();
+  towerFacadeCache.clear();
+  for (const g of towerGeos) g.dispose();
+  for (const m of towerMats) {
+    if (m.map && m.map.isCanvasTexture) m.map.dispose();
+    m.dispose();
+  }
+  towerGeos.length = 0;
+  towerMats.length = 0;
+  TOWER_UNIT = null;
+}
+
+/** Back-compatible entry points for Studio and any external caller. */
+export function buildSkyscraperBase(o) {
+  const heli = o.hasHelipad !== undefined ? o.hasHelipad : (o.heli !== undefined ? o.heli : true);
+  return buildTower(Object.assign({
+    a: 'glass', w: 13.5, d: 13.5, h: 44, glassHex: 0x0ea5e9, frameHex: 0x1e293b, name: 'AURA TOWER'
+  }, o, { heli }));
+}
+export function buildSkyscraper(o) { return buildSkyscraperBase(o); }
+
+/** Roof kit is built by every archetype; kept so external calls still work. */
+export function embellishTower({ x, z, w = 13.5, d = 13.5, h = 44, glassHex = 0x0ea5e9, hasHelipad = true }) {
+  const g = new THREE.Group();
+  g.position.set(x, 0.18, z);
+  g.userData.studioName = 'Tower roof kit';
+  worldRoot.add(g);
+  const dark = makeMat(0x0f172a, { metalness: 0.8, roughness: 0.3 });
+  const add = (sx, sy, sz, m, px, py, pz) => {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m);
+    b.position.set(px, py, pz);
+    b.castShadow = true;
+    g.add(b);
+    return b;
+  };
+  add(w, 1.0, 0.3, dark, 0, h + 0.5, d / 2 - 0.15);
+  add(w, 1.0, 0.3, dark, 0, h + 0.5, -d / 2 + 0.15);
+  add(0.3, 1.0, d, dark, w / 2 - 0.15, h + 0.5, 0);
+  add(0.3, 1.0, d, dark, -w / 2 + 0.15, h + 0.5, 0);
+  if (!hasHelipad) {
+    add(w * 0.7, 2.2, d * 0.7, dark, 0, h + 1.2, 0);
+    add(w * 0.4, 2.2, d * 0.4, new THREE.MeshBasicMaterial({ color: glassHex }), 0, h + 3.4, 0);
+  }
+  return g;
 }
 
 // -----------------------------------------------------------------------------
@@ -1718,6 +2377,7 @@ export function buildCityLandmarks() {
   courtyard.position.set(0, 0.215, 0);
   courtyard.receiveShadow = true;
   worldRoot.add(pNS, pEW, courtyard);
+
   const marbleMat = makeMat(0xf8fafc, { texType: 'marble', repeatX: 3, repeatY: 2, roughness: 0.20, clearcoat: 0.85, flatShading: false });
   const rim = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.6, 0.78, 18), marbleMat);
   rim.position.set(0, 0.57, 0);
@@ -1732,6 +2392,7 @@ export function buildCityLandmarks() {
   addWorldBox(-3.2, 3.2, 0.18, 0.96, -3.2, 3.2, 'fountain_rim', true);
   addWorldBox(-1.35, 1.35, 0.96, 2.42, -1.35, 1.35, 'fountain_top', true);
   mapShapes.push({ x: 0, z: 0, w: 30, d: 30, color: '#22c55e', border: '#15803d', enterable: false });
+
   const benchSteel = makeMat(0xcbd5e1, { metalness: 0.9, roughness: 0.2, flatShading: false });
   [[0, 5.8, Math.PI], [0, -5.8, 0], [5.8, 0, -Math.PI / 2], [-5.8, 0, Math.PI / 2]].forEach(([bx, bz, rot]) => {
     const bGroup = new THREE.Group();
@@ -1750,13 +2411,16 @@ export function buildCityLandmarks() {
     const bd = Math.abs(Math.cos(rot)) > 0.5 ? 0.75 : 2.2;
     addWorldBox(bx - bw / 2, bx + bw / 2, 0.18, 0.70, bz - bd / 2, bz + bd / 2, 'bench', true);
   });
+
   [[-10.5, -10.5], [10.5, -10.5], [-10.5, 10.5], [10.5, 10.5]].forEach(([tx, tz]) => createTree(tx, tz, 1.1));
   buildPlazaHotdogCart(11.8, 12.2);
   buildHotdogStore(-39.5, -39.5);
   buildCarDealership(0, -48);
+
   const nwPlaza = new THREE.Mesh(new THREE.BoxGeometry(30.6, 0.21, 30.6), makeMat(0x94a3b8, { texType: 'cobblestone', repeatX: 12, repeatY: 12, bumpScale: 0.02 }));
   nwPlaza.position.set(-48, 0.105, -48);
   worldRoot.add(nwPlaza);
+
   const cafeGroup = new THREE.Group();
   cafeGroup.userData.studioName = 'SUNNYVALE DINER';
   const cafe = new THREE.Mesh(new THREE.BoxGeometry(9.6, 4.4, 9.2), makeMat(0xfde68a, { texType: 'brick', repeatX: 4, repeatY: 2, bumpScale: 0.02 }));
@@ -1769,19 +2433,13 @@ export function buildCityLandmarks() {
   worldRoot.add(cafeGroup);
   addWorldBox(-59.3, -49.7, 0.18, 4.58, -58.1, -48.9, 'diner_roof', true);
   mapShapes.push({ x: -54.5, z: -53.5, w: 9.6, d: 9.2, color: '#fde68a', border: '#b45309', enterable: false });
+
   buildReserveBank(0, -96);
-  buildSkyscraper({ x: -48, z: -96, w: 14.5, d: 14.5, h: 48, glassHex: 0x0284c7, frameHex: 0x0f172a, name: 'AURA CORP HQ', hasHelipad: true });
-  buildSkyscraper({ x: 48, z: -96, w: 14.5, d: 14.5, h: 54, glassHex: 0x0d9488, frameHex: 0x1e293b, name: 'SUNNYVALE EXCHANGE', hasHelipad: false });
-  buildSkyscraper({ x: -96, z: -96, w: 14.0, d: 14.0, h: 42, glassHex: 0x2563eb, frameHex: 0x1e293b, name: 'WESTSIDE TOWER', hasHelipad: true });
-  buildSkyscraper({ x: 96, z: -96, w: 14.0, d: 14.0, h: 46, glassHex: 0x0369a1, frameHex: 0x0f172a, name: 'EASTGATE PLAZA', hasHelipad: false });
-  buildSkyscraper({ x: 0, z: -144, w: 16.0, d: 16.0, h: 64, glassHex: 0x38bdf8, frameHex: 0x090d14, name: 'APEX PINNACLE', hasHelipad: true });
-  buildSkyscraper({ x: -48, z: -144, w: 14.5, d: 14.5, h: 52, glassHex: 0x1d4ed8, frameHex: 0x1e293b, name: 'HORIZON FINANCIAL', hasHelipad: false });
-  buildSkyscraper({ x: 48, z: -144, w: 14.5, d: 14.5, h: 56, glassHex: 0x0f766e, frameHex: 0x0f172a, name: 'PACIFIC TOWERS', hasHelipad: true });
-  buildSkyscraper({ x: -96, z: -144, w: 14.0, d: 14.0, h: 44, glassHex: 0x4f46e5, frameHex: 0x1e293b, name: 'NORTHERN STAR', hasHelipad: false });
-  buildSkyscraper({ x: 96, z: -144, w: 14.0, d: 14.0, h: 50, glassHex: 0x0284c7, frameHex: 0x0f172a, name: 'HARBOR VIEW HQ', hasHelipad: true });
+
   const nePlaza = new THREE.Mesh(new THREE.BoxGeometry(30.6, 0.21, 30.6), makeMat(0x94a3b8, { texType: 'concrete', repeatX: 10, repeatY: 10 }));
   nePlaza.position.set(48, 0.105, -48);
   worldRoot.add(nePlaza);
+
   const aptH = 8.4;
   const apt = new THREE.Mesh(new THREE.BoxGeometry(11, aptH, 16), makeMat(0xb45309, { texType: 'brick', repeatX: 5, repeatY: 4, bumpScale: 0.025 }));
   apt.position.set(43, 0.18 + aptH / 2, -48);
@@ -1790,6 +2448,7 @@ export function buildCityLandmarks() {
   worldRoot.add(apt);
   addWorldBox(37.5, 48.5, 0.18, 0.18 + aptH, -56, -40, 'apartment_roof', true);
   mapShapes.push({ x: 43, z: -48, w: 11, d: 16, color: '#b45309', border: '#78350f', enterable: false });
+
   const steelMat = makeMat(0x94a3b8, { texType: 'diamondplate', repeatX: 2, repeatY: 3, metalness: 0.88, roughness: 0.28, bumpScale: 0.02 });
   [{ y: 1.85, z: -54.0 }, { y: 3.70, z: -50.2 }, { y: 5.55, z: -46.4 }, { y: 7.40, z: -42.6 }].forEach((st) => {
     const plat = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.25, 3.4), steelMat);
@@ -1798,6 +2457,7 @@ export function buildCityLandmarks() {
     worldRoot.add(plat);
     addWorldBox(48.5, 50.7, st.y - 0.15, st.y + 0.13, st.z - 1.7, st.z + 1.7, 'fire_escape', true);
   });
+
   const contRed = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.3, 6.8), makeMat(0xdc2626, { texType: 'corrugated', repeatX: 3, repeatY: 2, metalness: 0.82, roughness: 0.34, bumpScale: 0.03 }));
   contRed.position.set(44, 0.18 + 1.15, 45);
   contRed.castShadow = true;
@@ -1820,6 +2480,7 @@ export function buildCityLandmarks() {
   addWorldBox(38.2, 43.4, 2.36, 2.59, 44.1, 45.9, 'gantry_catwalk', true);
   worldRoot.add(contRed, contBlue, contTop, contWest, catwalk);
   mapShapes.push({ x: 45.8, z: 46, w: 7, d: 8, color: '#dc2626', border: '#991b1b', enterable: false });
+
   buildWalkInHouse({ x: -7.5, z: 42.0, w: 9.8, d: 8.6, wallColor: 0xfef3c7, roofColor: 0xb91c1c, label: 'OAKWOOD RESIDENCE' });
   buildWalkInHouse({ x: -41.5, z: -5.5, w: 9.8, d: 8.6, wallColor: 0xdbeafe, roofColor: 0x1e40af, label: 'CEDAR COTTAGE' });
   buildWalkInHouse({ x: 42.5, z: -5.5, w: 9.8, d: 8.6, wallColor: 0xdcfce7, roofColor: 0x166534, label: 'SAGE VILLA' });
@@ -1835,6 +2496,7 @@ export function buildCityLandmarks() {
   buildSuburbanHouse({ x: 96.0, z: -48.0, wallColor: 0xdcfce7, roofColor: 0x14532d, rotY: 0 });
   buildSuburbanHouse({ x: 96.0, z: 0.0, wallColor: 0xffedd5, roofColor: 0x9a3412, rotY: -Math.PI / 2 });
   buildSuburbanHouse({ x: 96.0, z: 48.0, wallColor: 0xe0e7ff, roofColor: 0x312e81, rotY: Math.PI });
+
   const f1 = new THREE.Mesh(new THREE.BoxGeometry(8.5, 1.15, 0.25), makeMat(0xf8fafc, { texType: 'siding' }));
   f1.position.set(7.5, 0.75, 43.5);
   f1.castShadow = true;
@@ -1842,11 +2504,13 @@ export function buildCityLandmarks() {
   addWorldBox(3.25, 11.75, 0.18, 1.33, 43.35, 43.65, 'yard_fence', true);
   createBusShelter(-16.2, -6.5, Math.PI / 2);
   createBusShelter(16.2, 6.5, -Math.PI / 2);
+
   [-96, -48, 0, 48, 96].forEach((bx) => {
     [-144, -96, -48, 0, 48].forEach((bz) => {
       [[-16.8, -16.8], [16.8, 16.8]].forEach(([ox, oz]) => buildKnockableLamppost(bx + ox, bz + oz));
     });
   });
+
   const poleMat = makeMat(0xcbd5e1, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.20, flatShading: false });
   const mailboxMat = makeMat(0x1d4ed8, { metalness: 0.85, roughness: 0.22, clearcoat: 0.7, flatShading: false });
   [[-16.5, 16.2], [16.5, -16.2], [-31.5, 16.5], [-16.5, -64.5]].forEach(([mx, mz]) => {
@@ -1914,50 +2578,16 @@ export function embellishHouse({ x, z, w = 8.4, d = 7.4, h = 3.6, wallColor, roo
   }
 }
 
-export function embellishTower({ x, z, w = 13.5, d = 13.5, h = 44, glassHex = 0x0ea5e9, hasHelipad = true }) {
-  const g = new THREE.Group();
-  g.position.set(x, 0.18, z);
-  worldRoot.add(g);
-  const dark = makeMat(0x0f172a, { metalness: 0.8, roughness: 0.3 });
-  const glow = new THREE.MeshBasicMaterial({ color: glassHex });
-  const add = (sx, sy, sz, m, px, py, pz) => {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m);
-    b.position.set(px, py, pz);
-    b.castShadow = true;
-    g.add(b);
-    return b;
-  };
-  add(w, 1.0, 0.3, dark, 0, h + 0.5, d / 2 - 0.15);
-  add(w, 1.0, 0.3, dark, 0, h + 0.5, -d / 2 + 0.15);
-  add(0.3, 1.0, d, dark, w / 2 - 0.15, h + 0.5, 0);
-  add(0.3, 1.0, d, dark, -w / 2 + 0.15, h + 0.5, 0);
-  add(2.2, 1.3, 1.6, makeMat(0x64748b), -w / 2 + 2.2, h + 0.7, -d / 2 + 2.0);
-  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 10, 6), dark);
-  mast.position.set(w / 2 - 1.2, h + 5, -d / 2 + 1.2);
-  g.add(mast);
-  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8), new THREE.MeshBasicMaterial({ color: 0xef4444 }));
-  beacon.position.set(w / 2 - 1.2, h + 10.2, -d / 2 + 1.2);
-  aviationBeacons.push(beacon);
-  g.add(beacon);
-  if (!hasHelipad) {
-    add(w * 0.7, 2.2, d * 0.7, dark, 0, h + 1.2, 0);
-    add(w * 0.4, 2.2, d * 0.4, glow, 0, h + 3.4, 0);
-  }
-}
-
 export function buildSuburbanHouse(o) { buildSuburbanHouseBase(o); embellishHouse(o); }
-export function buildSkyscraper(o) { const r = buildSkyscraperBase(o); embellishTower(o); return r; }
 
 // -----------------------------------------------------------------------------
 // FROSTPINE ALPINE / EMERALD WOODS / SUNSET COVE
-// Alpine visuals use the exact collision heightfield; all content sits ON it.
-// Live water bodies replace the old static planes; the cove now opens onto a
-// real sloped seabed that runs continuously into the far-north ocean.
 // -----------------------------------------------------------------------------
 export function buildNewBiomes() {
   const grp = new THREE.Group();
   grp.userData.studioName = 'Southern biomes';
   worldRoot.add(grp);
+
   const mesh = (geo, mat, x, y, z, cast = true) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
@@ -1979,18 +2609,38 @@ export function buildNewBiomes() {
     grp.add(m);
     return m;
   };
-  const road = (rx, name) => {
-    const r = plane(rx - 6, rx + 6, 74, 208, 0.18, makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 26, roughness: 0.86 }));
-    r.userData.studioName = name;
+
+  /**
+   * Roads are real slabs (never a single-sided plane you can see through from
+   * below). `gap` opens the carriageway over a carved stream so the water and
+   * the footbridge read correctly.
+   */
+  const road = (rx, name, gap = null) => {
+    const asphalt = makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 26, roughness: 0.86 });
+    const spans = gap ? [[74, gap[0]], [gap[1], 208]] : [[74, 208]];
+    for (const [z0, z1] of spans) {
+      if (z1 - z0 < 0.5) continue;
+      const slab = new THREE.Mesh(new THREE.BoxGeometry(12, 0.12, z1 - z0), asphalt);
+      slab.position.set(rx, 0.12, (z0 + z1) / 2);
+      slab.receiveShadow = true;
+      slab.userData.studioName = name;
+      grp.add(slab);
+      addWorldBox(rx - 6, rx + 6, 0.06, 0.18, z0, z1, 'biome_road', true);
+    }
     const dashT = [];
-    for (let zz = 80; zz < 206; zz += 6) dashT.push([rx, 0.185, zz]);
+    for (let zz = 80; zz < 206; zz += 6) {
+      if (gap && zz > gap[0] - 2 && zz < gap[1] + 2) continue;
+      dashT.push([rx, 0.19, zz]);
+    }
     const dm = new THREE.Object3D();
     const dashes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.26, 0.02, 2.5), makeMat(0xfacc15), dashT.length);
     dashT.forEach(([x, y, z], i) => { dm.position.set(x, y, z); dm.updateMatrix(); dashes.setMatrixAt(i, dm.matrix); });
     dashes.instanceMatrix.needsUpdate = true;
     grp.add(dashes);
     mapShapes.push({ x: rx, z: 141, w: 12, d: 134, color: '#334155', border: '#475569', enterable: false });
+    reserveFootprint(rx - 7, rx + 7, 74, 208, 'road');
   };
+
   const keep = [];
   const free = (x, z, roadX, r = 2) => {
     if (roadX !== null && Math.abs(x - roadX) < 8) return false;
@@ -2015,8 +2665,6 @@ export function buildNewBiomes() {
     mc.lerp(cLow, sstep(3, 6, height));
     mc.lerp(cMid, sstep(snowLine - 3, snowLine + 2, height));
     mc.lerp(cSnow, sstep(snowLine, snowLine + 3, height));
-    // Wet-rock riverbed tint along Frostpine Creek (heights untouched, so the
-    // visible bed and the collision heightfield stay identical).
     if (z > 132 && z < 316) {
       const cd = Math.abs(x - frostCreekX(z));
       if (cd < 7) mc.lerp(cCreekBed, (1 - cd / 7) * 0.8);
@@ -2029,16 +2677,19 @@ export function buildNewBiomes() {
   mg.attributes.position.needsUpdate = true;
   mg.setAttribute('color', new THREE.BufferAttribute(mountainColors, 3));
   mg.computeVertexNormals();
-  const mountainMesh = new THREE.Mesh(mg, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true }));
-  mountainMesh.receiveShadow = true;
-  mountainMesh.castShadow = true;
-  mountainMesh.position.set(-375, 0, 214);
+  const mountainMesh = new THREE.Mesh(mg, makeTerrainBlendMaterial({ roughness: 0.9 }));
+mountainMesh.receiveShadow = true;
+mountainMesh.castShadow = true;
+mountainMesh.position.set(-375, 0, 214);
+paintMeshTerrainSplat(mountainMesh, 'alpine');
   mountainMesh.userData.studioName = 'Frostpine mountains';
   worldRoot.add(mountainMesh);
   registerSculptableTerrain(mountainMesh);
+
   for (let sz = 128; sz <= 308; sz += 60) {
     for (let sx = -660; sx <= -90; sx += 95) iceZones.push({ x: sx, z: sz, r: 26 });
   }
+
   const pineG = [new THREE.ConeGeometry(1.7, 2.2, 7), new THREE.ConeGeometry(1.3, 1.9, 7), new THREE.ConeGeometry(0.9, 1.6, 7)];
   const trunkG = new THREE.CylinderGeometry(0.2, 0.3, 1.6, 6);
   const snowM = makeMat(0xffffff, { roughness: 0.9 });
@@ -2075,7 +2726,7 @@ export function buildNewBiomes() {
     add(new THREE.SphereGeometry(0.5, 12, 12), snowM, pineInstances.snowCap);
     pineG.forEach((g, i) => { add(g, treeLeafMaterial, pineInstances.layers[i]); add(g, snowM, pineInstances.snowLayers[i]); });
   };
-  // Ski lodge on a levelled foundation plinth
+
   const lodgeX = -70, lodgeZ = 139, lodgeW = 11, lodgeD = 9;
   const lodgeY = maxTerrainOver(lodgeX - lodgeW / 2, lodgeX + lodgeW / 2, lodgeZ - lodgeD / 2, lodgeZ + lodgeD / 2) + 0.12;
   const plinth = mesh(new THREE.BoxGeometry(lodgeW + 1.6, 2.4, lodgeD + 1.6), makeMat(0x57534e, { texType: 'redrock', repeatX: 3, repeatY: 1 }), lodgeX, lodgeY - 1.2, lodgeZ);
@@ -2083,14 +2734,13 @@ export function buildNewBiomes() {
   addWorldBox(lodgeX - lodgeW / 2 - 0.8, lodgeX + lodgeW / 2 + 0.8, lodgeY - 2.4, lodgeY, lodgeZ - lodgeD / 2 - 0.8, lodgeZ + lodgeD / 2 + 0.8, 'lodge_foundation', true);
   keep.push({ x: lodgeX, z: lodgeZ, r: 11 });
 
-  // === FROSTPINE CREEK + NATIONAL PARK LOOP ROAD (Yosemite-style) ===
   const creek = buildRiverSystem({
     id: 'frostpine_creek', parent: grp, centerX: frostCreekX, z0: 136, z1: 312,
     halfWidth: 3.2, lift: 0.24, waveScale: 0.12, currentZ: 0.7, flowSpeed: 0.55,
     shallowColor: 0x7dd3fc, deepColor: 0x0369a1, foamColor: 0xe0f2fe
   });
   for (let z = 140; z <= 310; z += 12) keep.push({ x: frostCreekX(z), z, r: 7 });
-  // Creek boulders & a drifting log
+
   [176, 214, 252, 288].forEach((bz, i) => {
     const bx = frostCreekX(bz) + (i % 2 ? 1.4 : -1.4);
     const by = terrainH(bx, bz);
@@ -2099,19 +2749,18 @@ export function buildNewBiomes() {
     addWorldBox(bx - 0.8, bx + 0.8, by, by + 1.0, bz - 0.8, bz + 0.8, 'creek_boulder', true);
   });
   spawnRiverLog(grp, frostCreekX(240) + 0.6, 240);
-  // Glacier source: boulder cluster + foam ring
+
   {
     const sx = frostCreekX(311), sy = terrainH(sx, 311);
-    for (let i = 0; i < 3; i++) {
-      mesh(new THREE.DodecahedronGeometry(1.1, 0), rockMat, sx + (i - 1) * 1.6, sy + 0.5, 313.5);
-    }
+    for (let i = 0; i < 3; i++) mesh(new THREE.DodecahedronGeometry(1.1, 0), rockMat, sx + (i - 1) * 1.6, sy + 0.5, 313.5);
     const foam = new THREE.Mesh(new THREE.RingGeometry(1.4, 2.6, 18), new THREE.MeshBasicMaterial({ color: 0xe0f2fe, transparent: true, opacity: 0.5, side: THREE.DoubleSide }));
     foam.rotation.x = -Math.PI / 2;
     foam.position.set(sx, creek.surfAt(310) + 0.03, 310);
     grp.add(foam);
   }
-  const loopRoad = buildFrostpineLoopRoad(grp, keep, creek, lodgeX, lodgeZ, lodgeY);
-  // Stone arch bridge + driveable approaches at the creek crossing
+
+  const loopRoad = buildFrostpineLoopRoad(grp, keep);
+
   {
     let crossI = -1, crossD = Infinity;
     for (let i = 0; i < loopRoad.pts.length - 1; i++) {
@@ -2145,7 +2794,7 @@ export function buildNewBiomes() {
       mapShapes.push({ x: bx, z: bz, w: span, d: deckW, color: '#9aa0a6', border: '#fcd34d', enterable: false });
     }
   }
-  // Lodge driveway + driveable plinth ramp
+
   {
     let nearI = 0, nearD = Infinity;
     for (let i = 0; i < loopRoad.pts.length - 1; i++) {
@@ -2175,7 +2824,7 @@ export function buildNewBiomes() {
     addDriveableRamp({ minX: lodgeX - 2, maxX: lodgeX + 2, minZ: 144.3, maxZ: 150.3, startY: lodgeY, endY: rampGround, axis: 'z', dir: 1 });
     keep.push({ x: -78, z: 150, r: 6 });
   }
-  // Park entrance arch on Forest Road + spur connecting the loop to it
+
   {
     const spurCurve = new THREE.CatmullRomCurve3([
       new THREE.Vector3(-76, 0, 184), new THREE.Vector3(-58, 0, 190),
@@ -2204,7 +2853,7 @@ export function buildNewBiomes() {
     createNeonSign(grp, 'FROSTPINE NATIONAL PARK', -24, terrainH(-24, 203) + 4.3, 203, '#1c1917', '#fcd34d', 10.5, 1.2);
     createNeonSign(grp, 'LOOP ROAD  •  VISTAS  •  SKI LODGE', -24, terrainH(-24, 203) + 3.2, 203, '#14532d', '#bbf7d0', 8.5, 0.7);
   }
-  // Minimap: loop chunks + creek
+
   for (let i = 0; i < loopRoad.pts.length - 1; i += 30) {
     let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
     for (let j = i; j <= Math.min(i + 30, loopRoad.pts.length - 1); j++) {
@@ -2216,12 +2865,16 @@ export function buildNewBiomes() {
   }
   mapShapes.push({ x: -420, z: 224, w: 110, d: 180, color: '#38bdf8', border: '#0ea5e9', enterable: false });
 
-  for (let i = 0; i < 120; i++) {
+  // Densified Frostpine forest — clustered groves, every keep-out respected.
+  for (let i = 0, placed = 0; i < 1400 && placed < 340; i++) {
     const x = -700 + rnd() * 650, z = 108 + rnd() * 212;
     if (!free(x, z, null)) continue;
+    if (fbm(x * 0.035, z * 0.035, 2) < 0.34) continue;
     placePineTree(x, z, 0.7 + rnd() * 0.6);
     keep.push({ x, z, r: 1.2 });
+    placed++;
   }
+
   const snowRockMat = new THREE.MeshStandardMaterial({ color: 0x5a554d, roughness: 1, flatShading: true });
   for (let i = 0; i < 45; i++) {
     const rx = -640 + rnd() * 520, rz = 116 + rnd() * 196;
@@ -2233,6 +2886,7 @@ export function buildNewBiomes() {
     addWorldBox(rx - rh * 0.8, rx + rh * 0.8, gy, gy + rh * 1.1, rz - rh * 0.8, rz + rh * 0.8, 'rock_outcrop', true);
     keep.push({ x: rx, z: rz, r: rh });
   }
+
   const frozenLakeMat = new THREE.MeshStandardMaterial({ color: 0x9bdcf5, metalness: 0.5, roughness: 0.08, transparent: true, opacity: 0.7 });
   for (let i = 0; i < 12; i++) {
     const lx = -650 + rnd() * 120, lz = 150 + rnd() * 80, lw = 7 + rnd() * 5;
@@ -2246,8 +2900,7 @@ export function buildNewBiomes() {
   buildWalkInHouse({ x: lodgeX, z: lodgeZ, w: lodgeW, d: lodgeD, wallColor: 0x92400e, roofColor: 0xf8fafc, label: 'FROSTPINE SKI LODGE', baseY: lodgeY });
 
   // === EMERALD WOODS ===
-  // Ground split around a carved stream channel so the creek bed is visible.
-  const woodsGrass = makeMat(0x4f8f46, { texType: 'grass', repeatX: 12, repeatY: 16, roughness: 0.95 });
+const woodsGrass = makeGroundMat('grass', { color: 0x4f8f46, repeatX: 12, repeatY: 16, roughness: 0.95 });
   ground(-52, 28, 108, 146.9, 0.17, woodsGrass);
   ground(-52, 28, 153.1, 208, 0.17, woodsGrass);
   {
@@ -2260,7 +2913,7 @@ export function buildNewBiomes() {
       bp.setY(i, 0.17 - 0.58 * t);
     }
     bedGeo.computeVertexNormals();
-    const bed = new THREE.Mesh(bedGeo, makeMat(0x8a7a58, { texType: 'sand', repeatX: 10, repeatY: 1, roughness: 0.95 }));
+    const bed = new THREE.Mesh(bedGeo, makeGroundMat('dirt', { color: 0x8a7a58, repeatX: 10, repeatY: 1, roughness: 0.95 }));
     bed.position.set(-12, 0, 150);
     bed.receiveShadow = true;
     bed.userData.studioName = 'Emerald stream bed';
@@ -2270,11 +2923,12 @@ export function buildNewBiomes() {
       mesh(new THREE.DodecahedronGeometry(0.22 + rnd() * 0.15, 0), makeMat(0x78716c), px, 0.05, pz, false);
     }
   }
-  road(-24, 'Forest Road');
+  road(-24, 'Forest Road', [146.9, 153.1]);
   mapShapes.unshift({ x: -12, z: 158, w: 80, d: 100, color: '#166534', border: '#14532d', enterable: false });
+
   const camp = { x: 8, z: 176 };
   keep.push({ x: camp.x, z: camp.z, r: 8 }, { x: 4, z: 128, r: 10 });
-  // Live stream water (wading + splash FX); the footbridge gap stays dry.
+
   const streamBed = (x, z) => 0.17 - 0.58 * Math.max(0, 1 - ((z - 150) / 3.1) ** 2);
   createWaterSurface({
     id: 'emerald_stream_w', parent: grp, minX: -52, maxX: -31, minZ: 147.5, maxZ: 152.5,
@@ -2287,6 +2941,7 @@ export function buildNewBiomes() {
     shallowColor: 0x67e8f9, deepColor: 0x0e7490, foamColor: 0xe0f2fe, segmentSize: 3
   });
   mapShapes.push({ x: -12, z: 150, w: 80, d: 5, color: '#38bdf8', border: '#0ea5e9', enterable: false });
+
   const oakG = new THREE.IcosahedronGeometry(1.9, 0);
   const birchBark = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, map: treeBarkTexture, roughness: 0.92, flatShading: true });
   const oak = (x, z, s, birch) => {
@@ -2340,8 +2995,7 @@ export function buildNewBiomes() {
   [-1, 1].forEach((s) => mesh(new THREE.BoxGeometry(14, 0.9, 0.12), makeMat(0x78350f, { texType: 'wood' }), -24, 0.7, 150 + s * 2.95, false));
 
   // === SUNSET COVE ===
-  // Beach ends at the waterline; the seabed patch takes over beneath the cove.
-  ground(28, 138, 108, 168, 0.17, makeMat(0xf2d9a0, { texType: 'sand', repeatX: 14, repeatY: 14, roughness: 0.96 }));
+  ground(28, 138, 108, 168, 0.17, makeGroundMat('sand', { repeatX: 14, repeatY: 14, roughness: 0.96 }));
   road(72, 'Cove Boulevard');
   mapShapes.unshift({ x: 83, z: 158, w: 110, d: 100, color: '#fcd34d', border: '#f59e0b', enterable: false });
   createWaterSurface({
@@ -2356,6 +3010,7 @@ export function buildNewBiomes() {
   for (let pz = 154; pz <= 190; pz += 6) [-1.7, 1.7].forEach((s) => mesh(new THREE.CylinderGeometry(0.18, 0.2, 1.4, 6), makeMat(0x57534e), 100 + s, 0.0, pz, false));
   addWorldBox(98, 102, 0.2, 0.55, 152, 192, 'pier', true);
   mesh(new THREE.BoxGeometry(1.4, 0.12, 0.5), makeMat(0x78350f), 100, 0.9, 186, false);
+
   const palm = (x, z, s) => {
     const lean = (rnd() - 0.5) * 0.4;
     const tr = mesh(new THREE.CylinderGeometry(0.16 * s, 0.24 * s, 5 * s, 7), treeBarkMaterial, x, 0.17 + 2.5 * s, z);
@@ -2387,7 +3042,7 @@ export function buildNewBiomes() {
   mesh(new THREE.BoxGeometry(0.06, 1.3, 0.06), makeMat(0x57534e), 51.4, 5.0, 151.4);
   mesh(new THREE.BoxGeometry(0.7, 0.4, 0.04), makeMat(0xfacc15), 51.75, 5.4, 151.4, false);
   addWorldBox(48.8, 51.2, 2.5, 4.35, 148.8, 151.2, 'lifeguard_deck', true);
-  // Sailboats now heave & pitch on the live cove waves.
+
   [[60, 190, 0.3], [126, 180, -0.4]].forEach(([bx, bz, ry]) => {
     const bt = new THREE.Group();
     bt.position.set(bx, 0.3, bz);
@@ -2411,14 +3066,14 @@ export function buildNewBiomes() {
 }
 
 // -----------------------------------------------------------------------------
-// VERDANT JUNGLE — floor matches collision, carved swimmable river, real entry
-// ramp, single grand temple clear of the river and the road.
+// VERDANT JUNGLE
 // -----------------------------------------------------------------------------
 export function buildJungleBiome() {
   const grp = new THREE.Group();
   grp.userData.studioName = 'Verdant jungle';
   worldRoot.add(grp);
   const JX0 = 368, JX1 = 533, JZ0 = -180, JZ1 = 240, JY = 1.5;
+
   const mesh = (geo, mat, x, y, z, cast = true) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
@@ -2435,23 +3090,26 @@ export function buildJungleBiome() {
     grp.add(m);
     return m;
   };
-  // Jungle floor split around the river channel (412..424) so the carved bed
-  // is genuinely below the water — deep enough to swim mid-channel.
+
   {
     const westGeo = new THREE.PlaneGeometry(44, JZ1 - JZ0, 22, Math.ceil((JZ1 - JZ0) / 2));
     westGeo.rotateX(-Math.PI / 2);
-    const west = new THREE.Mesh(westGeo, makeMat(0x2d5a27, { texType: 'grass', repeatX: 7, repeatY: 42, roughness: 0.96 }));
+    const west = new THREE.Mesh(westGeo, makeTerrainBlendMaterial({ roughness: 0.96 }));
     west.position.set(390, JY, (JZ0 + JZ1) / 2);
+    paintMeshTerrainSplat(west, 'jungle');
     west.receiveShadow = true;
     registerSculptableTerrain(west);
     grp.add(west);
+
     const eastGeo = new THREE.PlaneGeometry(109, JZ1 - JZ0, 54, Math.ceil((JZ1 - JZ0) / 2));
     eastGeo.rotateX(-Math.PI / 2);
-    const east = new THREE.Mesh(eastGeo, makeMat(0x2d5a27, { texType: 'grass', repeatX: 9, repeatY: 42, roughness: 0.96 }));
+    const east = new THREE.Mesh(eastGeo, makeTerrainBlendMaterial({ roughness: 0.96 }));
     east.position.set(478.5, JY, (JZ0 + JZ1) / 2);
+    paintMeshTerrainSplat(east, 'jungle');
     east.receiveShadow = true;
     registerSculptableTerrain(east);
     grp.add(east);
+
     const bedGeo = new THREE.PlaneGeometry(12, JZ1 - JZ0, 8, 140);
     bedGeo.rotateX(-Math.PI / 2);
     const bp = bedGeo.attributes.position;
@@ -2460,13 +3118,33 @@ export function buildJungleBiome() {
       bp.setY(i, JY - 1.48 * Math.max(0, 1 - d * d));
     }
     bedGeo.computeVertexNormals();
-    const bed = new THREE.Mesh(bedGeo, makeMat(0x6b5b3e, { texType: 'sand', repeatX: 2, repeatY: 40, roughness: 0.95 }));
+    const bed = new THREE.Mesh(bedGeo, makeGroundMat('dirt', { color: 0x6b5b3e, repeatX: 2, repeatY: 40, roughness: 0.95 }));
     bed.position.set(418, 0, (JZ0 + JZ1) / 2);
     bed.receiveShadow = true;
     bed.userData.studioName = 'Jungle river bed';
     grp.add(bed);
   }
+
+  // Earth skirts: the jungle floor sits 1.48 above the desert, so every edge
+  // gets a real retaining face — you can never see under the elevated plane.
+  {
+    const skirtMat = makeMat(0x4a3f2c, { texType: 'redrock', repeatX: 20, repeatY: 1, roughness: 0.95 });
+    const skirt = (w, d, x, z) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, JY + 0.6, d), skirtMat);
+      m.position.set(x, (JY - 0.6) / 2, z);
+      m.receiveShadow = true;
+      m.castShadow = true;
+      grp.add(m);
+    };
+    skirt(0.5, 214, JX0, (JZ0 + 34) / 2);
+    skirt(0.5, JZ1 - 46, JX0, (46 + JZ1) / 2);
+    skirt(0.5, JZ1 - JZ0, JX1, (JZ0 + JZ1) / 2);
+    skirt(JX1 - JX0, 0.5, (JX0 + JX1) / 2, JZ0);
+    skirt(JX1 - JX0, 0.5, (JX0 + JX1) / 2, JZ1);
+  }
+
   mapShapes.unshift({ x: (JX0 + JX1) / 2, z: 30, w: JX1 - JX0, d: JZ1 - JZ0, color: '#14532d', border: '#166534', enterable: false });
+
   const rise = JY - 0.05;
   const entryRamp = new THREE.Mesh(new THREE.BoxGeometry(8.2, 0.14, 12), makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 2, roughness: 0.86 }));
   entryRamp.position.set(364, (0.05 + JY) / 2 - 0.07, 40);
@@ -2474,12 +3152,12 @@ export function buildJungleBiome() {
   entryRamp.receiveShadow = true;
   grp.add(entryRamp);
   addDriveableRamp({ minX: 360, maxX: 368, minZ: 34, maxZ: 46, startY: 0.05, endY: JY, axis: 'x', dir: 1 });
+
   const trailMat = makeMat(0x5c4033, { texType: 'sand', repeatX: 10, repeatY: 2, roughness: 0.95 });
   plane(368, 412, 35, 45, JY + 0.02, trailMat);
   plane(424, 474, 35, 45, JY + 0.02, trailMat);
   mapShapes.push({ x: 421, z: 40, w: 106, d: 10, color: '#78350f', border: '#451a03', enterable: false });
-  // Live jungle river: wade the banks, swim the deep centre, drift with the
-  // current flowing south from the falls.
+
   createWaterSurface({
     id: 'verdant_river', parent: grp, minX: 412, maxX: 424, minZ: -180, maxZ: 200,
     surfaceY: JY + 0.03,
@@ -2488,9 +3166,7 @@ export function buildJungleBiome() {
     shallowColor: 0x2dd4bf, deepColor: 0x0f766e, foamColor: 0xccfbf1, segmentSize: 4
   });
   mapShapes.push({ x: 418, z: 10, w: 12, d: 380, color: '#14b8a6', border: '#0f766e', enterable: false });
-  // Far-north ocean — live water over the continuous seabed, trimmed so it
-  // never covers alpine, desert or jungle land. Extends to z=320 to meet the
-  // strait seamlessly.
+
   createWaterSurface({
     id: 'north_ocean_w', parent: grp, minX: -50, maxX: 164, minZ: 208, maxZ: 320,
     surfaceY: 0.20, bedFn: getOceanBedY, waveScale: 1.0, currentX: 0.2, currentZ: 0.3,
@@ -2501,24 +3177,26 @@ export function buildJungleBiome() {
     surfaceY: 0.20, bedFn: getOceanBedY, waveScale: 1.0, currentX: 0.25, currentZ: 0.2,
     isOcean: true, segmentSize: 4
   });
+
   const woodBridgeMat = makeMat(0x78350f, { texType: 'wood', repeatX: 4, repeatY: 2 });
   mesh(new THREE.BoxGeometry(14, 0.22, 11.5), woodBridgeMat, 418, JY + 0.1, 40);
   [-5.5, 5.5].forEach((rz) => mesh(new THREE.BoxGeometry(14, 0.85, 0.24), woodBridgeMat, 418, JY + 0.54, 40 + rz));
   addWorldBox(411, 425, JY, JY + 0.21, 34.2, 45.8, 'jungle_bridge', true);
+
   const cliffMat = makeMat(0x475569, { texType: 'redrock', repeatX: 4, repeatY: 3, roughness: 0.92 });
   mesh(new THREE.BoxGeometry(22, 14, 7), cliffMat, 418, JY + 6.5, -137);
   addWorldBox(407, 429, JY, JY + 13.5, -140.5, -133.5, 'jungle_cliff', false);
   const fallSheet = mesh(new THREE.BoxGeometry(8.5, 11.5, 0.35), new THREE.MeshBasicMaterial({ color: 0x5eead4, transparent: true, opacity: 0.72 }), 418, JY + 5.75, -133.3, false);
   const mistPool = mesh(new THREE.CylinderGeometry(7.5, 7.5, 0.08, 20), new THREE.MeshBasicMaterial({ color: 0xccfbf1, transparent: true, opacity: 0.55 }), 418, JY + 0.06, -129, false);
   buildJungleBiome.waterfall = { fallSheet, mistPool };
-  // River boulders — hop stones near the trail crossing.
+
   [[-60, 1.6], [10, -1.8], [80, 1.2], [150, -1.5]].forEach(([rz, ox]) => {
     const bx = 418 + ox;
     mesh(new THREE.DodecahedronGeometry(0.9, 0), makeMat(0x4b5563, { texType: 'cobblestone', repeatX: 2, repeatY: 2, roughness: 0.95 }), bx, JY - 0.15, rz);
     addWorldBox(bx - 0.8, bx + 0.8, JY - 0.9, JY + 0.55, rz - 0.8, rz + 0.8, 'river_boulder', true);
   });
   spawnRiverLog(grp, 419.5, 120);
-  // === Grand Sun Temple ===
+
   const teX = 456, teZ = -70, platW = 60, platD = 60, platH = 3;
   const tePlatform = new THREE.Mesh(new THREE.BoxGeometry(platW, platH, platD), makeMat(0x57534e, { texType: 'cobblestone', repeatX: 8, repeatY: 8, roughness: 0.92 }));
   tePlatform.position.set(teX, JY + platH / 2, teZ);
@@ -2534,6 +3212,7 @@ export function buildJungleBiome() {
   tRamp.receiveShadow = true;
   worldRoot.add(tRamp);
   addDriveableRamp({ minX: teX - 6, maxX: teX + 6, minZ: teZ + platD / 2, maxZ: teZ + platD / 2 + tRun, startY: JY + platH, endY: JY, axis: 'z', dir: 1 });
+
   const teStoneMat = makeMat(0x57534e, { texType: 'cobblestone', repeatX: 8, repeatY: 8, roughness: 0.92 });
   const teMossStoneMat = makeMat(0x3f6212, { texType: 'cobblestone', repeatX: 6, repeatY: 6, roughness: 0.95 });
   let tierY = JY + platH;
@@ -2559,7 +3238,7 @@ export function buildJungleBiome() {
   createNeonSign(worldRoot, 'ANCIENT SUN TEMPLE', teX, tierY + 4.4, teZ + 4, '#14532d', '#fde047', 6.5, 1.0);
   mapShapes.push({ x: teX, z: teZ, w: platW, d: platD, color: '#65a30d', border: '#facc15', enterable: false });
   buildWalkInHouse({ x: 454, z: 96, w: 10.6, d: 8.8, wallColor: 0x4d7c0f, roofColor: 0x78350f, label: 'JUNGLE RESEARCH STATION', baseY: JY });
-  // === Kapok trees ===
+
   const vineMat = makeMat(0x4d7c0f, { roughness: 0.9 });
   const kapokParts = { trunk: [], root: [], c1: [], c2: [], c3: [], vine: [] };
   const kd = new THREE.Object3D();
@@ -2620,6 +3299,7 @@ export function buildJungleBiome() {
     addKapok(new THREE.DodecahedronGeometry(3.0, 1), treeLeafMaterial, kapokParts.c3);
     addKapok(new THREE.CylinderGeometry(0.05, 0.05, 1, 5), vineMat, kapokParts.vine, false);
   }
+
   const fernMat = makeMat(0x16a34a, { roughness: 0.85 });
   const boulderMat = makeMat(0x4b5563, { texType: 'cobblestone', repeatX: 2, repeatY: 2, roughness: 0.95 });
   const bloomColors = [0xf43f5e, 0xf59e0b, 0xa855f7, 0x38bdf8];
@@ -2650,15 +3330,668 @@ export function buildJungleBiome() {
   }
 }
 
+// =============================================================================
+// AURA ARMORY — cash-gated [E] purchases, or smash the glass with [F] using
+// the sledgehammer hidden in the dumpster behind the store.
+// =============================================================================
+const ARMORY = { x: 104, z: 494, w: 20, d: 22, h: 5.2, baseY: 0.24 };
+const ARMORY_DUMPSTER = { x: 99, z: 478 };
+const ARMORY_AMMO = { x: 97.2, z: 485.6, price: 60 };
+
+const armory = {
+  built: false,
+  cases: [],
+  dumpster: null,
+  dumpsterSearched: false,
+  hasHammer: false,
+  hammerMesh: null,
+  hammerInDumpster: null,
+  alarm: 0,
+  alarmLight: null,
+  alarmBeacon: null,
+  swing: 0,
+  ammoBox: null
+};
+
+const ARMORY_STOCK = [
+  { id: 'hotdog_shooter', label: 'HOTDOG SHOOTER', price: 450, x: 99.5, z: 489.0 },
+  { id: 'crowbar', label: 'STEEL CROWBAR', price: 220, x: 108.5, z: 489.0 },
+  { id: 'pipe', label: 'TACTICAL PIPE', price: 180, x: 99.5, z: 498.0 },
+  { id: 'bat', label: 'WOODEN BAT', price: 120, x: 108.5, z: 498.0 }
+];
+
+function makeSledgehammer() {
+  const g = new THREE.Group();
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.86, 8), makeMat(0xb45309, { texType: 'wood', repeatX: 1, repeatY: 3 }));
+  shaft.position.y = 0.30;
+  shaft.castShadow = true;
+  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.22, 8), makeMat(0x1c1917, { roughness: 0.95 }));
+  grip.position.y = -0.02;
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.13, 0.13), makeMat(0x94a3b8, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.28, flatShading: false }));
+  head.position.y = 0.74;
+  head.castShadow = true;
+  const face = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.07, 10), makeMat(0xcbd5e1, { metalness: 0.95, roughness: 0.2 }));
+  face.rotation.z = Math.PI / 2;
+  face.position.set(0.18, 0.74, 0);
+  const claw = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.10, 0.05), makeMat(0x64748b, { metalness: 0.9, roughness: 0.3 }));
+  claw.position.set(-0.19, 0.74, 0);
+  claw.rotation.z = 0.35;
+  g.add(shaft, grip, head, face, claw);
+  return g;
+}
+
+function buildArmoryCase(stock) {
+  const g = new THREE.Group();
+  g.position.set(stock.x, ARMORY.baseY, stock.z);
+  g.userData.studioName = `Display case: ${stock.label}`;
+
+  const cabinet = makeMat(0x1c1917, { texType: 'wood', repeatX: 2, repeatY: 1, roughness: 0.6 });
+  const steel = makeMat(0xcbd5e1, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.2, flatShading: false });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0xbfe6ff, transparent: true, opacity: 0.24, roughness: 0.04,
+    metalness: 0.12, side: THREE.DoubleSide, depthWrite: false,
+    emissive: 0x1e3a5f, emissiveIntensity: 0.25
+  });
+
+  const base = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.9, 1.5), cabinet);
+  base.position.y = 0.45;
+  base.castShadow = true; base.receiveShadow = true;
+  const top = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.08, 1.6), steel);
+  top.position.y = 0.94;
+  const glass = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.5, 1.3), glassMat);
+  glass.position.y = 1.73;
+  glass.renderOrder = 3;
+
+  const frameParts = [];
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.07, 1.5, 0.07), steel);
+    post.position.set(sx * 1.2, 1.73, sz * 0.65);
+    frameParts.push(post);
+  }
+  const rim = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.08, 1.4), steel);
+  rim.position.y = 2.50;
+  frameParts.push(rim);
+
+  const prop = buildPickupMesh('right', stock.id);
+  if (prop.children.length > 1) prop.remove(prop.children[prop.children.length - 1]);
+  prop.scale.setScalar(1.7);
+  prop.position.set(0, 1.62, 0);
+  prop.rotation.set(0.2, 0, 0.35);
+
+  const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 0.16, 10), steel);
+  stand.position.y = 1.06;
+
+  createNeonSign(g, `$${stock.price}`, 0, 0.62, 0.78, '#0b1220', '#facc15', 1.5, 0.42);
+  createNeonSign(g, stock.label, 0, 2.78, 0, '#0b1220', '#38bdf8', 2.5, 0.36);
+
+  g.add(base, top, glass, rim, stand, prop, ...frameParts);
+  worldRoot.add(g);
+
+  const baseBox = addWorldBox(stock.x - 1.3, stock.x + 1.3, ARMORY.baseY, ARMORY.baseY + 0.98, stock.z - 0.75, stock.z + 0.75, 'armory_case', true);
+  const glassBox = addWorldBox(stock.x - 1.2, stock.x + 1.2, ARMORY.baseY + 0.98, ARMORY.baseY + 2.5, stock.z - 0.65, stock.z + 0.65, 'armory_glass', false);
+
+  const rec = {
+    id: stock.id, label: stock.label, price: stock.price,
+    x: stock.x, z: stock.z, group: g, glass, prop, glassBox, baseBox,
+    smashed: false, spin: rnd() * 6.28
+  };
+  armory.cases.push(rec);
+  return rec;
+}
+
+function buildArmoryDumpster() {
+  const g = new THREE.Group();
+  g.position.set(ARMORY_DUMPSTER.x, 0.24, ARMORY_DUMPSTER.z);
+  g.userData.studioName = 'Armory dumpster';
+  const body = makeMat(0x15803d, { texType: 'corrugated', repeatX: 4, repeatY: 2, metalness: 0.6, roughness: 0.55 });
+  const dark = makeMat(0x14532d, { roughness: 0.7 });
+
+  const shell = new THREE.Mesh(new THREE.BoxGeometry(3.6, 1.5, 2.2), body);
+  shell.position.y = 0.85;
+  shell.castShadow = true; shell.receiveShadow = true;
+  const inner = new THREE.Mesh(new THREE.BoxGeometry(3.3, 1.2, 1.9), makeMat(0x0a0f0a, { roughness: 1 }));
+  inner.position.y = 1.05;
+  const lid = new THREE.Mesh(new THREE.BoxGeometry(3.7, 0.12, 2.3), dark);
+  lid.position.set(0, 1.68, -0.75);
+  lid.rotation.x = -0.85;
+  lid.castShadow = true;
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.12, 8), makeMat(0x1c1917));
+    wheel.rotation.z = Math.PI / 2;
+    wheel.position.set(sx * 1.5, 0.16, sz * 0.85);
+    g.add(wheel);
+  }
+  const bagMat = makeMat(0x1c1917, { roughness: 0.95 });
+  for (let i = 0; i < 3; i++) {
+    const bag = new THREE.Mesh(new THREE.IcosahedronGeometry(0.34 + i * 0.05, 0), bagMat);
+    bag.position.set(-0.9 + i * 0.85, 1.35, 0.15 * (i - 1));
+    bag.scale.y = 0.8;
+    g.add(bag);
+  }
+  createNeonSign(g, 'AURA DISPOSAL', 0, 0.95, 1.13, '#14532d', '#bbf7d0', 2.6, 0.5);
+
+  const hammer = makeSledgehammer();
+  hammer.position.set(0.75, 1.30, 0.35);
+  hammer.rotation.set(0.4, 0.6, 1.15);
+  hammer.scale.setScalar(1.05);
+  g.add(hammer);
+  armory.hammerInDumpster = hammer;
+
+  g.add(shell, inner, lid);
+  worldRoot.add(g);
+  addWorldBox(ARMORY_DUMPSTER.x - 1.8, ARMORY_DUMPSTER.x + 1.8, 0.24, 1.75, ARMORY_DUMPSTER.z - 1.1, ARMORY_DUMPSTER.z + 1.1, 'dumpster', true);
+  armory.dumpster = g;
+
+  // Alley dressing
+  const pallet = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.16, 1.2), makeMat(0x78350f, { texType: 'wood' }));
+  pallet.position.set(109.5, 0.32, 478.5);
+  pallet.castShadow = true;
+  worldRoot.add(pallet);
+  addWorldBox(108.7, 110.3, 0.24, 0.40, 477.9, 479.1, 'pallet', true);
+  const crate = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.0, 1.1), makeMat(0xc2853e, { texType: 'wood' }));
+  crate.position.set(109.5, 0.9, 478.5);
+  crate.castShadow = true;
+  worldRoot.add(crate);
+  addWorldBox(108.95, 110.05, 0.40, 1.40, 477.95, 479.05, 'alley_crate', true);
+
+  const alleyLamp = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.22, 0.3), makeMat(0xfef08a, { emissive: 0xfacc15, emissiveIntensity: 1.1 }));
+  alleyLamp.position.set(104, 3.6, 482.6);
+  worldRoot.add(alleyLamp);
+  const alleyLight = new THREE.PointLight(0xffd9a0, 2.2, 16, 2);
+  alleyLight.position.set(104, 3.4, 480.5);
+  worldRoot.add(alleyLight);
+  createNeonSign(worldRoot, 'STAFF ONLY', 104, 2.6, 482.85, '#1c1917', '#f87171', 2.4, 0.45);
+}
+
+export function buildFirearmsArmory() {
+  armory.built = true;
+  armory.cases.length = 0;
+  armory.dumpsterSearched = false;
+  armory.hasHammer = false;
+  armory.alarm = 0;
+  armory.swing = 0;
+
+  const { x, z, w, d, h, baseY } = ARMORY;
+  const wallThick = 0.4, doorW = 3.2, doorH = 3.0;
+  const g = new THREE.Group();
+  g.position.set(x, baseY, z);
+  g.userData.studioName = 'AURA ARMORY';
+
+  const wallMat = makeMat(0x27272a, { texType: 'concrete', repeatX: 5, repeatY: 2, roughness: 0.72 });
+  const trimMat = makeMat(0xdc2626, { metalness: 0.55, roughness: 0.35 });
+  const floorMat = makeMat(0x3f3f46, { texType: 'concrete', repeatX: 6, repeatY: 6, roughness: 0.55 });
+
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(w - 0.2, 0.1, d - 0.2), floorMat);
+  floor.position.y = 0.05;
+  floor.receiveShadow = true;
+  const backW = new THREE.Mesh(new THREE.BoxGeometry(w, h, wallThick), wallMat);
+  backW.position.set(0, h / 2, -d / 2 + wallThick / 2);
+  backW.castShadow = true;
+
+  const leftW = new THREE.Group();
+  leftW.position.set(-w / 2 + wallThick / 2, 0, 0);
+  leftW.rotation.y = Math.PI / 2;
+  buildWallWithRealWindow(leftW, d - wallThick * 2, h, wallThick, 3.0, 1.6, 2.6, wallMat, false);
+  const rightW = new THREE.Group();
+  rightW.position.set(w / 2 - wallThick / 2, 0, 0);
+  rightW.rotation.y = -Math.PI / 2;
+  buildWallWithRealWindow(rightW, d - wallThick * 2, h, wallThick, 3.0, 1.6, 2.6, wallMat, false);
+
+  const segW = (w - doorW) / 2;
+  const frontL = new THREE.Group();
+  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - wallThick / 2);
+  buildWallWithRealWindow(frontL, segW, h, wallThick, segW - 1.0, 2.4, 2.1, wallMat, false);
+  const frontR = new THREE.Group();
+  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - wallThick / 2);
+  buildWallWithRealWindow(frontR, segW, h, wallThick, segW - 1.0, 2.4, 2.1, wallMat, false);
+  const header = new THREE.Mesh(new THREE.BoxGeometry(doorW, h - doorH, wallThick), wallMat);
+  header.position.set(0, doorH + (h - doorH) / 2, d / 2 - wallThick / 2);
+
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 0.8, 0.4, d + 0.8), wallMat);
+  roof.position.y = h + 0.2;
+  roof.castShadow = true;
+  const fascia = new THREE.Mesh(new THREE.BoxGeometry(w + 1.0, 0.34, d + 1.0), trimMat);
+  fascia.position.y = h + 0.02;
+
+  createNeonSign(g, 'AURA ARMORY', 0, 4.35, d / 2 + 0.16, '#0b0b0f', '#ef4444', 9.0, 1.25);
+  createNeonSign(g, 'FIREARMS  •  AMMO  •  MELEE', 0, 3.35, d / 2 + 0.16, '#0b0b0f', '#facc15', 8.0, 0.6);
+
+  // Interior fit-out lives in a distance-culled group.
+  const inn = new THREE.Group();
+  const slat = makeMat(0x52525b, { texType: 'corrugated', repeatX: 8, repeatY: 2, metalness: 0.5, roughness: 0.6 });
+  const steel = makeMat(0xe2e8f0, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.18, flatShading: false });
+  const counterMat = makeMat(0x1c1917, { texType: 'wood', repeatX: 3, repeatY: 1 });
+
+  const slatBack = new THREE.Mesh(new THREE.BoxGeometry(w - 1.2, 3.0, 0.14), slat);
+  slatBack.position.set(0, 2.0, -d / 2 + 0.55);
+  inn.add(slatBack);
+
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.05, 6.0), counterMat);
+  counter.position.set(w / 2 - 1.5, 0.55, 0.5);
+  const counterTop = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.1, 6.2), steel);
+  counterTop.position.set(w / 2 - 1.5, 1.12, 0.5);
+  const register = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.45, 0.55), makeMat(0x0f172a, { metalness: 0.6 }));
+  register.position.set(w / 2 - 1.5, 1.4, 2.0);
+  const registerScreen = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.3, 0.05), makeMat(0x22d3ee, { emissive: 0x0891b2, emissiveIntensity: 0.8 }));
+  registerScreen.position.set(w / 2 - 1.5, 1.5, 2.3);
+  inn.add(counter, counterTop, register, registerScreen);
+  addWorldBox(x + w / 2 - 2.35, x + w / 2 - 0.65, baseY, baseY + 1.17, z - 2.5, z + 3.5, 'armory_counter', true);
+
+  // Ammo shelf + purchasable sausage crate
+  const shelf = new THREE.Mesh(new THREE.BoxGeometry(3.0, 2.2, 0.6), slat);
+  shelf.position.set(-w / 2 + 2.0, 1.1, -d / 2 + 1.0);
+  inn.add(shelf);
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 5; c++) {
+      const box = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.3, 0.34), makeMat(r % 2 ? 0xd97706 : 0xb91c1c, { roughness: 0.6 }));
+      box.position.set(-w / 2 + 0.9 + c * 0.52, 0.55 + r * 0.62, -d / 2 + 1.35);
+      inn.add(box);
+    }
+  }
+  const ammoCrate = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.8, 0.9), makeMat(0xd97706, { texType: 'wood' }));
+  ammoCrate.position.set(ARMORY_AMMO.x - x, 0.4, ARMORY_AMMO.z - z);
+  ammoCrate.castShadow = true;
+  inn.add(ammoCrate);
+  armory.ammoBox = ammoCrate;
+  addWorldBox(ARMORY_AMMO.x - 0.55, ARMORY_AMMO.x + 0.55, baseY, baseY + 0.8, ARMORY_AMMO.z - 0.45, ARMORY_AMMO.z + 0.45, 'armory_ammo', true);
+
+  for (const lx of [-5.5, 0, 5.5]) {
+    const strip = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.1, 0.5), makeMat(0xfff7d6, { emissive: 0xfff7d6, emissiveIntensity: 0.9 }));
+    strip.position.set(lx, h - 0.35, 0);
+    inn.add(strip);
+  }
+  const shopLight = new THREE.PointLight(0xfff1d6, 2.4, 26, 2);
+  shopLight.position.set(0, h - 1.0, 0);
+  inn.add(shopLight);
+
+  createNeonSign(inn, 'LICENSED DEALER  •  NO REFUNDS', 0, 3.9, -d / 2 + 0.7, '#0b0b0f', '#a1a1aa', 7.0, 0.5);
+  createNeonSign(inn, 'SAUSAGE AMMO  [E] $60', ARMORY_AMMO.x - x, 1.5, ARMORY_AMMO.z - z + 0.6, '#7f1d1d', '#fef08a', 2.8, 0.45);
+
+  g.add(floor, backW, leftW, rightW, frontL, frontR, header, roof, fascia, inn);
+  worldRoot.add(g);
+  (aura.culls || []).push({ g: inn, x, z, r: 80 });
+
+  const minX = x - w / 2, maxX = x + w / 2, minZ = z - d / 2, maxZ = z + d / 2;
+  addWorldBox(minX, maxX, baseY, baseY + h, minZ, minZ + wallThick, 'wall', false);
+  addWorldBox(minX, minX + wallThick, baseY, baseY + h, minZ, maxZ, 'wall', false);
+  addWorldBox(maxX - wallThick, maxX, baseY, baseY + h, minZ, maxZ, 'wall', false);
+  addWorldBox(minX, x - doorW / 2, baseY, baseY + h, maxZ - wallThick, maxZ, 'wall', false);
+  addWorldBox(x + doorW / 2, maxX, baseY, baseY + h, maxZ - wallThick, maxZ, 'wall', false);
+  addWorldBox(minX, maxX, baseY + h - 0.1, baseY + h + 0.4, minZ, maxZ, 'roof', true);
+  addWorldBox(minX + wallThick, maxX - wallThick, baseY, baseY + 0.10, minZ + wallThick, maxZ - wallThick, 'armory_floor', true);
+
+  enterableZones.push({ minX: minX + 0.4, maxX: maxX - 0.4, minZ: minZ + 0.4, maxZ: maxZ - 0.3, name: 'AURA ARMORY' });
+  mapShapes.push({ x, z, w, d, color: '#dc2626', border: '#facc15', enterable: true });
+
+  for (const stock of ARMORY_STOCK) buildArmoryCase(stock);
+  buildArmoryDumpster();
+
+  armory.hammerMesh = makeSledgehammer();
+  armory.hammerMesh.visible = false;
+  armory.hammerMesh.scale.setScalar(0.95);
+  armory.hammerMesh.userData.studioSelectable = false;
+  worldRoot.add(armory.hammerMesh);
+
+  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), new THREE.MeshBasicMaterial({ color: 0xef4444 }));
+  beacon.position.set(x, baseY + h + 0.8, z + d / 2 - 0.5);
+  beacon.visible = false;
+  worldRoot.add(beacon);
+  armory.alarmBeacon = beacon;
+  const alarmLight = new THREE.PointLight(0xff2d2d, 0, 30, 2);
+  alarmLight.position.set(x, baseY + 3.4, z);
+  worldRoot.add(alarmLight);
+  armory.alarmLight = alarmLight;
+
+  // Chain the armory into the existing world interaction hooks.
+  const prevHint = aura.ahHint, prevF = aura.ahF;
+  aura.ahHint = () => armoryHintText() || (prevHint ? prevHint() : '');
+  aura.ahF = () => { if (armorySmash()) return; if (prevF) prevF(); };
+}
+
+function armoryActive() {
+  return armory.built && gameState.screen === 'playing' && !gameState.inCar
+    && !gameState.inventoryOpen && !gameState.mapOpen && !gameState.settingsOpen
+    && !under() && player.y > -1;
+}
+
+function armoryTarget() {
+  if (!armoryActive()) return null;
+  let best = null;
+  const consider = (kind, x, z, range, data) => {
+    const dd = Math.hypot(player.x - x, player.z - z);
+    if (dd < range && Math.abs(player.y - 0.24) < 2.4 && (!best || dd < best.dist)) {
+      best = { kind, dist: dd, data };
+    }
+  };
+  if (!armory.dumpsterSearched) consider('dumpster', ARMORY_DUMPSTER.x, ARMORY_DUMPSTER.z, 3.0, null);
+  consider('ammo', ARMORY_AMMO.x, ARMORY_AMMO.z, 2.6, null);
+  for (const c of armory.cases) if (!c.smashed) consider('case', c.x, c.z, 2.6, c);
+  return best;
+}
+
+function armoryHintText() {
+  const t = armoryTarget();
+  if (!t) return '';
+  if (t.kind === 'dumpster') return '[E] SEARCH DUMPSTER';
+  if (t.kind === 'ammo') return `[E] BUY 60 SAUSAGES — $${ARMORY_AMMO.price}`;
+  const c = t.data;
+  const buy = gameState.cash >= c.price ? `[E] BUY $${c.price}` : `[E] BUY $${c.price} (SHORT $${c.price - gameState.cash})`;
+  return armory.hasHammer ? `${buy}   ·   [F] SMASH CASE` : `${buy}   ·   REINFORCED GLASS`;
+}
+
+function armoryEquip(id) {
+  if (!gameState.rightWeapons.includes(id)) gameState.rightWeapons.push(id);
+  gameState.activeRightWeapon = id;
+  if (id === 'hotdog_shooter') gameState.hotdogAmmo = MAX_HOTDOG_AMMO;
+  hooks.syncEquippedMeshes();
+  hooks.updateHUD(true);
+}
+
+/** [E] — cash-gated purchase, dumpster search, ammo refill. */
+function armoryBuy() {
+  const t = armoryTarget();
+  if (!t) return false;
+  if (t.kind === 'dumpster') {
+    armory.dumpsterSearched = true;
+    armory.hasHammer = true;
+    if (armory.hammerInDumpster) armory.hammerInDumpster.visible = false;
+    sfx.pickup();
+    spawnParticles(ARMORY_DUMPSTER.x, 1.6, ARMORY_DUMPSTER.z, 0x94a3b8, 8, 4.0);
+    pushFeed('SLEDGEHAMMER FOUND — [F] SMASHES DISPLAY GLASS', 'border-l-amber-400');
+    hooks.mpWorldEvent({ t: 'armory_hammer' });
+    return true;
+  }
+  if (t.kind === 'ammo') {
+    if (gameState.cash < ARMORY_AMMO.price) {
+      sfx.uiClick();
+      pushFeed(`NOT ENOUGH CASH — $${ARMORY_AMMO.price} NEEDED`, 'border-l-rose-500');
+      return true;
+    }
+    gameState.cash -= ARMORY_AMMO.price;
+    gameState.hotdogAmmo = MAX_HOTDOG_AMMO;
+    sfx.pickup();
+    hooks.updateHUD(true);
+    pushFeed(`BOUGHT 60 SAUSAGES  -$${ARMORY_AMMO.price}`, 'border-l-amber-400');
+    hooks.mpWorldEvent({ t: 'armory_ammo' });
+    return true;
+  }
+  const c = t.data;
+  if (gameState.cash < c.price) {
+    sfx.uiClick();
+    pushFeed(`NOT ENOUGH CASH — ${c.label} IS $${c.price}`, 'border-l-rose-500');
+    return true;
+  }
+  gameState.cash -= c.price;
+  armoryEquip(c.id);
+  sfx.pickup();
+  spawnParticles(c.x, 2.0, c.z, 0xfacc15, 8, 3.5);
+  pushFeed(`PURCHASED ${c.label}  -$${c.price}`, 'border-l-emerald-400');
+  hooks.mpWorldEvent({ t: 'armory_buy', id: c.id });
+  return true;
+}
+
+/** [F] — smash the vitrine with the sledgehammer and take the weapon. */
+function armorySmash() {
+  const t = armoryTarget();
+  if (!t || t.kind !== 'case') return false;
+  if (!armory.hasHammer) {
+    sfx.uiClick();
+    pushFeed('THE GLASS HOLDS — YOU NEED SOMETHING HEAVY', 'border-l-slate-400');
+    return true;
+  }
+  const c = t.data;
+  c.smashed = true;
+  c.glass.visible = false;
+  if (c.prop) c.prop.visible = false;
+  const gi = worldBoxes.indexOf(c.glassBox);
+  if (gi !== -1) worldBoxes.splice(gi, 1);
+  armory.swing = 1;
+  armory.alarm = 45;
+
+  sfx.smash();
+  spawnParticles(c.x, 1.9, c.z, 0xbfe6ff, 16, 7.0);
+  spawnParticles(c.x, 1.9, c.z, 0xffffff, 10, 5.5);
+  spawnWorldPickup('right', c.id, c.x, 0.24, c.z + 1.5);
+  if (!hooks.mpIsGuest()) crime(0.9);
+  pushFeed(`CASE SMASHED — ${c.label} GRABBED • ALARM!`, 'border-l-rose-500');
+  hooks.mpWorldEvent({ t: 'armory_smash', id: c.id });
+  return true;
+}
+
+let armoryKeyBound = false;
+function bindArmoryKey() {
+  if (armoryKeyBound) return;
+  armoryKeyBound = true;
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyE' || e.repeat) return;
+    const tag = e.target && e.target.tagName;
+    if (tag && /INPUT|TEXTAREA|SELECT/.test(tag)) return;
+    if (armoryBuy()) e.preventDefault();
+  });
+}
+
+const _hammerV = new THREE.Vector3();
+function updateArmory(dt, elapsed) {
+  if (!armory.built) return;
+  for (const c of armory.cases) {
+    if (c.smashed || !c.prop) continue;
+    c.spin += dt * 0.7;
+    c.prop.rotation.y = c.spin;
+  }
+  if (armory.swing > 0) armory.swing = Math.max(0, armory.swing - dt * 3.2);
+
+  if (armory.alarm > 0) {
+    armory.alarm -= dt;
+    const pulse = (Math.sin(elapsed * 12) + 1) * 0.5;
+    if (armory.alarmLight) armory.alarmLight.intensity = 1.2 + pulse * 5.0;
+    if (armory.alarmBeacon) { armory.alarmBeacon.visible = pulse > 0.4; }
+  } else {
+    if (armory.alarmLight) armory.alarmLight.intensity = 0;
+    if (armory.alarmBeacon) armory.alarmBeacon.visible = false;
+  }
+
+  const hm = armory.hammerMesh;
+  if (!hm) return;
+  const show = armory.hasHammer && !gameState.inCar && gameState.screen === 'playing';
+  hm.visible = show;
+  if (!show) return;
+  const swingAngle = Math.sin(armory.swing * Math.PI) * 1.5;
+  if (gameState.thirdPerson) {
+    const rx = Math.cos(player.yaw), rz = -Math.sin(player.yaw);
+    hm.position.set(player.x + rx * 0.36, player.y + 1.02, player.z + rz * 0.36);
+    hm.rotation.set(-0.5 - swingAngle, player.yaw, 0.28);
+  } else {
+    hooks.getRightMountWorldPosition(_hammerV);
+    hm.position.copy(_hammerV);
+    hm.quaternion.copy(camera.quaternion);
+    hm.rotateX(-0.55 - swingAngle);
+    hm.rotateZ(0.22);
+  }
+}
+
+// =============================================================================
+// GROUND INTEGRITY — no ray should ever reach the void
+// =============================================================================
+export function buildGroundIntegrity() {
+  const grp = new THREE.Group();
+  grp.userData.studioName = 'Ground integrity';
+  grp.userData.studioSelectable = false;
+  worldRoot.add(grp);
+
+  const rockSide = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true });
+
+  /** Terrain panel built from the exact collision heightfield. */
+  const rangePanel = (x0, x1, z0, z1, sx, sz, name) => {
+    const geo = new THREE.PlaneGeometry(x1 - x0, z0 - z1, sx, sz);
+    geo.rotateX(-Math.PI / 2);
+    const pos = geo.attributes.position;
+    const col = new Float32Array(pos.count * 3);
+    const c = new THREE.Color(), c2 = new THREE.Color();
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i) + (x0 + x1) / 2;
+      const z = pos.getZ(i) + (z0 + z1) / 2;
+      const hh = terrainBaseH(x, z);
+      pos.setXYZ(i, x, hh - 0.1, z);
+      const n = fbm(x * 0.05, z * 0.05, 3);
+      c.set(0x547a3a).lerp(c2.set(0x6e8a45), n);
+      c.lerp(c2.set(0x8a8070), sstep(95, 150, hh));
+      c.lerp(c2.set(0xf2f6fa), sstep(150, 178, hh));
+      col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.computeVertexNormals();
+    const m = new THREE.Mesh(geo, rockSide);
+    m.receiveShadow = true;
+    m.userData.studioName = name;
+    grp.add(m);
+    return m;
+  };
+
+  // The collision heightfield runs the mountain formula for ANY x north of
+  // z = -170. These panels give that invisible ground a visible surface.
+  rangePanel(-720, -196, -170, -600, 132, 108, 'Northwest range');
+  rangePanel(424, 560, -170, -600, 46, 108, 'Northeast range');
+
+  // Shoreline patches
+  const sand = makeMat(0xe8d3a2, { texType: 'sand', repeatX: 6, repeatY: 6, roughness: 0.96 });
+  const patch = (x0, x1, z0, z1, y, mat, name) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, 0.4, z1 - z0), mat);
+    m.position.set((x0 + x1) / 2, y - 0.2, (z0 + z1) / 2);
+    m.receiveShadow = true;
+    m.userData.studioName = name;
+    grp.add(m);
+    addWorldBox(x0, x1, y - 0.4, y, z0, z1, 'ground_patch', true);
+  };
+  patch(138, 164, 190, 208, 0.17, sand, 'Cove east shore');
+  patch(368, 533, 240, 320, 0.17, sand, 'North jungle shore');
+
+  // Jungle north lip: closes the 1.33 step down to the new shore.
+  const lip = new THREE.Mesh(new THREE.BoxGeometry(165, 1.5, 0.6), makeMat(0x4a3f2c, { texType: 'redrock', repeatX: 16, repeatY: 1, roughness: 0.95 }));
+  lip.position.set(450.5, 0.85, 240.3);
+  lip.receiveShadow = true;
+  grp.add(lip);
+
+  // Dark backstop under all northern & western land — the last guarantee.
+  const backstopMat = new THREE.MeshStandardMaterial({ color: 0x2b3129, roughness: 1 });
+  const backstop = (x0, x1, z0, z1, name) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), backstopMat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.set((x0 + x1) / 2, -0.55, (z0 + z1) / 2);
+    m.userData.studioName = name;
+    m.renderOrder = -1;
+    grp.add(m);
+  };
+  backstop(-760, 580, -640, -168, 'Northern backstop');
+  backstop(-760, -196, -168, 108, 'Western backstop');
+}
+
+// =============================================================================
+// COUNTY LINE — proximity-fade perimeter barrier
+// =============================================================================
+const barrierChunks = [];
+
+export function buildEdgeBarrier() {
+  barrierChunks.length = 0;
+  const root = new THREE.Group();
+  root.userData.studioName = 'Aura county line';
+  root.userData.studioSelectable = false;
+  worldRoot.add(root);
+
+  const minX = WORLD_BOUNDS.minX + 3, maxX = WORLD_BOUNDS.maxX - 3;
+  const minZ = WORLD_BOUNDS.minZ + 3, maxZ = WORLD_BOUNDS.maxZ - 3;
+  const CHUNK = 46;
+
+  const themeAt = (x, z) => {
+    if (z < -170) return { body: 0x6b6257, cap: 0x8a8175, label: 'AVALANCHE ZONE' };
+    if (x < -196) return { body: 0x57534e, cap: 0x78716c, label: 'BACKCOUNTRY CLOSED' };
+    if (x > 424) return { body: 0x4d7c0f, cap: 0x65a30d, label: 'JUNGLE RESERVE' };
+    return { body: 0xd1d5db, cap: 0xef4444, label: 'END OF AURA COUNTY' };
+  };
+
+  const makeChunk = (cx, cz, alongX, len, index) => {
+    const theme = themeAt(cx, cz);
+    const g = new THREE.Group();
+    g.position.set(cx, 0, cz);
+    g.visible = false;
+
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: theme.body, roughness: 0.88, metalness: 0.05,
+      transparent: true, opacity: 0, depthWrite: false
+    });
+    const capMat = new THREE.MeshStandardMaterial({
+      color: theme.cap, roughness: 0.5, metalness: 0.2,
+      emissive: theme.cap, emissiveIntensity: 0.35,
+      transparent: true, opacity: 0, depthWrite: false
+    });
+
+    const w = alongX ? len : 1.1;
+    const d = alongX ? 1.1 : len;
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 2.6, d), bodyMat);
+    wall.position.y = 1.3;
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(alongX ? len : 1.3, 0.24, alongX ? 1.3 : len), capMat);
+    cap.position.y = 2.72;
+    g.add(wall, cap);
+
+    const postCount = Math.max(2, Math.round(len / 12));
+    for (let i = 0; i <= postCount; i++) {
+      const t = (i / postCount - 0.5) * len;
+      const marker = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.5, 0.22), capMat);
+      marker.position.set(alongX ? t : 0, 3.05, alongX ? 0 : t);
+      g.add(marker);
+    }
+
+    if (index % 4 === 0) {
+      const sign = createNeonSign(g, theme.label, 0, 3.9, 0, '#0b0b0f', '#facc15', 9.0, 1.0);
+      if (!alongX) sign.rotation.y = Math.PI / 2;
+      sign.material.forEach((m) => { m.transparent = true; m.opacity = 0; });
+      g.userData.signMats = sign.material;
+    }
+
+    root.add(g);
+    barrierChunks.push({ group: g, x: cx, z: cz, mats: [bodyMat, capMat], opacity: 0 });
+  };
+
+  let idx = 0;
+  const spanX = maxX - minX, spanZ = maxZ - minZ;
+  const nx = Math.max(1, Math.ceil(spanX / CHUNK)), nz = Math.max(1, Math.ceil(spanZ / CHUNK));
+  const lx = spanX / nx, lz = spanZ / nz;
+  for (let i = 0; i < nx; i++) {
+    const cx = minX + lx * (i + 0.5);
+    makeChunk(cx, minZ, true, lx + 0.4, idx++);
+    makeChunk(cx, maxZ, true, lx + 0.4, idx++);
+  }
+  for (let i = 0; i < nz; i++) {
+    const cz = minZ + lz * (i + 0.5);
+    makeChunk(minX, cz, false, lz + 0.4, idx++);
+    makeChunk(maxX, cz, false, lz + 0.4, idx++);
+  }
+}
+
+export function updateEdgeBarrier() {
+  const NEAR = 46, FAR = 96;
+  for (let i = 0; i < barrierChunks.length; i++) {
+    const c = barrierChunks[i];
+    const dd = Math.hypot(player.x - c.x, player.z - c.z);
+    const target = dd >= FAR ? 0 : (dd <= NEAR ? 1 : sstep(FAR, NEAR, dd));
+    if (Math.abs(target - c.opacity) < 0.004) continue;
+    c.opacity = target;
+    c.group.visible = target > 0.01;
+    for (const m of c.mats) m.opacity = target;
+    const sm = c.group.userData.signMats;
+    if (sm) for (const m of sm) m.opacity = target;
+  }
+}
+
 // -----------------------------------------------------------------------------
-// Atmosphere, snow, river flow & the per-frame water tick
+// Atmosphere, snow, river flow, world ambience & the per-frame water tick
 // -----------------------------------------------------------------------------
 export const bio = { base: null, snow: null, last: 'city' };
 export const bioC = {};
+
 export function updateBiomeAtmosphere(dt, elapsed) {
   const b = biomeAt(player.x, player.z);
   if (!bio.base) bio.base = scene.fog.color.clone();
-  // While the camera is submerged, water.js owns the fog — don't fight it.
+
   const camSurf = getWaterHeightAt(camera.position.x, camera.position.z, elapsed);
   const camUnderwater = camSurf !== null && camera.position.y < camSurf - 0.04;
   if (!camUnderwater) {
@@ -2669,8 +4002,14 @@ export function updateBiomeAtmosphere(dt, elapsed) {
   }
   if (b !== bio.last) {
     bio.last = b;
-    if (b !== 'city') pushFeed({ alpine: 'FROSTPINE ALPINE — ICY & SLIPPERY • LOOP ROAD OPEN', woods: 'EMERALD WOODS — STREAMS SLOW YOU DOWN', cove: 'SUNSET COVE — SWIM & DIVE THE SEABED', jungle: 'VERDANT JUNGLE — RIVER CURRENT RUNS SOUTH' }[b], 'border-l-sky-400');
+    if (b !== 'city') pushFeed({
+      alpine: 'FROSTPINE ALPINE — ICY & SLIPPERY • LOOP ROAD OPEN',
+      woods: 'EMERALD WOODS — STREAMS SLOW YOU DOWN',
+      cove: 'SUNSET COVE — SWIM & DIVE THE SEABED',
+      jungle: 'VERDANT JUNGLE — RIVER CURRENT RUNS SOUTH'
+    }[b], 'border-l-sky-400');
   }
+
   if (!bio.snow) {
     const N = 420, pos = new Float32Array(N * 3);
     for (let i = 0; i < N; i++) { pos[i * 3] = (rnd() - 0.5) * 44; pos[i * 3 + 1] = rnd() * 16; pos[i * 3 + 2] = (rnd() - 0.5) * 44; }
@@ -2692,6 +4031,7 @@ export function updateBiomeAtmosphere(dt, elapsed) {
     a.needsUpdate = true;
     bio.snow.position.set(player.x, player.y, player.z);
   }
+
   const nb = buildNewBiomes.fire;
   if (nb) {
     const f = 0.85 + Math.sin(elapsed * 17) * 0.15 + Math.random() * 0.1;
@@ -2703,12 +4043,21 @@ export function updateBiomeAtmosphere(dt, elapsed) {
     wf.fallSheet.material.opacity = 0.62 + Math.sin(elapsed * 9) * 0.1;
     wf.mistPool.scale.setScalar(1 + Math.sin(elapsed * 2.2) * 0.06);
   }
-  // Scrolling flow on the mountain rivers.
+
+  const wheel = buildLosAuraNorthExpansion.wheel;
+  if (wheel) {
+    wheel.angle += dt * 0.13;
+    wheel.group.rotation.z = wheel.angle;
+    for (const pod of wheel.pods) pod.rotation.z = -wheel.angle;
+  }
+
+  updateArmory(dt, elapsed);
+  updateAirport(dt, elapsed);
+  updateEdgeBarrier();
+
   for (const r of riverFlowMats) {
     if (r.mat.map) r.mat.map.offset.y = (r.mat.map.offset.y - dt * r.speed) % 1;
   }
-  // Wading splash FX are owned by water.js now — tick the whole water system
-  // exactly once per frame (guarded against a second hooks.updateWater call).
   updateWaterOnce(dt, elapsed);
 }
 
@@ -2773,6 +4122,7 @@ export function buildCriminalHideout() {
   worldRoot.add(beacon);
   enterableZones.push({ minX: cx - 24, maxX: cx + 24, minZ: cz - 24, maxZ: cz + 24, name: 'REDROCK SCORPION HIDEOUT' });
   mapShapes.push({ x: cx, z: cz, w: 60, d: 60, color: '#b77935', border: '#78350f', enterable: true });
+
   const tank = buildSportsCar({ name: 'REDROCK SCORPION TANK', bodyHex: 0x4b5541, accentHex: 0x252a22, x: cx + 1, z: cz, yaw: -Math.PI / 2, isCoupe: false });
   placeCar(tank, 0.14);
   tank.isTank = true;
@@ -2812,7 +4162,6 @@ export function buildCriminalHideout() {
   return tank;
 }
 
-/** Set a car's resting height (works with the current vehicles.js). */
 function placeCar(car, y) {
   if (!car) return car;
   car.y = y;
@@ -2821,10 +4170,10 @@ function placeCar(car, y) {
 }
 
 // -----------------------------------------------------------------------------
-// Northern mountains with winding road + the Aura River (live mountain water)
+// Northern mountains — extended to the collision domain and reforested
 // -----------------------------------------------------------------------------
 export function buildMountains() {
-  const X0 = -138, X1 = 370, Z0 = -170, Z1 = -590, SX = 254, SZ = 210;
+  const X0 = -196, X1 = 424, Z0 = -170, Z1 = -600, SX = 310, SZ = 215;
   const g = new THREE.PlaneGeometry(X1 - X0, Z0 - Z1, SX, SZ);
   g.rotateX(-Math.PI / 2);
   const p = g.attributes.position;
@@ -2853,18 +4202,19 @@ export function buildMountains() {
     if (sl > .4) c.multiplyScalar(.92 + .08 * Math.sin(h * .45 + n * 6));
     c.lerp(c2.set(0xf2f6fa), sstep(snowLine - 12, snowLine + 8, h) * (1 - sstep(.7, 1.0, sl)));
     c.multiplyScalar(.9 + .2 * n2);
-    // Wet-rock riverbed tint along the Aura River channel.
     const rd = Math.abs(x - riverX(z));
     if (rd < 7.5) c.lerp(c2.set(0x3a4a52), (1 - rd / 7.5) * 0.85);
     col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
   }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   g.computeVertexNormals();
-  const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }));
+  const mesh = new THREE.Mesh(g, makeTerrainBlendMaterial({ roughness: 1 }));
+paintMeshTerrainSplat(mesh, 'mountains');
   mesh.receiveShadow = true;
   mesh.userData.studioName = 'Northern mountains';
   registerSculptableTerrain(mesh);
   worldRoot.add(mesh);
+
   function ribbon(hw, dy, hex) {
     const pos = [], idx = [];
     let k = 0;
@@ -2885,26 +4235,53 @@ export function buildMountains() {
   }
   ribbon(5.2, 0.05, 0x23262b);
   ribbon(0.12, 0.08, 0xe9c33a);
+
+  // --- Reforestation: groved pines with trunks, plus a snow-line species ---
   const pineG = new THREE.ConeGeometry(2.1, 8, 7);
-  pineG.translate(0, 4.5, 0);
-  const pines = new THREE.InstancedMesh(pineG, treeLeafMaterial, 1500);
-  const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1.6, 0), rockMat, 420);
+  pineG.translate(0, 5.0, 0);
+  const trunkG = new THREE.CylinderGeometry(0.26, 0.4, 2.4, 6);
+  trunkG.translate(0, 1.2, 0);
+  const snowPineG = new THREE.ConeGeometry(1.8, 6.4, 7);
+  snowPineG.translate(0, 4.2, 0);
+  const snowCapG = new THREE.ConeGeometry(1.25, 2.6, 7);
+  snowCapG.translate(0, 6.6, 0);
+  const snowTreeMat = new THREE.MeshStandardMaterial({ color: 0xe8f1f6, roughness: 0.92, flatShading: true });
+
+  const PINE_CAP = 4000, SNOW_CAP = 700, ROCK_CAP = 420;
+  const pines = new THREE.InstancedMesh(pineG, treeLeafMaterial, PINE_CAP);
+  const trunks = new THREE.InstancedMesh(trunkG, treeBarkMaterial, PINE_CAP);
+  const snowPines = new THREE.InstancedMesh(snowPineG, treeLeafMaterial, SNOW_CAP);
+  const snowCaps = new THREE.InstancedMesh(snowCapG, snowTreeMat, SNOW_CAP);
+  const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1.6, 0), rockMat, ROCK_CAP);
   const dm = new THREE.Object3D();
-  let np = 0, nr = 0;
-  for (let k = 0; k < 16000 && (np < 1500 || nr < 420); k++) {
-    const x = X0 + 8 + rnd() * (X1 - X0 - 16), z = -175 - rnd() * 400;
-    const h = terrainH(x, z), d = Math.abs(x - roadC(z));
-    if (d < 11) continue;
-    if (Math.abs(x - riverX(z)) < 8) continue;   // keep the river channel open
+  let np = 0, ns = 0, nr = 0;
+
+  for (let k = 0; k < 46000 && (np < PINE_CAP || ns < SNOW_CAP || nr < ROCK_CAP); k++) {
+    const x = X0 + 8 + rnd() * (X1 - X0 - 16), z = -175 - rnd() * 415;
+    const h = terrainH(x, z);
+    if (Math.abs(x - roadC(z)) < 11) continue;
+    if (Math.abs(x - riverX(z)) < 8) continue;
     const sl = Math.abs(terrainH(x + 3, z) - terrainH(x - 3, z)) / 6;
-    if (np < 1500 && h > 4 && h < 95 && sl < .55 && fbm(x * .05, z * .05, 2) > .42) {
-      dm.position.set(x, h - .2, z);
+    const grove = fbm(x * .05, z * .05, 2);
+    if (np < PINE_CAP && h > 4 && h < 112 && sl < .58 && grove > .36) {
       const s = .8 + rnd() * 1.3;
+      dm.position.set(x, h - .2, z);
       dm.scale.set(s, s * (.9 + rnd() * .6), s);
       dm.rotation.set(0, rnd() * 6, 0);
       dm.updateMatrix();
-      pines.setMatrixAt(np++, dm.matrix);
-    } else if (nr < 420 && sl > .3) {
+      pines.setMatrixAt(np, dm.matrix);
+      trunks.setMatrixAt(np, dm.matrix);
+      np++;
+    } else if (ns < SNOW_CAP && h >= 108 && h < 168 && sl < .52 && grove > .40) {
+      const s = .7 + rnd() * 0.9;
+      dm.position.set(x, h - .2, z);
+      dm.scale.set(s, s * (.9 + rnd() * .4), s);
+      dm.rotation.set(0, rnd() * 6, 0);
+      dm.updateMatrix();
+      snowPines.setMatrixAt(ns, dm.matrix);
+      snowCaps.setMatrixAt(ns, dm.matrix);
+      ns++;
+    } else if (nr < ROCK_CAP && sl > .3) {
       dm.position.set(x, h, z);
       const s = .6 + rnd() * 2.2;
       dm.scale.set(s, s * .7, s);
@@ -2913,17 +4290,19 @@ export function buildMountains() {
       rocks.setMatrixAt(nr++, dm.matrix);
     }
   }
-  pines.count = np;
+  pines.count = np; trunks.count = np;
+  snowPines.count = ns; snowCaps.count = ns;
   rocks.count = nr;
   pines.castShadow = true;
-  worldRoot.add(pines, rocks);
-  // === THE AURA RIVER — real flowing water down the mountain valley ===
+  snowPines.castShadow = true;
+  worldRoot.add(pines, trunks, snowPines, snowCaps, rocks);
+  console.log(`[mountains] ${np} pines, ${ns} snow pines, ${nr} rocks`);
+
   const river = buildRiverSystem({
     id: 'aura_river', parent: worldRoot, centerX: riverX, z0: -584, z1: -176,
     halfWidth: 5, lift: 0.24, waveScale: 0.14, currentZ: 0.9, flowSpeed: 0.5,
     shallowColor: 0x67e8f9, deepColor: 0x0c4a6e, foamColor: 0xe0f2fe
   });
-  // Footbridges, hop boulders and drifting logs.
   [-260, -430].forEach((bz) => {
     buildRiverBridge(worldRoot, riverX(bz), bz, river.surfAt(bz) + 0.3, 16, { stone: false, deckW: 4.2 });
     mapShapes.push({ x: riverX(bz), z: bz, w: 16, d: 4.2, color: '#78350f', border: '#fcd34d', enterable: false });
@@ -2939,7 +4318,6 @@ export function buildMountains() {
   });
   spawnRiverLog(worldRoot, riverX(-340) + 1, -340);
   spawnRiverLog(worldRoot, riverX(-480) - 1, -480);
-  // Minimap river chunks.
   for (let z = -580; z <= -180; z += 60) {
     mapShapes.push({ x: riverX(z + 30), z: z + 30, w: 14, d: 60, color: '#38bdf8', border: '#0ea5e9', enterable: false });
   }
@@ -3081,6 +4459,7 @@ export function buildAuraEstates() {
   const wb = (x, y, z, a, b, d) => addWorldBox(x - a / 2, x + a / 2, y - b / 2, y + b / 2, z - d / 2, z + d / 2, 'solid', false);
   const culls = [], houses = [], gate = { open: false, boxes: [], l1: null, l2: null };
   aura.culls = culls;
+
   {
     const X0 = -560, X1 = -196, Z0 = -172, Z1 = 172, N = 114;
     const g = new THREE.PlaneGeometry(X1 - X0, Z1 - Z0, N, N);
@@ -3110,11 +4489,13 @@ export function buildAuraEstates() {
     }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     g.computeVertexNormals();
-    const tm = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }));
+   const tm = new THREE.Mesh(g, makeTerrainBlendMaterial({ roughness: 1 }));
+paintMeshTerrainSplat(tm, 'hills');
     tm.receiveShadow = true;
     tm.userData.studioName = 'Aura Hills terrain';
     registerSculptableTerrain(tm);
     worldRoot.add(tm);
+
     const pts = [];
     for (let s = 0; s <= 274; s += 3) { const x = -196 - s; pts.push([x, ahRz(x)]); }
     const ribbon = (w, dy, color) => {
@@ -3137,6 +4518,7 @@ export function buildAuraEstates() {
     ribbon(4.8, .12, 0x2a2d31);
     ribbon(.12, .16, 0xe8c547);
   }
+
   {
     const WG = new THREE.Group();
     WG.userData.studioName = 'Aura Estates';
@@ -3153,6 +4535,7 @@ export function buildAuraEstates() {
     sg.rotation.y = Math.PI / 2;
     createNeonSign(sg, 'AURA ESTATES', 0, 0, 0, '#111827', '#fcd34d', 7, 1.1);
     worldRoot.add(sg);
+
     const HW = 15, HD = 11, HT = 4.2, Y = 38.18;
     [[-508, -68, 1], [-508, -22, -1], [-470, -70, 1], [-470, -20, -1], [-448, -70, 1], [-448, -20, -1]].forEach(([cx, cz, dir], k) => {
       const g = new THREE.Group();
@@ -3182,19 +4565,16 @@ export function buildAuraEstates() {
       culls.push({ g: inn, x: cx, z: cz, r: 65 });
     });
   }
-  // Hospital
+
+  // Hospital — placement now respects reserved road footprints.
   {
     const W = 36, D = 26, HH = 7, T = .5, HY = 0.18;
     let hx = 0, hz = 0, found = false;
-    const clear = (cx, cz) => {
-      for (let x = -W / 2 - 4; x <= W / 2 + 4; x += 6)
-        for (let z = -D / 2 - 4; z <= D / 2 + 4; z += 6)
-          if (collidesHorizontally(cx + x, cz + z, .2, 1.8, 1.5)) return false;
-      return true;
-    };
-    for (let x = -170; x <= 110 && !found; x += 10)
-      for (let z = -140; z <= 160; z += 10)
-        if (clear(x, z)) { hx = x; hz = z; found = true; break; }
+    for (let x = -170; x <= 110 && !found; x += 10) {
+      for (let z = -140; z <= 160; z += 10) {
+        if (footprintClear(x, z, W, D, 4)) { hx = x; hz = z; found = true; break; }
+      }
+    }
     if (found) {
       const g = new THREE.Group();
       g.position.set(hx, HY, hz);
@@ -3234,6 +4614,7 @@ export function buildAuraEstates() {
       enterableZones.push({ minX: hx - W / 2 + 1, maxX: hx + W / 2 - 1, minZ: hz - D / 2 + 1, maxZ: hz + D / 2 - 1, name: 'AURA GENERAL HOSPITAL' });
     }
   }
+
   aura.ahCull = function (dt) {
     for (let i = 0; i < manholeCovers.length; i++) {
       const c = manholeCovers[i], tx = manholes[i][0] + (manholeOpen[i] ? 1.5 : 0);
@@ -3294,55 +4675,12 @@ export function buildAuraEstates() {
 }
 
 // -----------------------------------------------------------------------------
-// Skyline infill, Aura Hills trees, Westside district
+// Aura Hills trees & Westside district (skyline infill is now the tower table)
 // -----------------------------------------------------------------------------
 export function buildAuraSkylineAndHighway() {
   const rr = (n) => { const v = Math.sin(n * 127.1) * 43758.5453; return v - Math.floor(v); };
   const sm = (c) => new THREE.MeshStandardMaterial({ color: c, roughness: .85 });
-  {
-    const cv = document.createElement('canvas');
-    cv.width = 64; cv.height = 128;
-    const x = cv.getContext('2d');
-    x.fillStyle = '#1d2b3a';
-    x.fillRect(0, 0, 64, 128);
-    for (let r = 0; r < 16; r++) for (let c = 0; c < 8; c++) {
-      x.fillStyle = rr(r * 9 + c) < .35 ? '#ffe9a8' : '#2f4a63';
-      x.fillRect(c * 8 + 1, r * 8 + 1, 6, 6);
-    }
-    const base = new THREE.CanvasTexture(cv);
-    base.colorSpace = THREE.SRGBColorSpace;
-    base.wrapS = base.wrapT = THREE.RepeatWrapping;
-    const tg = new THREE.BoxGeometry(1, 1, 1), roofM = sm(0x20242a);
-    let placed = 0;
-    const clearT = (cx, cz, w) => {
-      for (let a = -w / 2 - 3; a <= w / 2 + 3; a += 5)
-        for (let b = -w / 2 - 3; b <= w / 2 + 3; b += 5)
-          if (collidesHorizontally(cx + a, cz + b, .2, 1.8, 1.5)) return false;
-      return true;
-    };
-    for (let k = 1; k < 600 && placed < 9; k++) {
-      const cx = -170 + rr(k * 1.3) * 290, cz = -150 + rr(k * 2.9) * 320;
-      const w = 14 + rr(k) * 6, h = 45 + rr(k * 5.1) * 50;
-      if (Math.hypot(cx + 11.5, cz - 18.5) < 30 || manholes.some((m) => Math.hypot(cx - m[0], cz - m[1]) < w)) continue;
-      if (!clearT(cx, cz, w)) continue;
-      const t = base.clone();
-      t.needsUpdate = true;
-      t.repeat.set(Math.round(w / 3), Math.round(h / 6));
-      const m = new THREE.Mesh(tg, new THREE.MeshStandardMaterial({ map: t, emissiveMap: t, emissive: 0xffffff, emissiveIntensity: .25, roughness: .25, metalness: .4 }));
-      m.position.set(cx, h / 2, cz);
-      m.scale.set(w, h, w);
-      m.castShadow = true;
-      m.receiveShadow = true;
-      m.userData.studioName = `Skyline tower ${placed + 1}`;
-      worldRoot.add(m);
-      const r = new THREE.Mesh(tg, roofM);
-      r.position.set(cx, h + .4, cz);
-      r.scale.set(w + .6, .8, w + .6);
-      worldRoot.add(r);
-      addWorldBox(cx - w / 2, cx + w / 2, 0, h, cz - w / 2, cz + w / 2, 'tower', false);
-      placed++;
-    }
-  }
+
   {
     const n = 500;
     const mesh = new THREE.InstancedMesh(new THREE.ConeGeometry(2, 7, 7), treeLeafMaterial, n);
@@ -3363,7 +4701,7 @@ export function buildAuraSkylineAndHighway() {
     mesh.castShadow = true;
     worldRoot.add(mesh);
   }
-  // Westside district
+
   {
     const streetM = sm(0x303840), stripeM = new THREE.MeshBasicMaterial({ color: 0xf5c84c });
     for (const x of [-330, -310, -290, -270, -250, -230]) {
@@ -3427,19 +4765,21 @@ export function buildAuraSkylineAndHighway() {
   }
 }
 
-// ============================================================================
+// =============================================================================
 // DATA-DRIVEN WORLD ENTITIES + STUDIO REGISTRY
-// ============================================================================
+// =============================================================================
 export const entityObjects = new Map();
 export const studioObjects = new Map();
 const studioObjectBaseTransforms = new Map();
 const studioDeletedObjects = new Map();
+
 function applyObjectTransform(object, transform) {
   if (!transform || transform.deleted) return;
   object.position.fromArray(transform.position);
   object.rotation.fromArray(transform.rotation);
   object.scale.fromArray(transform.scale);
 }
+
 function registerStudioObjectTree(root, rootPath, data = levelData) {
   const visit = (object, path) => {
     object.userData.studioPath = path;
@@ -3455,6 +4795,7 @@ function registerStudioObjectTree(root, rootPath, data = levelData) {
   };
   visit(root, rootPath);
 }
+
 export function applyStudioWorldTransforms(data = levelData) {
   for (const [path, entry] of [...studioDeletedObjects.entries()]) {
     const saved = data.worldTransforms && data.worldTransforms[path];
@@ -3472,15 +4813,28 @@ export function applyStudioWorldTransforms(data = levelData) {
     if (saved) applyObjectTransform(object, saved);
   }
 }
+
+/** Stable, name-based Studio keys — reordering builders no longer breaks saves. */
 function registerGeneratedWorldObjects(data = levelData) {
   studioObjects.clear();
   studioDeletedObjects.clear();
-  let staticIndex = 0;
+  const usedKeys = new Map();
+  const slug = (s) => String(s || 'object').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 48) || 'object';
   for (const root of worldRoot.children) {
-    if (root.userData.studioSelectable === false || root.userData.persistentFX) continue;
+    if (foreignRoots && foreignRoots.has(root)) continue;
     root.userData.worldBuilt = true;
+    if (root.userData.studioSelectable === false || root.userData.persistentFX) continue;
     const entityId = root.userData.entityId;
-    registerStudioObjectTree(root, entityId ? `entity:${entityId}` : `static:${staticIndex++}`, data);
+    let key;
+    if (entityId) {
+      key = `entity:${entityId}`;
+    } else {
+      const base = `static:${slug(root.userData.studioName || root.name || root.type)}`;
+      const n = usedKeys.get(base) || 0;
+      usedKeys.set(base, n + 1);
+      key = n === 0 ? base : `${base}#${n}`;
+    }
+    registerStudioObjectTree(root, key, data);
   }
   if (data.worldTransforms) {
     for (const [path, saved] of Object.entries(data.worldTransforms)) {
@@ -3488,7 +4842,9 @@ function registerGeneratedWorldObjects(data = levelData) {
     }
   }
 }
+
 const ENTITY_Y_OFFSET = { pickup: 0.55 };
+
 function tagEntity(root, id) {
   root.userData.entityId = id;
   root.traverse((child) => { child.userData.entityId = id; });
@@ -3541,21 +4897,31 @@ function makeBuildingMesh(entity) {
   roof.position.y = height + 0.17;
   roof.castShadow = true;
   root.add(roof);
+
   const floors = Math.min(20, Math.max(1, Math.floor(height / 3.2)));
   const columns = Math.min(8, Math.max(1, Math.floor(width / 2.8)));
   const windowW = Math.min(1.35, width / (columns * 2.2));
   const windowH = Math.min(1.45, Math.max(0.55, height / (floors * 2.1)));
+  const transforms = [];
+  const dm = new THREE.Object3D();
   for (let floor = 0; floor < floors; floor++) {
     const y = (floor + 0.55) * height / floors;
     for (let column = 0; column < columns; column++) {
       const x = (column + 0.5) * width / columns - width / 2;
       for (const side of [-1, 1]) {
-        const window = new THREE.Mesh(new THREE.BoxGeometry(windowW, windowH, 0.06), glassMat);
-        window.userData.studioName = `Window ${floor + 1}-${column + 1}-${side < 0 ? 'back' : 'front'}`;
-        window.position.set(x, y, side * (depth / 2 + 0.035));
-        root.add(window);
+        dm.position.set(x, y, side * (depth / 2 + 0.035));
+        dm.scale.set(windowW, windowH, 0.06);
+        dm.updateMatrix();
+        transforms.push(dm.matrix.clone());
       }
     }
+  }
+  if (transforms.length) {
+    const windows = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), glassMat, transforms.length);
+    transforms.forEach((m, i) => windows.setMatrixAt(i, m));
+    windows.instanceMatrix.needsUpdate = true;
+    windows.userData.studioName = 'Windows';
+    root.add(windows);
   }
   return root;
 }
@@ -3615,6 +4981,7 @@ function registerEntityRamp(object, entity) {
   const base = y, top = y + scale[1];
   return addDriveableRamp({ minX, maxX, minZ, maxZ, startY: dir > 0 ? base : top, endY: dir > 0 ? top : base, axis, dir });
 }
+
 export function createEntityObject(entity, { register = true } = {}) {
   if (RETIRED_ENTITY_IDS.has(entity.id)) return { object: null, record: null };
   const [x, y, z] = entity.pos;
@@ -3731,9 +5098,11 @@ export function createEntityObject(entity, { register = true } = {}) {
   entityObjects.set(entity.id, { entity, object, record });
   return { object, record };
 }
+
 export function spawnLevelEntities(data = levelData, opts = {}) {
   for (const e of data.entities) createEntityObject(e, opts);
 }
+
 export function removeEntityObject(id) {
   const rec = entityObjects.get(id);
   const sRec = studioObjects.get(id);
@@ -3790,6 +5159,7 @@ export function removeEntityObject(id) {
     }
   }
 }
+
 export function updateEntityTransform(entity) {
   const rec = entityObjects.get(entity.id);
   if (!rec || !rec.object) return;
@@ -3824,34 +5194,279 @@ export function updateEntityTransform(entity) {
   }
   rec.entity = entity;
 }
+
 export function revealAllLods() {
   buildingLods.forEach((e) => { e.group.visible = true; e.active = true; });
   (aura.culls || []).forEach((c) => { c.g.visible = true; });
+  barrierChunks.forEach((c) => { c.group.visible = true; c.opacity = 1; c.mats.forEach((m) => { m.opacity = 1; }); });
 }
 
-// ============================================================================
+// =============================================================================
+// LOS AURA INTERNATIONAL — landside lobby, security, gate lounge
+// =============================================================================
+const airport = { board: null, boardTex: null, boardRows: null, carousel: null, tick: 0 };
+
+const FLIGHT_DESTS = ['SUNNYVALE', 'AURA HILLS', 'REDROCK', 'FROSTPINE', 'VERDANT', 'SANTA AURA', 'WESTSIDE', 'HARBOR CITY'];
+const FLIGHT_STATUS = ['ON TIME', 'BOARDING', 'DELAYED', 'GATE OPEN', 'FINAL CALL'];
+
+function drawDeparturesBoard() {
+  if (!airport.board) return;
+  const c = airport.board;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#05070d';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#facc15';
+  ctx.font = 'bold 30px Oswald, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('DEPARTURES', 18, 38);
+  ctx.fillStyle = '#38bdf8';
+  ctx.font = 'bold 17px Oswald, sans-serif';
+  ctx.fillText('FLIGHT', 18, 68);
+  ctx.fillText('DESTINATION', 120, 68);
+  ctx.fillText('TIME', 330, 68);
+  ctx.fillText('STATUS', 410, 68);
+  ctx.strokeStyle = '#1e3a5f';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(14, 78); ctx.lineTo(c.width - 14, 78); ctx.stroke();
+  ctx.font = '18px Oswald, sans-serif';
+  airport.boardRows.forEach((r, i) => {
+    const y = 106 + i * 30;
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fillText(r.code, 18, y);
+    ctx.fillText(r.dest, 120, y);
+    ctx.fillText(r.time, 330, y);
+    ctx.fillStyle = r.status === 'DELAYED' ? '#f87171' : (r.status === 'BOARDING' || r.status === 'FINAL CALL' ? '#4ade80' : '#facc15');
+    ctx.fillText(r.status, 410, y);
+  });
+  if (airport.boardTex) airport.boardTex.needsUpdate = true;
+}
+
+function buildAirportTerminal(grp, mats) {
+  const { whiteMat, steelMat, asphaltEW } = mats;
+  const termX = 248, termZ = 565, termW = 26, termD = 160, termH = 9.0, termY = 0.25;
+  const x0 = termX - termW / 2, x1 = termX + termW / 2;
+  const z0 = termZ - termD / 2, z1 = termZ + termD / 2;
+  const wallT = 0.5;
+
+  const glassFacadeMat = makeMat(0x0ea5e9, { metalness: 0.9, roughness: 0.12, emissive: 0x0284c7, emissiveIntensity: 0.18 });
+  const floorMat = makeMat(0xf1f5f9, { texType: 'marble', repeatX: 6, repeatY: 36, roughness: 0.2 });
+  const addBox = (w, h, d, mat, x, y, z, cast = true) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    m.castShadow = cast;
+    m.receiveShadow = true;
+    grp.add(m);
+    return m;
+  };
+
+  const floor = addBox(termW - 0.4, 0.1, termD - 0.4, floorMat, termX, termY + 0.05, termZ, false);
+  floor.userData.studioName = 'Terminal floor';
+  addWorldBox(x0, x1, termY - 0.05, termY + 0.10, z0, z1, 'terminal_floor', true);
+
+  // Long walls with real door openings: landside (west) and airside (east).
+  const sideDoors = { '-1': [545, 585], '1': [505, 625] };
+  for (const sd of [-1, 1]) {
+    const wx = termX + sd * termW / 2;
+    const doors = sideDoors[String(sd)];
+    let cursor = z0;
+    const spans = [];
+    for (const dz of doors) { spans.push([cursor, dz - 3]); cursor = dz + 3; }
+    spans.push([cursor, z1]);
+    for (const [a, b] of spans) {
+      if (b - a < 0.4) continue;
+      addBox(wallT, termH, b - a, whiteMat, wx, termY + termH / 2, (a + b) / 2);
+      addWorldBox(wx - wallT / 2, wx + wallT / 2, termY, termY + termH, a, b, 'terminal_wall', false);
+      addBox(0.24, 4.0, Math.max(0.5, b - a - 2), glassFacadeMat, termX + sd * (termW / 2 + 0.14), termY + 5.0, (a + b) / 2, false);
+    }
+    for (const dz of doors) {
+      addBox(wallT, termH - 4.2, 6, whiteMat, wx, termY + 4.2 + (termH - 4.2) / 2, dz);
+      addBox(wallT + 0.2, 0.3, 6.4, steelMat, wx, termY + 4.2, dz, false);
+    }
+  }
+  // End walls
+  for (const ez of [-1, 1]) {
+    const wz = termZ + ez * termD / 2;
+    addBox(termW, termH, wallT, whiteMat, termX, termY + termH / 2, wz);
+    addWorldBox(x0, x1, termY, termY + termH, wz - wallT / 2, wz + wallT / 2, 'terminal_wall', false);
+    addBox(termW - 4, 3.6, 0.24, glassFacadeMat, termX, termY + 5.2, termZ + ez * (termD / 2 + 0.14), false);
+  }
+
+  addBox(termW + 1.6, 0.6, termD + 2, makeMat(0x1e293b), termX, termY + termH + 0.3, termZ);
+  addWorldBox(x0, x1, termY + termH, termY + termH + 0.6, z0, z1, 'terminal_roof', true);
+
+  // ---- Interior (distance-culled) ----
+  const inn = new THREE.Group();
+  inn.userData.studioName = 'LAX terminal interior';
+  grp.add(inn);
+  const iBox = (w, h, d, mat, x, y, z, cast = false) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    m.castShadow = cast;
+    m.receiveShadow = true;
+    inn.add(m);
+    return m;
+  };
+  const deskMat = makeMat(0x1e293b, { metalness: 0.4, roughness: 0.4 });
+  const topMat = makeMat(0xe2e8f0, { texType: 'brushedsteel', metalness: 0.9, roughness: 0.2, flatShading: false });
+  const seatMat = makeMat(0x2563eb, { texType: 'fabric', roughness: 0.9 });
+  const beltMat = makeMat(0x334155, { metalness: 0.6, roughness: 0.5 });
+
+  // Check-in islands (landside, west half)
+  for (const cz of [520, 552, 608]) {
+    iBox(4.0, 1.1, 8.0, deskMat, termX - 7.0, termY + 0.55, cz, true);
+    iBox(4.2, 0.1, 8.2, topMat, termX - 7.0, termY + 1.15, cz);
+    addWorldBox(termX - 9.0, termX - 5.0, termY, termY + 1.2, cz - 4.0, cz + 4.0, 'checkin_counter', true);
+    for (let i = -1; i <= 1; i++) {
+      const screen = iBox(0.1, 0.7, 1.1, makeMat(0x22d3ee, { emissive: 0x0891b2, emissiveIntensity: 0.7 }), termX - 5.0, termY + 1.7, cz + i * 2.6);
+      screen.rotation.y = Math.PI / 2;
+    }
+  }
+  createNeonSign(inn, 'CHECK-IN  •  DESKS 1–12', termX - 7.0, termY + 3.4, 552, '#0b1220', '#38bdf8', 8.0, 0.8);
+
+  // Departures board on the north end wall
+  const boardCanvas = document.createElement('canvas');
+  boardCanvas.width = 512; boardCanvas.height = 320;
+  airport.board = boardCanvas;
+  airport.boardRows = [];
+  for (let i = 0; i < 7; i++) {
+    const hh = 9 + Math.floor(rnd() * 12), mm = Math.floor(rnd() * 6) * 10;
+    airport.boardRows.push({
+      code: `AU ${100 + Math.floor(rnd() * 800)}`,
+      dest: FLIGHT_DESTS[i % FLIGHT_DESTS.length],
+      time: `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`,
+      status: FLIGHT_STATUS[Math.floor(rnd() * FLIGHT_STATUS.length)]
+    });
+  }
+  drawDeparturesBoard();
+  const boardTex = new THREE.CanvasTexture(boardCanvas);
+  boardTex.colorSpace = THREE.SRGBColorSpace;
+  airport.boardTex = boardTex;
+  const boardMat = new THREE.MeshStandardMaterial({ map: boardTex, emissiveMap: boardTex, emissive: 0xffffff, emissiveIntensity: 0.85, roughness: 0.3 });
+  const board = new THREE.Mesh(new THREE.BoxGeometry(12, 7.5, 0.3), [deskMat, deskMat, deskMat, deskMat, boardMat, boardMat]);
+  board.position.set(termX, termY + 5.0, z0 + 1.0);
+  inn.add(board);
+
+  // Security checkpoint spanning the middle
+  const secZ = 565;
+  for (const sx of [-1, 1]) {
+    iBox(0.5, 3.0, 5.0, steelMat, termX + sx * 3.2, termY + 1.5, secZ, true);
+    addWorldBox(termX + sx * 3.2 - 0.25, termX + sx * 3.2 + 0.25, termY, termY + 3.0, secZ - 2.5, secZ + 2.5, 'security_arch', false);
+  }
+  iBox(7.0, 0.4, 5.0, steelMat, termX, termY + 3.1, secZ);
+  iBox(2.2, 0.9, 7.0, beltMat, termX - 6.5, termY + 0.45, secZ, true);
+  iBox(2.4, 1.4, 2.6, makeMat(0x0f172a, { metalness: 0.5 }), termX - 6.5, termY + 1.4, secZ + 1.6, true);
+  addWorldBox(termX - 7.6, termX - 5.4, termY, termY + 0.9, secZ - 3.5, secZ + 3.5, 'security_belt', true);
+  createNeonSign(inn, 'SECURITY  →  GATES', termX, termY + 4.2, secZ - 3.0, '#065f46', '#f8fafc', 8.0, 0.8);
+
+  // Gate lounge (airside, east half)
+  for (const gz of [500, 530, 600, 630]) {
+    for (let r = 0; r < 2; r++) {
+      const seat = iBox(3.6, 0.5, 0.9, seatMat, termX + 6.0, termY + 0.45, gz + r * 1.6, true);
+      seat.receiveShadow = true;
+      iBox(3.6, 0.7, 0.2, seatMat, termX + 6.0, termY + 0.85, gz + r * 1.6 + 0.45);
+      addWorldBox(termX + 4.2, termX + 7.8, termY, termY + 0.7, gz + r * 1.6 - 0.45, gz + r * 1.6 + 0.45, 'gate_seat', true);
+    }
+  }
+  createNeonSign(inn, 'GATE 1', termX + 11.0, termY + 4.0, 505, '#0b1220', '#facc15', 3.4, 0.8);
+  createNeonSign(inn, 'GATE 2', termX + 11.0, termY + 4.0, 625, '#0b1220', '#facc15', 3.4, 0.8);
+
+  // Baggage carousel (south end)
+  const carousel = new THREE.Group();
+  carousel.position.set(termX - 4.0, termY + 0.55, z1 - 16);
+  const belt = new THREE.Mesh(new THREE.CylinderGeometry(4.0, 4.0, 0.5, 20), beltMat);
+  carousel.add(belt);
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 0.7, 16), steelMat);
+  carousel.add(hub);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const bag = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.6, 0.5), makeMat([0xef4444, 0x2563eb, 0x16a34a, 0xf59e0b][i % 4], { roughness: 0.8 }));
+    bag.position.set(Math.cos(a) * 3.0, 0.5, Math.sin(a) * 3.0);
+    bag.rotation.y = a;
+    carousel.add(bag);
+  }
+  inn.add(carousel);
+  airport.carousel = carousel;
+  addWorldBox(termX - 8.0, termX, termY, termY + 0.8, z1 - 20, z1 - 12, 'baggage_carousel', true);
+  createNeonSign(inn, 'BAGGAGE CLAIM', termX - 4.0, termY + 3.6, z1 - 16, '#0b1220', '#a78bfa', 6.0, 0.8);
+
+  // Cafe kiosk
+  iBox(3.0, 1.1, 3.0, makeMat(0x7f1d1d, { texType: 'wood' }), termX - 9.0, termY + 0.55, z1 - 34, true);
+  iBox(3.4, 0.2, 3.4, topMat, termX - 9.0, termY + 1.2, z1 - 34);
+  createNeonSign(inn, 'SKY BEANS COFFEE', termX - 9.0, termY + 2.6, z1 - 32.4, '#1c1917', '#fcd34d', 4.4, 0.6);
+  addWorldBox(termX - 10.5, termX - 7.5, termY, termY + 1.3, z1 - 35.5, z1 - 32.5, 'cafe_kiosk', true);
+
+  for (const lz of [500, 535, 570, 605, 640]) {
+    iBox(termW - 4, 0.12, 0.7, makeMat(0xfff7d6, { emissive: 0xfff7d6, emissiveIntensity: 0.85 }), termX, termY + termH - 0.5, lz);
+  }
+  const hallLight = new THREE.PointLight(0xfff1d6, 2.0, 60, 2);
+  hallLight.position.set(termX, termY + 6.5, termZ);
+  inn.add(hallLight);
+
+  (aura.culls || []).push({ g: inn, x: termX, z: termZ, r: 110 });
+
+  // Covered jet walkways out to the parked aircraft
+  for (const jz of [502, 622]) {
+    const deck = addBox(14, 0.24, 3.4, makeMat(0x94a3b8, { texType: 'concrete', repeatX: 6, repeatY: 2 }), x1 + 7, 0.32, jz, false);
+    deck.userData.studioName = 'Jet walkway';
+    addWorldBox(x1, x1 + 14, 0.20, 0.44, jz - 1.7, jz + 1.7, 'jet_walkway', true);
+    addBox(14, 0.2, 4.0, whiteMat, x1 + 7, 4.3, jz);
+    for (const sz of [-1, 1]) {
+      addBox(14, 3.6, 0.16, glassFacadeMat, x1 + 7, 2.4, jz + sz * 1.9, false);
+      addWorldBox(x1, x1 + 14, 0.44, 4.2, jz + sz * 1.9 - 0.08, jz + sz * 1.9 + 0.08, 'walkway_glass', false);
+    }
+    for (const px of [x1 + 3, x1 + 10]) {
+      const col = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.24, 4.2, 8), steelMat);
+      col.position.set(px, 2.1, jz + 2.4);
+      grp.add(col);
+    }
+  }
+
+  createNeonSign(grp, 'LOS AURA INTL  •  TERMINAL 1', x0 - 0.5, 7.4, termZ, '#090d14', '#facc15', 15.0, 1.5);
+  createNeonSign(grp, 'DEPARTURES  ↑', x0 - 0.5, 5.6, 545, '#090d14', '#38bdf8', 7.0, 0.8);
+
+  enterableZones.push({ minX: x0 + 0.6, maxX: termX - 1.0, minZ: z0 + 0.6, maxZ: z1 - 0.6, name: 'LAX LANDSIDE LOBBY' });
+  enterableZones.push({ minX: termX - 1.0, maxX: termX + 2.0, minZ: z0 + 0.6, maxZ: z1 - 0.6, name: 'LAX SECURITY CHECKPOINT' });
+  enterableZones.push({ minX: termX + 2.0, maxX: x1 - 0.6, minZ: z0 + 0.6, maxZ: z1 - 0.6, name: 'LAX GATE LOUNGE' });
+  mapShapes.push({ x: termX, z: termZ, w: termW, d: termD, color: '#f8fafc', border: '#0284c7', enterable: true });
+}
+
+function updateAirport(dt, elapsed) {
+  if (airport.carousel) airport.carousel.rotation.y += dt * 0.35;
+  if (!airport.board) return;
+  if (Math.hypot(player.x - 248, player.z - 565) > 110) return;
+  airport.tick += dt;
+  if (airport.tick < 2.4) return;
+  airport.tick = 0;
+  const r = airport.boardRows[Math.floor(Math.random() * airport.boardRows.length)];
+  r.status = FLIGHT_STATUS[Math.floor(Math.random() * FLIGHT_STATUS.length)];
+  drawDeparturesBoard();
+}
+
+// =============================================================================
 // LOS AURA NORTHERN EXPANSION
-// ============================================================================
+// =============================================================================
 export function buildLosAuraNorthExpansion(register = true) {
   const grp = new THREE.Group();
   grp.userData.studioName = 'Los Aura Northern Expansion';
   worldRoot.add(grp);
   camera.far = Math.max(camera.far, 1150);
   camera.updateProjectionMatrix();
-  const grassMat = makeMat(0x5a9a4e, { texType: 'grass', repeatX: 72, repeatY: 60, roughness: 0.94 });
-  const sandMat = makeMat(0xf2d9a0, { texType: 'sand', repeatX: 48, repeatY: 12, roughness: 0.96 });
+
+  const grassMat = makeGroundMat('grass', { color: 0x5a9a4e, repeatX: 72, repeatY: 60, roughness: 0.94 });
+const sandMat = makeGroundMat('sand', { repeatX: 48, repeatY: 12, roughness: 0.96 });
   const asphaltNS = makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 48, roughness: 0.86, bumpScale: 0.015 });
   const asphaltEW = makeMat(0x313946, { texType: 'asphalt', repeatX: 48, repeatY: 2, roughness: 0.86, bumpScale: 0.015 });
   const runwayMat = makeMat(0x1e293b, { texType: 'asphalt', repeatX: 6, repeatY: 40, roughness: 0.85 });
-  const tarmacMat = makeMat(0x64748b, { texType: 'concrete', repeatX: 24, repeatY: 24, roughness: 0.88 });
-  const concreteMat = makeMat(0xd1d5db, { texType: 'concrete', repeatX: 18, repeatY: 2, roughness: 0.88 });
-  const sidewalkMat = makeMat(0xcbd5e1, { texType: 'sidewalk', repeatX: 12, repeatY: 12, roughness: 0.85 });
-  const plazaMat = makeMat(0x94a3b8, { texType: 'cobblestone', repeatX: 14, repeatY: 14, roughness: 0.82 });
+  const tarmacMat = makeGroundMat('concrete', { color: 0x64748b, repeatX: 24, repeatY: 24, roughness: 0.88 });
+const concreteMat = makeGroundMat('concrete', { color: 0xd1d5db, repeatX: 18, repeatY: 2, roughness: 0.88 });
+const sidewalkMat = makeGroundMat('concrete', { color: 0xcbd5e1, repeatX: 12, repeatY: 12, roughness: 0.85 });
+const plazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repeatY: 14, roughness: 0.82 });
   const woodDeckMat = makeMat(0x926c44, { texType: 'wood', repeatX: 40, repeatY: 4, roughness: 0.82 });
   const steelMat = makeMat(0xe2e8f0, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.18, flatShading: false });
   const bridgeRedMat = makeMat(0xdc2626, { metalness: 0.65, roughness: 0.32 });
   const whiteMat = makeMat(0xf8fafc, { roughness: 0.55 });
   const redCurbMat = makeMat(0xef4444, { roughness: 0.6 });
+
   const addBoxMesh = (w, h, d, mat, x, y, z, cast = true, receive = true) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.set(x, y, z);
@@ -3864,8 +5479,7 @@ export function buildLosAuraNorthExpansion(register = true) {
     addBoxMesh(w, 0.08, d, mat, x, y - 0.04, z, false);
     addWorldBox(x - w / 2, x + w / 2, y - 0.08, y, z - d / 2, z + d / 2, tag, true);
   };
-  // 1. Ocean strait — live water over the seabed, currents drift east under
-  //    the I-88 suspension span.
+
   createWaterSurface({
     id: 'ocean_strait', parent: grp, minX: -260, maxX: 500, minZ: 320, maxZ: 380,
     surfaceY: 0.20, bedFn: getOceanBedY, waveScale: 0.9, currentX: 0.55, isOcean: true,
@@ -3876,13 +5490,14 @@ export function buildLosAuraNorthExpansion(register = true) {
   surfFoam.rotation.x = -Math.PI / 2;
   surfFoam.position.set(120, 0.215, 380.3);
   grp.add(surfFoam);
-  // Navigation buoys marking the bridge channel + a moored rowboat by the pier.
+
   buildChannelBuoy(grp, I88.x - 30, 300, 0xdc2626);
   buildChannelBuoy(grp, I88.x + 30, 300, 0x22c55e);
   buildChannelBuoy(grp, I88.x - 30, 352, 0xdc2626);
   buildChannelBuoy(grp, I88.x + 30, 352, 0x22c55e);
   buildRowboat(grp, -58, 348, 0x926c44);
   buildRowboat(grp, -30, 372, 0x0ea5e9);
+
   const northLandGeo = new THREE.PlaneGeometry(740, 550, 185, 138);
   northLandGeo.rotateX(-Math.PI / 2);
   const northLand = new THREE.Mesh(northLandGeo, grassMat);
@@ -3891,7 +5506,8 @@ export function buildLosAuraNorthExpansion(register = true) {
   registerSculptableTerrain(northLand);
   grp.add(northLand);
   mapShapes.unshift({ x: 120, z: 655, w: 740, d: 550, color: '#4d7c0f', border: '#365314', enterable: false });
-  // 2. Santa Aura beach & boardwalk
+
+  // Santa Aura beach & boardwalk
   paved(366, 28, sandMat, -47, 0.24, 394, 'beach_sand');
   mapShapes.push({ x: -47, z: 394, w: 366, d: 28, color: '#fcd34d', border: '#f59e0b', enterable: false });
   addBoxMesh(354, 0.22, 14, woodDeckMat, -43, 0.29, 413, false);
@@ -3899,6 +5515,8 @@ export function buildLosAuraNorthExpansion(register = true) {
   mapShapes.push({ x: -43, z: 413, w: 354, d: 14, color: '#b45309', border: '#fef08a', enterable: false });
   paved(362, 12, asphaltEW, -39, 0.24, 428, 'boardwalk_ave');
   mapShapes.push({ x: -39, z: 428, w: 362, d: 12, color: '#334155', border: '#facc15', enterable: false });
+  reserveFootprint(-220, 142, 421, 435, 'road');
+
   addBoxMesh(12, 0.26, 82, woodDeckMat, -42, 0.42, 365);
   addWorldBox(-48, -36, 0.18, 0.55, 324, 406, 'santa_aura_pier', true);
   mapShapes.push({ x: -42, z: 365, w: 12, d: 82, color: '#92400e', border: '#f59e0b', enterable: false });
@@ -3912,6 +5530,7 @@ export function buildLosAuraNorthExpansion(register = true) {
   addBoxMesh(0.45, 5.2, 0.45, bridgeRedMat, -47.2, 3.0, 405.5);
   addBoxMesh(0.45, 5.2, 0.45, bridgeRedMat, -36.8, 3.0, 405.5);
   createNeonSign(grp, 'SANTA AURA PIER & BOARDWALK', -42, 5.4, 405.5, '#1e1b4b', '#38bdf8', 11.2, 1.35);
+
   const wheelGroup = new THREE.Group();
   wheelGroup.position.set(-42, 14.5, 352);
   wheelGroup.userData.studioName = 'Santa Aura Ferris wheel';
@@ -3923,6 +5542,7 @@ export function buildLosAuraNorthExpansion(register = true) {
   const innerRing = new THREE.Mesh(new THREE.TorusGeometry(wheelRadius * 0.62, 0.14, 8, 24), new THREE.MeshBasicMaterial({ color: 0x38bdf8 }));
   wheelGroup.add(wheelRim1, wheelRim2, innerRing);
   const gondolaMat = makeMat(0xfacc15, { metalness: 0.4, roughness: 0.4 });
+  const wheelPods = [];
   for (let i = 0; i < 12; i++) {
     const ang = (i / 12) * Math.PI * 2;
     const spoke = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, wheelRadius * 2, 6), steelMat);
@@ -3931,16 +5551,19 @@ export function buildLosAuraNorthExpansion(register = true) {
     const pod = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.3, 2.0), gondolaMat);
     pod.position.set(Math.cos(ang) * wheelRadius, Math.sin(ang) * wheelRadius, 0);
     wheelGroup.add(pod);
+    wheelPods.push(pod);
   }
+  grp.add(wheelGroup);
+  buildLosAuraNorthExpansion.wheel = { group: wheelGroup, pods: wheelPods, angle: 0 };
   [-2.2, 2.2].forEach((lz) => {
     [-1, 1].forEach((dir) => {
       const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.32, 15.5, 8), steelMat);
-      leg.position.set(dir * 3.8, -7.2, lz);
+      leg.position.set(-42 + dir * 3.8, 7.3, 352 + lz);
       leg.rotation.z = dir * 0.46;
-      wheelGroup.add(leg);
+      grp.add(leg);
     });
   });
-  grp.add(wheelGroup);
+
   buildHotdogStore(-18, 439);
   buildWalkInHouse({ x: -72, z: 439, w: 11.5, d: 9.0, wallColor: 0x38bdf8, roofColor: 0xf43f5e, label: 'SANTA AURA ARCADE' });
   buildWalkInHouse({ x: 38, z: 439, w: 11.5, d: 9.0, wallColor: 0xfef08a, roofColor: 0x0284c7, label: 'PACIFIC SURF & GEAR' });
@@ -3951,18 +5574,25 @@ export function buildLosAuraNorthExpansion(register = true) {
     grp.add(umbrella);
   });
   for (let px = -205; px <= 125; px += 30) if (Math.abs(px + 42) > 12) createTree(px, 421.5, 1.05);
-  // 3. Downtown Los Aura
+
+  // Downtown Los Aura
   const dtNsRoads = [-108, -60, -12, 36, 84, 124];
   const dtEwRoads = [468, 516, 564, 612, 660];
   dtNsRoads.forEach((rx) => {
     paved(12, 204, asphaltNS, rx, 0.24, 564, 'dt_road');
     mapShapes.push({ x: rx, z: 564, w: 12, d: 204, color: '#334155', border: '#475569', enterable: false });
+    reserveFootprint(rx - 7, rx + 7, 461, 667, 'road');
   });
   dtEwRoads.forEach((rz) => {
     paved(244, 12, asphaltEW, 8, 0.24, rz, 'dt_road');
     mapShapes.push({ x: 8, z: rz, w: 244, d: 12, color: '#334155', border: '#475569', enterable: false });
+    reserveFootprint(-115, 131, rz - 7, rz + 7, 'road');
   });
-  [468, 564, 660].forEach((cz) => paved(22, 12, asphaltEW, 135, 0.24, cz, 'dt_connector'));
+  [468, 564, 660].forEach((cz) => {
+    paved(22, 12, asphaltEW, 135, 0.24, cz, 'dt_connector');
+    reserveFootprint(124, 146, cz - 7, cz + 7, 'road');
+  });
+
   const dtBlockX = [-84, -36, 12, 60, 104];
   const dtBlockZ = [492, 540, 588, 636];
   dtBlockX.forEach((bx) => {
@@ -3974,7 +5604,8 @@ export function buildLosAuraNorthExpansion(register = true) {
       buildKnockableLamppost(bx + bw / 2 - 1.2, bz + 16.8);
     });
   });
-  buildSkyscraper({ x: -36, z: 540, w: 18.0, d: 18.0, h: 86, glassHex: 0x38bdf8, frameHex: 0xe2e8f0, name: 'US AURA TOWER', hasHelipad: true });
+
+  // Landmark roof dressing (the towers themselves come from TOWER_PLACEMENTS)
   const crownRing1 = new THREE.Mesh(new THREE.TorusGeometry(7.7, 1.1, 10, 24), makeMat(0xbae6fd, { metalness: 0.9, roughness: 0.12, emissive: 0x0284c7, emissiveIntensity: 0.25 }));
   crownRing1.rotation.x = Math.PI / 2;
   crownRing1.position.set(-36, 88.6, 540);
@@ -3986,23 +5617,22 @@ export function buildLosAuraNorthExpansion(register = true) {
   usGlowBand.position.set(-36, 90.5, 540);
   grp.add(crownRing1, crownRing2, usGlowBand);
   [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => addBoxMesh(0.6, 3.4, 0.6, steelMat, -36 + sx * 7.4, 88.2, 540 + sz * 7.4));
-  buildSkyscraper({ x: 12, z: 540, w: 16.5, d: 15.0, h: 80, glassHex: 0x0284c7, frameHex: 0x0f172a, name: 'WILSHIRE GRAND', hasHelipad: false });
+
   const sailMesh = new THREE.Mesh(new THREE.BoxGeometry(15.5, 11.0, 1.4), makeMat(0x7dd3fc, { metalness: 0.95, roughness: 0.08, emissive: 0x38bdf8, emissiveIntensity: 0.35 }));
   sailMesh.position.set(12, 88.0, 540);
   sailMesh.rotation.z = 0.24;
   const wilshireSpire = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.42, 18.0, 8), steelMat);
   wilshireSpire.position.set(17.5, 93.0, 540);
   grp.add(sailMesh, wilshireSpire);
-  buildSkyscraper({ x: -84, z: 540, w: 15.5, d: 15.5, h: 72, glassHex: 0x1e3a8a, frameHex: 0xf8fafc, name: 'AON AURA CENTER', hasHelipad: true });
-  buildSkyscraper({ x: 60, z: 540, w: 16.0, d: 16.0, h: 68, glassHex: 0x0f766e, frameHex: 0x1e293b, name: 'SOCAL GAS TOWER', hasHelipad: false });
+
   addBoxMesh(14.5, 5.5, 12.0, makeMat(0x0284c7, { emissive: 0x0369a1, emissiveIntensity: 0.3 }), 60, 71.0, 540);
-  buildSkyscraper({ x: -36, z: 636, w: 18.0, d: 18.0, h: 52, glassHex: 0xe2e8f0, frameHex: 0xf8fafc, name: 'LOS AURA CITY HALL', hasHelipad: false });
   addBoxMesh(12.5, 8.0, 12.5, whiteMat, -36, 56.2, 636);
   addBoxMesh(8.0, 6.0, 8.0, whiteMat, -36, 63.2, 636);
   const cityHallPyramid = new THREE.Mesh(new THREE.ConeGeometry(5.8, 5.5, 4), makeMat(0xfef08a, { emissive: 0xfacc15, emissiveIntensity: 0.35 }));
   cityHallPyramid.rotation.y = Math.PI / 4;
   cityHallPyramid.position.set(-36, 68.9, 636);
   grp.add(cityHallPyramid);
+
   const hallGroup = new THREE.Group();
   hallGroup.position.set(-84, 0.30, 588);
   hallGroup.userData.studioName = 'WALT AURA CONCERT HALL';
@@ -4026,6 +5656,7 @@ export function buildLosAuraNorthExpansion(register = true) {
   grp.add(hallGroup);
   addWorldBox(-96, -72, 0.30, 7.0, 577, 599, 'concert_hall', false);
   mapShapes.push({ x: -84, z: 588, w: 24, d: 22, color: '#e2e8f0', border: '#38bdf8', enterable: false });
+
   const arenaGroup = new THREE.Group();
   arenaGroup.position.set(60, 0.30, 492);
   arenaGroup.userData.studioName = 'AURA ARENA';
@@ -4041,19 +5672,18 @@ export function buildLosAuraNorthExpansion(register = true) {
   grp.add(arenaGroup);
   addWorldBox(46, 74, 0.30, 17.2, 478, 506, 'aura_arena', false);
   mapShapes.push({ x: 60, z: 492, w: 28, d: 28, color: '#4f46e5', border: '#facc15', enterable: false });
+
   buildReserveBank(12, 492);
   buildCarDealership(-36, 492);
-  buildHotdogStore(-12, 588);
-  buildSkyscraper({ x: 12, z: 636, w: 15.0, d: 15.0, h: 62, glassHex: 0x2563eb, frameHex: 0x0f172a, name: 'FIGUEROA AT WILSHIRE', hasHelipad: true });
-  buildSkyscraper({ x: 60, z: 588, w: 14.5, d: 14.5, h: 58, glassHex: 0x0d9488, frameHex: 0x1e293b, name: 'BUNKER HILL PLAZA', hasHelipad: false });
-  buildSkyscraper({ x: 60, z: 636, w: 14.5, d: 14.5, h: 54, glassHex: 0x0369a1, frameHex: 0x0f172a, name: 'BROADWAY TRADE CENTER', hasHelipad: true });
-  buildSkyscraper({ x: 104, z: 540, w: 13.5, d: 14.5, h: 50, glassHex: 0x4f46e5, frameHex: 0x1e293b, name: 'ARTS DISTRICT TOWER', hasHelipad: false });
-  buildSkyscraper({ x: 104, z: 588, w: 13.5, d: 14.5, h: 46, glassHex: 0x0284c7, frameHex: 0x1e293b, name: 'LITTLE TOKYO PLAZA', hasHelipad: true });
-  // 4. Los Aura International Airport
+  buildHotdogStore(12, 588); // relocated off the north–south carriageway
+
+  // Los Aura International Airport
   paved(288, 260, tarmacMat, 324, 0.25, 565, 'lax_tarmac');
   mapShapes.push({ x: 324, z: 565, w: 288, d: 260, color: '#475569', border: '#94a3b8', enterable: false });
-  paved(74, 14, asphaltEW, 199, 0.26, 564, 'lax_access');
+  paved(64, 14, asphaltEW, 194, 0.26, 564, 'lax_access');
+  reserveFootprint(162, 226, 557, 571, 'road');
   createNeonSign(grp, 'LAX • LOS AURA INTL AIRPORT', 186, 6.2, 555.5, '#0f172a', '#38bdf8', 13.0, 1.5);
+
   const themeGroup = new THREE.Group();
   themeGroup.position.set(216, 0.24, 564);
   themeGroup.userData.studioName = 'LAX Theme Building';
@@ -4074,40 +5704,9 @@ export function buildLosAuraNorthExpansion(register = true) {
   });
   grp.add(themeGroup);
   addWorldBox(212.5, 219.5, 0.24, 15.2, 560.5, 567.5, 'lax_theme_bldg', false);
-  const termX = 248, termZ = 565, termW = 18, termD = 186, termH = 8.5, termY = 0.25;
-  const termDoorW = 6, termDoorH = 4.2;
-  const glassFacadeMat = makeMat(0x0ea5e9, { metalness: 0.9, roughness: 0.12, emissive: 0x0284c7, emissiveIntensity: 0.18 });
-  const termFloor = addBoxMesh(
-    termW - 0.4, 0.1, termD - 0.4,
-    makeMat(0xf8fafc, { texType: 'marble', repeatX: 4, repeatY: 40, roughness: 0.2 }),
-    termX, termY + 0.05, termZ, false
-  );
-  termFloor.userData.studioName = 'Terminal floor';
-  for (const sd of [-1, 1]) {
-    const wx = termX + sd * termW / 2;
-    addBoxMesh(0.5, termH, termD, whiteMat, wx, termY + termH / 2, termZ);
-    addBoxMesh(0.3, 4.2, termD - 6, glassFacadeMat, termX + sd * (termW / 2 + 0.15), termY + termH * 0.55, termZ, false);
-    addWorldBox(wx - 0.25, wx + 0.25, termY, termY + termH, termZ - termD / 2, termZ + termD / 2, 'terminal_wall', false);
-  }
-  const termSegW = (termW - termDoorW) / 2;
-  for (const ez of [-1, 1]) {
-    const wz = termZ + ez * termD / 2;
-    for (const sx of [-1, 1]) {
-      const cx = termX + sx * (termDoorW / 2 + termSegW / 2);
-      addBoxMesh(termSegW, termH, 0.5, whiteMat, cx, termY + termH / 2, wz);
-      addWorldBox(cx - termSegW / 2, cx + termSegW / 2, termY, termY + termH, wz - 0.25, wz + 0.25, 'terminal_wall', false);
-    }
-    addBoxMesh(termDoorW, termH - termDoorH, 0.5, whiteMat, termX, termY + termDoorH + (termH - termDoorH) / 2, wz);
-  }
-  addBoxMesh(termW + 1.4, 0.6, termD + 2, makeMat(0x1e293b), termX, termY + termH + 0.3, termZ);
-  addWorldBox(termX - termW / 2, termX + termW / 2, termY + termH, termY + termH + 0.6, termZ - termD / 2, termZ + termD / 2, 'terminal_roof', true);
-  for (let cz = termZ - 70; cz <= termZ + 70; cz += 28) {
-    addBoxMesh(6, 1.1, 2, makeMat(0x334155), termX, termY + 0.6, cz, false);
-    addWorldBox(termX - 3, termX + 3, termY, termY + 1.2, cz - 1, cz + 1, 'checkin_counter', true);
-  }
-  createNeonSign(grp, 'LOS AURA INTL • TERMINALS 1 - 4', termX - termW / 2 - 0.4, 6.8, termZ, '#090d14', '#facc15', 16.0, 1.45);
-  enterableZones.push({ minX: termX - termW / 2 + 1, maxX: termX + termW / 2 - 1, minZ: termZ - termD / 2 + 1, maxZ: termZ + termD / 2 - 1, name: 'LOS AURA INTL TERMINAL' });
-  mapShapes.push({ x: termX, z: termZ, w: termW, d: termD, color: '#f8fafc', border: '#0284c7', enterable: true });
+
+  buildAirportTerminal(grp, { whiteMat, steelMat, asphaltEW });
+
   addBoxMesh(5.2, 34.0, 5.2, whiteMat, 272, 17.24, 565);
   const atcCab = new THREE.Mesh(new THREE.CylinderGeometry(5.4, 3.8, 4.6, 12), makeMat(0x10b981, { metalness: 0.85, roughness: 0.15, emissive: 0x059669, emissiveIntensity: 0.28 }));
   atcCab.position.set(272, 36.2, 565);
@@ -4118,6 +5717,7 @@ export function buildLosAuraNorthExpansion(register = true) {
   aviationBeacons.push(atcBeacon);
   grp.add(atcCab, atcRoof, atcBeacon);
   addWorldBox(269.4, 274.6, 0.24, 39.2, 562.4, 567.6, 'atc_tower', false);
+
   const runwayXs = [336, 394];
   const rwEdgePositions = [], stripeTransforms = [];
   const sdm = new THREE.Object3D();
@@ -4153,6 +5753,7 @@ export function buildLosAuraNorthExpansion(register = true) {
     rwLights.instanceMatrix.needsUpdate = true;
     grp.add(rwLights);
   }
+
   const spawnParkedJet = (jx, jz, yaw, stripeHex) => {
     const jet = new THREE.Group();
     jet.position.set(jx, 0.29, jz);
@@ -4190,8 +5791,9 @@ export function buildLosAuraNorthExpansion(register = true) {
     const wHX = 14.5 * c + 2.5 * s, wHZ = 14.5 * s + 2.5 * c;
     addWorldBox(jx - wHX, jx + wHX, 2.5, 3.3, jz - wHZ, jz + wHZ, 'jet_wing', false);
   };
-  spawnParkedJet(282, 502, -Math.PI / 2, 0xdc2626);
-  spawnParkedJet(282, 622, -Math.PI / 2, 0x0284c7);
+  spawnParkedJet(292, 502, -Math.PI / 2, 0xdc2626);
+  spawnParkedJet(292, 622, -Math.PI / 2, 0x0284c7);
+
   [500, 630].forEach((hz) => {
     const hw = 26, hd = 28, hh = 11;
     addBoxMesh(hw, hh, 0.6, steelMat, 442, 0.29 + hh / 2, hz - hd / 2);
@@ -4205,9 +5807,13 @@ export function buildLosAuraNorthExpansion(register = true) {
     enterableZones.push({ minX: 442 - hw / 2 + 1, maxX: 442 + hw / 2 - 1, minZ: hz - hd / 2 + 1, maxZ: hz + hd / 2 - 1, name: 'LAX AIRCRAFT HANGAR' });
     mapShapes.push({ x: 442, z: hz, w: hw, d: hd, color: '#94a3b8', border: '#1e293b', enterable: true });
   });
-  // 5. Los Aura Motor Speedway
+
+  // Los Aura Motor Speedway
   paved(102, 16, asphaltEW, 91, 0.26, 738, 'speedway_access');
   paved(14, 66, asphaltNS, -12, 0.26, 699, 'speedway_access');
+  reserveFootprint(40, 142, 730, 746, 'road');
+  reserveFootprint(-19, -5, 666, 732, 'road');
+
   const trackCenterZ = 807, trackRadius = 69, trackW = 18, straightLen = 180, straightMidX = -50;
   paved(straightLen, trackW, runwayMat, straightMidX, 0.27, 738, 'track_surface');
   paved(straightLen, trackW, runwayMat, straightMidX, 0.27, 876, 'track_surface');
@@ -4217,6 +5823,7 @@ export function buildLosAuraNorthExpansion(register = true) {
   addWorldBox(-140, 40, 0.26, 1.39, 728.2, 729.0, 'track_wall_s', true);
   addBoxMesh(straightLen, 1.1, 0.7, concreteMat, straightMidX, 0.82, 885.4);
   addWorldBox(-140, 40, 0.26, 1.39, 885.0, 885.8, 'track_wall_n', true);
+
   const turnSteps = 32;
   [
     { cx: 40, startAng: -Math.PI / 2, endAng: Math.PI / 2 },
@@ -4249,6 +5856,7 @@ export function buildLosAuraNorthExpansion(register = true) {
     }
     mapShapes.push({ x: cx, z: trackCenterZ, w: 78, d: 156, color: '#1e293b', border: '#ef4444', enterable: false });
   });
+
   for (let row = 0; row < 2; row++) {
     for (let col = 0; col < 8; col++) {
       const sq = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.10, 2.2), (row + col) % 2 === 0 ? whiteMat : makeMat(0x090d14));
@@ -4260,6 +5868,7 @@ export function buildLosAuraNorthExpansion(register = true) {
   addBoxMesh(0.5, 7.6, 0.5, steelMat, -50, 4.0, 748.6);
   addBoxMesh(0.5, 0.5, 21.5, steelMat, -50, 7.6, 738);
   createNeonSign(grp, 'LOS AURA MOTOR SPEEDWAY', -50, 6.8, 738, '#090d14', '#ef4444', 14.5, 1.45);
+
   paved(120, 8, asphaltEW, -50, 0.26, 752, 'pit_lane');
   addBoxMesh(120, 0.75, 0.5, concreteMat, -50, 0.64, 747.6);
   addWorldBox(-110, 10, 0.26, 1.02, 747.3, 747.9, 'pit_wall', true);
@@ -4274,6 +5883,7 @@ export function buildLosAuraNorthExpansion(register = true) {
   }
   createNeonSign(grp, 'PIT LANE & TEAM GARAGES', -50, 4.4, 755.8, '#1e293b', '#facc15', 14.0, 1.1);
   enterableZones.push({ minX: -98, maxX: -2, minZ: 756, maxZ: 766, name: 'SPEEDWAY PIT GARAGES' });
+
   for (let tier = 0; tier < 5; tier++) {
     const ty = 0.6 + tier * 1.1, tz = 723 - tier * 1.8;
     addBoxMesh(130, 1.0, 1.8, tier % 2 === 0 ? steelMat : makeMat(0x2563eb), -50, ty, tz);
@@ -4281,6 +5891,7 @@ export function buildLosAuraNorthExpansion(register = true) {
   }
   addBoxMesh(132, 0.4, 11, makeMat(0x0f172a), -50, 7.6, 719);
   mapShapes.push({ x: -50, z: 719, w: 132, d: 11, color: '#2563eb', border: '#f8fafc', enterable: false });
+
   const stuntAngle = Math.atan2(3.0, 18);
   const stuntRampW = new THREE.Mesh(new THREE.BoxGeometry(18, 0.35, 10), makeMat(0xf59e0b));
   stuntRampW.position.set(-20, 1.75, 812);
@@ -4295,6 +5906,7 @@ export function buildLosAuraNorthExpansion(register = true) {
   grp.add(stuntRampE);
   addDriveableRamp({ minX: -1, maxX: 17, minZ: 807, maxZ: 817, startY: 3.24, endY: 0.26, axis: 'x', dir: 1 });
   buildCarDealership(-85, 812);
+
   if (register) {
     placeCar(buildSportsCar({ name: 'LOS AURA GT-R #1', bodyHex: 0xdc2626, accentHex: 0xfacc15, x: -58, z: 734.5, yaw: Math.PI / 2, isCoupe: true, isSupercar: true }), 0.27);
     placeCar(buildSportsCar({ name: 'PACIFIC APEX #7', bodyHex: 0x0284c7, accentHex: 0xf8fafc, x: -66, z: 741.5, yaw: Math.PI / 2, isCoupe: true, isSupercar: true }), 0.27);
@@ -4305,14 +5917,23 @@ export function buildLosAuraNorthExpansion(register = true) {
 // WORLD BOOT (idempotent — safe to rebuild in Studio / Save & Test)
 // ============================================================================
 function disposeWorldObject(root) {
+  const seenGeo = new Set(), seenMat = new Set();
   root.traverse((o) => {
-    if (o.geometry) o.geometry.dispose();
+    if (o.geometry && !o.geometry.userData.shared && !seenGeo.has(o.geometry)) {
+      seenGeo.add(o.geometry);
+      o.geometry.dispose();
+    }
     const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
     for (const m of mats) {
-      if (m.map && m.map.isCanvasTexture) { m.map.dispose(); m.dispose(); }
+      if (!m || m.userData.shared || seenMat.has(m)) continue;
+      seenMat.add(m);
+      if (m.map && m.map.isCanvasTexture) m.map.dispose();
+      if (m.emissiveMap && m.emissiveMap.isCanvasTexture && m.emissiveMap !== m.map) m.emissiveMap.dispose();
+      m.dispose();
     }
   });
 }
+
 function pruneDetachedHighDetail() {
   for (let i = highDetailObjects.length - 1; i >= 0; i--) {
     let o = highDetailObjects[i], attached = false;
@@ -4320,14 +5941,36 @@ function pruneDetachedHighDetail() {
     if (!attached) highDetailObjects.splice(i, 1);
   }
 }
+
 function clearBuiltWorld() {
+  disposeTowerInteriors();
   for (const child of [...worldRoot.children]) {
-    if (!child.userData.worldBuilt) continue;
+    if (foreignRoots && foreignRoots.has(child)) continue;
     worldRoot.remove(child);
     disposeWorldObject(child);
   }
-  // Water: drop every body, floating prop, shader uniform & underwater fog
-  // override before the fresh world registers its own.
+  resetTowerSystem();
+  signCache.clear();
+  barrierChunks.length = 0;
+
+  armory.built = false;
+  armory.cases.length = 0;
+  armory.dumpster = null;
+  armory.hammerMesh = null;
+  armory.hammerInDumpster = null;
+  armory.alarmLight = null;
+  armory.alarmBeacon = null;
+  armory.hasHammer = false;
+  armory.dumpsterSearched = false;
+  armory.alarm = 0;
+  armory.swing = 0;
+
+  airport.board = null;
+  airport.boardTex = null;
+  airport.boardRows = null;
+  airport.carousel = null;
+  airport.tick = 0;
+
   resetWaterSystem();
   riverFlowMats.length = 0;
   lastWaterFrame = -Infinity;
@@ -4343,10 +5986,15 @@ function clearBuiltWorld() {
   bio.last = 'city';
   buildNewBiomes.fire = null;
   buildJungleBiome.waterfall = null;
+  buildLosAuraNorthExpansion.wheel = null;
   pruneDetachedHighDetail();
 }
+
 export function buildWorld(data = levelData, { register = true, afterStatic = null } = {}) {
+  if (!foreignRoots) foreignRoots = new Set(worldRoot.children);
+  bindArmoryKey();
   clearBuiltWorld();
+
   buildRoadsFreewayAndDesert();
   buildRedrockDesertBiome();
   buildNewBiomes();
@@ -4360,16 +6008,19 @@ export function buildWorld(data = levelData, { register = true, afterStatic = nu
   buildAuraSkylineAndHighway();
   buildCriminalHideout();
   buildLosAuraNorthExpansion(register);
-  // Continuous 3D seabed beneath the cove, far-north ocean and strait —
-  // matches getOceanBedY exactly so wading slopes blend into deep water.
+  buildFirearmsArmory();
+  buildTowerDistricts();
+  buildGroundIntegrity();
+
   buildOceanSeabed(worldRoot);
+  recomputeWorldBounds();
+  buildEdgeBarrier();
+
   registerGeneratedWorldObjects(data);
   recomputeWorldBounds();
 }
 
 // Register late-bound implementations for lower layers (see state.js / water.js).
-// updateWater is wrapped so it ticks exactly once per frame no matter whether
-// the main loop drives it through hooks or through updateBiomeAtmosphere.
 Object.assign(hooks, {
   knockOverLamppost,
   updateWater: updateWaterOnce,
