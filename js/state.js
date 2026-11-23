@@ -1,14 +1,16 @@
 // =============================================================================
-// state.js — Shared game state, player state, input state, collision registries, terrain/collision math and the `hooks` registry.
+// state.js — Shared game state, player state, input state, collision registries,
+// terrain/collision math, the I-88 freeway spec and the `hooks` registry.
 // =============================================================================
 import { terrainHeightOffset } from './levelData.js';
 
 export const noop = () => {};
 
 /**
- * Late-bound callbacks that let LOWER layers call into HIGHER layers without importing them
- * (keeps the import graph strictly top-down / acyclic). Each higher module registers its
- * implementation at the bottom of its own file with Object.assign(hooks, {...}).
+ * Late-bound callbacks that let LOWER layers call into HIGHER layers without
+ * importing them (keeps the import graph strictly top-down / acyclic). Each
+ * higher module registers its implementation at the bottom of its own file with
+ * Object.assign(hooks, {...}).
  */
 export const hooks = {
   syncEquippedMeshes: noop,
@@ -33,7 +35,9 @@ export const hooks = {
   knockOverLamppost: noop,
   getRightMountWorldPosition: noop,
   recomputeWorldBounds: noop,
-  // ---- multiplayer v2 (registered by js/multiplayer.js; offline defaults keep singleplayer identical) ----
+
+  // ---- multiplayer v2 (registered by js/multiplayer.js; offline defaults keep
+  //      singleplayer identical) ----
   mpActive: () => false,
   mpIsHost: () => false,
   mpIsGuest: () => false,
@@ -41,8 +45,8 @@ export const hooks = {
   mpTargets: () => [],            // other players: {id,x,y,z,yaw,crouching,inCar,hp,attacking}
   mpHitPlayer: noop,              // (id, amount, sourceLabel) authority-routed player damage
   mpAward: noop,                  // (id, cash, itemId?) kill/loot credit
-  mpWorldEvent: noop,             // (ev) apply locally + send/broadcast (see multiplayer.js)
-  mpVehicleImpact: noop,          // (targetCarIdx, impulseX, impulseZ, yawImpulse) car-to-car network RPC
+  mpWorldEvent: noop,             // (ev) apply locally + send/broadcast
+  mpVehicleImpact: noop,          // (targetCarIdx, impulseX, impulseZ, yawImpulse)
   mpCarEnter: () => true,         // (idx) -> false when locked or pending host grant
   mpCarExit: noop,                // (idx)
   mpCarLocked: () => false,       // (idx) locked by someone else
@@ -61,16 +65,20 @@ export const hooks = {
   mpSetFestivalLead: noop,
   mpAdoptTraffic: noop,           // new host: rebuild traffic route progress from positions
   mpDrawMap: noop,                // (ctx, X, Y) remote player dots
-  mpShutdown: noop,               // graceful leave (host_bye / bye)
+  mpShutdown: noop                // graceful leave (host_bye / bye)
 };
 
-/** Axis-aligned footprint of an upright box/cylinder (half extents) after the object's yaw + scale. */
+/** Axis-aligned footprint of an upright box/cylinder (half extents) after yaw + scale. */
 export function uprightFootprint(obj, halfX, halfZ, height) {
   const sx = Math.abs(obj.scale.x), sy = Math.abs(obj.scale.y), sz = Math.abs(obj.scale.z);
   const c = Math.abs(Math.cos(obj.rotation.y)), s = Math.abs(Math.sin(obj.rotation.y));
   const hx = halfX * sx, hz = halfZ * sz;
   const wx = c * hx + s * hz, wz = s * hx + c * hz;
-  return { minX: obj.position.x - wx, maxX: obj.position.x + wx, minZ: obj.position.z - wz, maxZ: obj.position.z + wz, height: height * sy };
+  return {
+    minX: obj.position.x - wx, maxX: obj.position.x + wx,
+    minZ: obj.position.z - wz, maxZ: obj.position.z + wz,
+    height: height * sy
+  };
 }
 
 export const MAX_HOTDOG_AMMO = 60;
@@ -160,40 +168,77 @@ export const meteorDrop = {
   shockwaveLife: 0
 };
 
+// -----------------------------------------------------------------------------
+// World registries
+// -----------------------------------------------------------------------------
 export const worldBoxes = [];
-
 export const driveableRamps = [];
-
 export const mapShapes = [];
-
 export const enterableZones = [];
-
 export const smashableCrates = [];
-
 export const hazardBarrels = [];
-
 export const worldPickups = [];
-
 export const particleBursts = [];
-
 export const projectileWieners = [];
-
 export const lampPosts = [];
-
 export const aviationBeacons = [];
-
 export const npcs = [];
-
 export const buildingLods = [];
-
 export const skyscrapers = [];
-
 export const sausageRefillZones = [];
-
 export const waterZones = [];
-
 export const iceZones = [];
 
+// -----------------------------------------------------------------------------
+// I-88 INTERSTATE — single source of truth
+//
+// One continuous carriageway from the southern city limit to the northern
+// metropolis. world.js builds every segment from these numbers so the surface,
+// the colliders and the map overlay can never drift apart:
+//
+//   ground  southEnd .. rampUpStart
+//   ramp    rampUpStart .. rampUpEnd      groundY -> deckY
+//   viaduct deckStart .. deckEnd          (elevated, no at-grade crossings)
+//   ramp    bridgeRampStart .. bridgeRampEnd   deckY -> bridgeY
+//   bridge  bridgeStart .. bridgeEnd      (ocean suspension span)
+//   ramp    rampDownStart .. rampDownEnd  bridgeY -> northY
+//   ground  rampDownEnd .. northEnd
+// -----------------------------------------------------------------------------
+export const I88 = Object.freeze({
+  x: 152,
+  halfW: 11,            // 22 m at-grade carriageway
+  deckHalfW: 10,        // 20 m elevated deck
+  groundY: 0.06,
+  deckY: 5.0,
+  bridgeY: 14.0,
+  northY: 0.26,
+  southEnd: -190,
+  rampUpStart: 52,
+  rampUpEnd: 80,
+  deckStart: 80,
+  deckEnd: 186,
+  bridgeRampStart: 186,
+  bridgeRampEnd: 216,
+  bridgeStart: 216,
+  bridgeEnd: 364,
+  rampDownStart: 364,
+  rampDownEnd: 394,
+  northEnd: 910,
+  // At-grade connector openings (west/east barrier gaps), z centres
+  westOpenings: [-24, 72, 428, 468, 564, 660, 738],
+  eastOpenings: [40, 564],
+  openingHalf: 10
+});
+
+/** True when (x,z) lies on the I-88 carriageway footprint at any elevation. */
+export function onFreeway(x, z, pad = 0) {
+  return Math.abs(x - I88.x) <= I88.halfW + pad
+    && z >= I88.southEnd - pad && z <= I88.northEnd + pad;
+}
+
+// -----------------------------------------------------------------------------
+// World bounds
+// -----------------------------------------------------------------------------
 const WORLD_BOUNDS_PAD = 24;
 const BASE_WORLD_BOUNDS = { minX: -260, maxX: 260, minZ: -260, maxZ: 260 };
 
@@ -213,6 +258,15 @@ export function expandWorldBounds(minX, maxX, minZ, maxZ, pad = WORLD_BOUNDS_PAD
   if (Number.isFinite(maxZ)) WORLD_BOUNDS.maxZ = Math.max(WORLD_BOUNDS.maxZ, maxZ + pad);
 }
 
+/** Restore the baseline bounds and force the next sync to recompute. */
+export function resetWorldBounds() {
+  WORLD_BOUNDS.minX = BASE_WORLD_BOUNDS.minX;
+  WORLD_BOUNDS.maxX = BASE_WORLD_BOUNDS.maxX;
+  WORLD_BOUNDS.minZ = BASE_WORLD_BOUNDS.minZ;
+  WORLD_BOUNDS.maxZ = BASE_WORLD_BOUNDS.maxZ;
+  _boundsSig = '';
+}
+
 export function recomputeWorldBounds() {
   let minX = BASE_WORLD_BOUNDS.minX;
   let maxX = BASE_WORLD_BOUNDS.maxX;
@@ -225,7 +279,6 @@ export function recomputeWorldBounds() {
     if (Number.isFinite(z0) && z0 - pad < minZ) minZ = z0 - pad;
     if (Number.isFinite(z1) && z1 + pad > maxZ) maxZ = z1 + pad;
   };
-
   const includePoint = (x, z, pad = WORLD_BOUNDS_PAD) => {
     if (Number.isFinite(x)) {
       if (x - pad < minX) minX = x - pad;
@@ -280,13 +333,16 @@ export function recomputeWorldBounds() {
   WORLD_BOUNDS.maxX = maxX;
   WORLD_BOUNDS.minZ = minZ;
   WORLD_BOUNDS.maxZ = maxZ;
-  _boundsSig = `${worldBoxes.length}|${driveableRamps.length}|${mapShapes.length}|${enterableZones.length}|${waterZones.length}|${iceZones.length}|${lampPosts.length}|${buildingLods.length}|${skyscrapers.length}|${sausageRefillZones.length}|${worldPickups.length}|${smashableCrates.length}|${hazardBarrels.length}`;
+  _boundsSig = boundsSignature();
   return WORLD_BOUNDS;
 }
 
+function boundsSignature() {
+  return `${worldBoxes.length}|${driveableRamps.length}|${mapShapes.length}|${enterableZones.length}|${waterZones.length}|${iceZones.length}|${lampPosts.length}|${buildingLods.length}|${skyscrapers.length}|${sausageRefillZones.length}|${worldPickups.length}|${smashableCrates.length}|${hazardBarrels.length}`;
+}
+
 function syncWorldBounds() {
-  const sig = `${worldBoxes.length}|${driveableRamps.length}|${mapShapes.length}|${enterableZones.length}|${waterZones.length}|${iceZones.length}|${lampPosts.length}|${buildingLods.length}|${skyscrapers.length}|${sausageRefillZones.length}|${worldPickups.length}|${smashableCrates.length}|${hazardBarrels.length}`;
-  if (sig !== _boundsSig) recomputeWorldBounds();
+  if (boundsSignature() !== _boundsSig) recomputeWorldBounds();
 }
 
 function hasDetectedMapRegionAt(x, z, pad = 28) {
@@ -318,9 +374,12 @@ export function addWorldBox(minX, maxX, minY, maxY, minZ, maxZ, tag = 'solid', c
   return box;
 }
 
+/** Returns the ramp record so callers can move or remove it later. */
 export function addDriveableRamp({ minX, maxX, minZ, maxZ, startY, endY, axis = 'z', dir = 1 }) {
-  driveableRamps.push({ minX, maxX, minZ, maxZ, startY, endY, axis, dir });
+  const ramp = { minX, maxX, minZ, maxZ, startY, endY, axis, dir };
+  driveableRamps.push(ramp);
   expandWorldBounds(minX, maxX, minZ, maxZ);
+  return ramp;
 }
 
 export function registerBuildingLod(x, z, lodGroup) {
@@ -329,6 +388,9 @@ export function registerBuildingLod(x, z, lodGroup) {
   expandWorldBounds(x, x, z, z);
 }
 
+// -----------------------------------------------------------------------------
+// UI helpers
+// -----------------------------------------------------------------------------
 export function flashEdge(cssColor) {
   const el = document.getElementById('screen-flash');
   if (!el) return;
@@ -350,14 +412,23 @@ export function pushFeed(text, borderClass = 'border-l-amber-400') {
 }
 
 export const keys = {};
-
 export const inputState = { isDraggingLook: false, isPrimaryFireHeld: false, lastMouseX: 0, lastMouseY: 0 };
 
+// -----------------------------------------------------------------------------
+// Collision / support
+// -----------------------------------------------------------------------------
 export function computeSupportFloor(x, z, footY, radius) {
   if (footY < -1.0) return sewerFloor(x, z);
+
   const inJungle = x >= 368 && x <= 533 && z >= -180 && z <= 240;
-  let highest = (inJungle ? 1.5 : (x >= 164 ? 0.02 : 0.18)) + terrainHeightOffset(x, z);
-  if (z < -170 || x < -196 || (x >= -700 && x <= -50 && z >= 108 && z <= 320)) highest = Math.max(highest, terrainH(x, z));
+  // Northern landmass (Los Aura / LAX / speedway) sits on its own 0.18 plinth.
+  const inNorth = x >= -250 && x <= 490 && z >= 380 && z <= 930;
+  const base = inJungle ? 1.5 : (inNorth ? 0.18 : (x >= 164 ? 0.02 : 0.18));
+  let highest = base + terrainHeightOffset(x, z);
+
+  if (z < -170 || x < -196 || (x >= -700 && x <= -50 && z >= 108 && z <= 320)) {
+    highest = Math.max(highest, terrainH(x, z));
+  }
 
   for (let r = 0; r < driveableRamps.length; r++) {
     const rm = driveableRamps[r];
@@ -366,18 +437,14 @@ export function computeSupportFloor(x, z, footY, radius) {
         ? Math.max(0, Math.min(1, (z - rm.minZ) / (rm.maxZ - rm.minZ)))
         : Math.max(0, Math.min(1, (x - rm.minX) / (rm.maxX - rm.minX)));
       const ry = rm.startY + (rm.endY - rm.startY) * t;
-      if (ry <= footY + 0.85 && ry > highest) {
-        highest = ry;
-      }
+      if (ry <= footY + 0.85 && ry > highest) highest = ry;
     }
   }
 
   for (let i = 0; i < worldBoxes.length; i++) {
     const b = worldBoxes[i];
     if (x + radius > b.minX && x - radius < b.maxX && z + radius > b.minZ && z - radius < b.maxZ) {
-      if (b.maxY <= footY + 0.46 && b.maxY > highest) {
-        highest = b.maxY;
-      }
+      if (b.maxY <= footY + 0.46 && b.maxY > highest) highest = b.maxY;
     }
   }
   return highest;
@@ -385,10 +452,22 @@ export function computeSupportFloor(x, z, footY, radius) {
 
 export function collidesHorizontally(nx, nz, footY, bodyH, radius) {
   syncWorldBounds();
-  if (nx < WORLD_BOUNDS.minX + radius || nx > WORLD_BOUNDS.maxX - radius || nz < WORLD_BOUNDS.minZ + radius || nz > WORLD_BOUNDS.maxZ - radius) return true;
-  if (nx < -196 && nx > -560 && (nz < -170 + radius || nz > 170 - radius) && !(nx >= -700 && nx <= -50 && nz >= 108 && nz <= 320) && !hasDetectedMapRegionAt(nx, nz)) return true;
+  if (nx < WORLD_BOUNDS.minX + radius || nx > WORLD_BOUNDS.maxX - radius
+    || nz < WORLD_BOUNDS.minZ + radius || nz > WORLD_BOUNDS.maxZ - radius) return true;
+
+  // Aura Hills are bounded unless a built region or the alpine range covers the spot.
+  if (nx < -196 && nx > -560
+    && (nz < -170 + radius || nz > 170 - radius)
+    && !(nx >= -700 && nx <= -50 && nz >= 108 && nz <= 320)
+    && !hasDetectedMapRegionAt(nx, nz)) return true;
+
   if (footY < -1.0 && !sewerOK(nx, nz, radius)) return true;
-  if (footY > -0.5) { const th = terrainH(nx, nz); if (th > -90 && th - footY > 1.0) return true; }
+
+  if (footY > -0.5) {
+    const th = terrainH(nx, nz);
+    if (th > -90 && th - footY > 1.0) return true;
+  }
+
   for (let i = 0; i < worldBoxes.length; i++) {
     const b = worldBoxes[i];
     if (b.maxY <= footY + 0.42 || b.minY >= footY + bodyH - 0.08) continue;
@@ -399,14 +478,23 @@ export function collidesHorizontally(nx, nz, footY, bodyH, radius) {
   return false;
 }
 
+// -----------------------------------------------------------------------------
+// Deterministic noise
+// -----------------------------------------------------------------------------
 export let _seed = 1337;
-
 export const rnd = () => { _seed = (_seed * 1664525 + 1013904223) >>> 0; return _seed / 4294967296; };
-
 export const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
 
+// -----------------------------------------------------------------------------
+// Biomes & surface grip
+// -----------------------------------------------------------------------------
 export function biomeAt(x, z) {
-  if (z >= 110 && x > -136 && x < 138) return x < -52 ? 'alpine' : (x < 28 ? 'woods' : 'cove');
+  if (x >= 368 && x <= 533 && z >= -180 && z <= 240) return 'jungle';
+  if (x >= -700 && x <= -50 && z >= 108 && z <= 320) return 'alpine';
+  if (z >= 108 && z <= 208) {
+    if (x >= -52 && x < 28) return 'woods';
+    if (x >= 28 && x <= 138) return 'cove';
+  }
   return 'city';
 }
 
@@ -418,35 +506,66 @@ export function isInWater(x, z) {
 export function surfaceGrip(x, z) {
   for (const ic of iceZones) if (Math.hypot(x - ic.x, z - ic.z) < ic.r) return 1.5;
   if (isInWater(x, z)) return 7;
+  // The interstate is paved at every elevation (ground, viaduct, bridge).
+  if (onFreeway(x, z, 1)) return 14;
   const b = biomeAt(x, z);
-  if (b === 'alpine') return Math.abs(x + 96) < 6 ? 11 : 3.6;
+  if (b === 'alpine') return 3.6;
+  if (b === 'jungle') return (Math.abs(z - 40) < 6 && x < 478) ? 13 : 9;
+  if (b === 'woods') return Math.abs(x + 24) < 6 ? 14 : 11;
   if (b === 'cove') return Math.abs(x - 72) < 6 ? 14 : 10;
   return 14;
 }
 
-// ======================= AURA OVERHAUL MODULE =======================
-// Mountains + winding road, sewer cave, police + wanted system, suspension, UI
-export function sstep(a,b,x){const t=Math.max(0,Math.min(1,(x-a)/(b-a)));return t*t*(3-2*t);}
+// =============================================================================
+// AURA OVERHAUL — terrain fields, winding mountain road, sewer, wanted system
+// =============================================================================
+export function sstep(a, b, x) {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
 
-export function hsh(i,j){const s=Math.sin(i*127.1+j*311.7)*43758.5453;return s-Math.floor(s);}
+export function hsh(i, j) {
+  const s = Math.sin(i * 127.1 + j * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
 
-export function vnoise(x,z){const i=Math.floor(x),j=Math.floor(z),fx=x-i,fz=z-j,u=fx*fx*(3-2*fx),v=fz*fz*(3-2*fz);return hsh(i,j)*(1-u)*(1-v)+hsh(i+1,j)*u*(1-v)+hsh(i,j+1)*(1-u)*v+hsh(i+1,j+1)*u*v;}
+export function vnoise(x, z) {
+  const i = Math.floor(x), j = Math.floor(z), fx = x - i, fz = z - j;
+  const u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
+  return hsh(i, j) * (1 - u) * (1 - v)
+    + hsh(i + 1, j) * u * (1 - v)
+    + hsh(i, j + 1) * (1 - u) * v
+    + hsh(i + 1, j + 1) * u * v;
+}
 
-export function fbm(x,z,o){let a=.5,f=1,s=0;for(let k=0;k<(o||5);k++){s+=a*vnoise(x*f,z*f);f*=2.03;a*=.5;}return s;}
+export function fbm(x, z, o) {
+  let a = .5, f = 1, s = 0;
+  for (let k = 0; k < (o || 5); k++) { s += a * vnoise(x * f, z * f); f = 2.03; a *= .5; }
+  return s;
+}
 
-export function ridge(x,z,o){let a=.5,f=1,s=0;for(let k=0;k<(o||5);k++){s+=a*(1-Math.abs(vnoise(x*f,z*f)*2-1));f*=2.1;a*=.5;}return s;}
+export function ridge(x, z, o) {
+  let a = .5, f = 1, s = 0;
+  for (let k = 0; k < (o || 5); k++) { s += a * (1 - Math.abs(vnoise(x * f, z * f) * 2 - 1)); f = 2.1; a *= .5; }
+  return s;
+}
 
-export function roadC(z){const t=-170-z;return 116+64*Math.sin(t*0.019)+24*Math.sin(t*0.052+1);}
+export function roadC(z) { const t = -170 - z; return 116 + 64 * Math.sin(t * 0.019) + 24 * Math.sin(t * 0.052 + 1); }
+export function roadH(z) { return 0.2 + Math.min(82, (-170 - z) * 0.16); }
 
-export function roadH(z){return 0.2+Math.min(82,(-170-z)*0.16);}
+export const AHC = { px: -480, pz: -45 };
+export const CAR_PTS = [[2.2, 0], [2.1, .9], [2.1, -.9], [0, .95], [0, -.95], [-2.1, .9], [-2.1, -.9], [-2.2, 0]];
 
-export const AHC={px:-480,pz:-45};
+export const ahRz = x => 45 * Math.sin(Math.min(-196 - x, 236) * .02);
+export const ahRzD = x => (-196 - x) < 236 ? .9 * Math.cos((-196 - x) * .02) : 0;
+export const ahRy = x => 38 * sstep(0, 230, -196 - x);
 
-export const CAR_PTS=[[2.2,0],[2.1,.9],[2.1,-.9],[0,.95],[0,-.95],[-2.1,.9],[-2.1,-.9],[-2.2,0]];
-
-export const ahRz=x=>45*Math.sin(Math.min(-196-x,236)*.02), ahRzD=x=>(-196-x)<236?.9*Math.cos((-196-x)*.02):0, ahRy=x=>38*sstep(0,230,-196-x);
-
-export const AIRFIELD = Object.freeze({ y: 38, rx0: -355, rx1: -208, rz: -106, rh: 13, hx0: -407, hx1: -356, hz0: -129, hz1: -83, hangerX0: -406.5, hangerX1: -356.5, hangerZ0: -129, hangerZ1: -83 });
+export const AIRFIELD = Object.freeze({
+  y: 38,
+  rx0: -355, rx1: -208, rz: -106, rh: 13,
+  hx0: -407, hx1: -356, hz0: -129, hz1: -83,
+  hangerX0: -406.5, hangerX1: -356.5, hangerZ0: -129, hangerZ1: -83
+});
 
 function distanceToRect(x, z, x0, x1, z0, z1) {
   return Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(z0 - z, 0, z - z1));
@@ -458,65 +577,142 @@ function airfieldMask(x, z) {
   return Math.max(runway, hangar);
 }
 
-export function hillsH(x,z){
-  const env=sstep(0,110,-196-x), hm=env*(6+fbm(x*.007+20,z*.007,4)*85+fbm(x*.03,z*.03,3)*7);
-  const pl=1-sstep(70,118,Math.hypot(x-AHC.px,z-AHC.pz));let h=hm*(1-pl)+38*pl;
-  const s=-196-x;if(s>=0&&s<300){const w=sstep(7,28,Math.abs(z-ahRz(x))/Math.hypot(1,ahRzD(x)));h=ahRy(x)*(1-w)+h*w;}
-  const townEdge=Math.hypot(Math.max(Math.abs(x+285)-62,0),Math.max(Math.abs(z)-94,0));
-  const town=1-sstep(0,34,townEdge),townRoad=sstep(13,25,Math.abs(z-ahRz(x))/Math.hypot(1,ahRzD(x))),townBlend=town*townRoad;
-  if(townBlend>0)h=h*(1-townBlend)+(ahRy(x)+9)*townBlend;
-  const field=airfieldMask(x,z);
-  if(field>0)h=h*(1-field)+AIRFIELD.y*field;
+export function hillsH(x, z) {
+  const env = sstep(0, 110, -196 - x);
+  const hm = env * (6 + fbm(x * .007 + 20, z * .007, 4) * 85 + fbm(x * .03, z * .03, 3) * 7);
+  const pl = 1 - sstep(70, 118, Math.hypot(x - AHC.px, z - AHC.pz));
+  let h = hm * (1 - pl) + 38 * pl;
+
+  const s = -196 - x;
+  if (s >= 0 && s < 300) {
+    const w = sstep(7, 28, Math.abs(z - ahRz(x)) / Math.hypot(1, ahRzD(x)));
+    h = ahRy(x) * (1 - w) + h * w;
+  }
+
+  const townEdge = Math.hypot(Math.max(Math.abs(x + 285) - 62, 0), Math.max(Math.abs(z) - 94, 0));
+  const town = 1 - sstep(0, 34, townEdge);
+  const townRoad = sstep(13, 25, Math.abs(z - ahRz(x)) / Math.hypot(1, ahRzD(x)));
+  const townBlend = town * townRoad;
+  if (townBlend > 0) h = h * (1 - townBlend) + (ahRy(x) + 9) * townBlend;
+
+  const field = airfieldMask(x, z);
+  if (field > 0) h = h * (1 - field) + AIRFIELD.y * field;
   return h;
 }
 
-export function riverX(z){return roadC(z)-72+14*Math.sin(z*.04);}
+export function riverX(z) { return roadC(z) - 72 + 14 * Math.sin(z * .04); }
 
+/** Frostpine alpine heightfield — visuals and collision use this exact formula. */
 export function alpineH(x, z) {
   return 0.02 + Math.max(0, 8 + Math.sin(x * 0.02) * 3 + Math.cos(z * 0.03) * 2);
 }
 
-export function terrainBaseH(x,z){
-  if(x<-196&&x>-560&&z>-172&&z<172) return hillsH(x,z);
-  if(x>=-700&&x<=-50&&z>=108&&z<=320) return alpineH(x,z);
-  if(z>-170) return -99;
-  const t=-170-z, env=sstep(0,120,t);
-  const wx=x+(fbm(x*.006+9,z*.006)-.5)*90, wz=z+(fbm(x*.006,z*.006+4)-.5)*90;
-  const rise=.3+.7*sstep(30,320,t);
-  const mass=fbm(wx*.0042,wz*.0042,4), pk=Math.pow(fbm(wx*.0036+3,wz*.0036,5),3);
-  let m=env*(8+(mass*mass*60+pk*300)*rise+fbm(x*.025,z*.025,4)*9+ridge(x*.018,z*.018,3)*8*sstep(40,120,t));
-  m=Math.max(m,roadH(z)*.85);
-  const w=sstep(8,64,Math.abs(x-roadC(z)));
-  const hh=roadH(z)*(1-w)+(0.2+m)*w, cv=5*(1-sstep(3,18,Math.abs(x-riverX(z))))*sstep(20,120,t);
-  return cv>0.01?Math.max(.3,hh-cv):hh;
+export function terrainBaseH(x, z) {
+  if (x < -196 && x > -560 && z > -172 && z < 172) return hillsH(x, z);
+  if (x >= -700 && x <= -50 && z >= 108 && z <= 320) return alpineH(x, z);
+  if (z > -170) return -99;
+
+  const t = -170 - z, env = sstep(0, 120, t);
+  const wx = x + (fbm(x * .006 + 9, z * .006) - .5) * 90;
+  const wz = z + (fbm(x * .006, z * .006 + 4) - .5) * 90;
+  const rise = .3 + .7 * sstep(30, 320, t);
+  const mass = fbm(wx * .0042, wz * .0042, 4);
+  const pk = Math.pow(fbm(wx * .0036 + 3, wz * .0036, 5), 3);
+
+  let m = env * (8
+    + (mass * mass * 60 + pk * 300) * rise
+    + fbm(x * .025, z * .025, 4) * 9
+    + ridge(x * .018, z * .018, 3) * 8 * sstep(40, 120, t));
+  m = Math.max(m, roadH(z) * .85);
+
+  const w = sstep(8, 64, Math.abs(x - roadC(z)));
+  const hh = roadH(z) * (1 - w) + (0.2 + m) * w;
+  const cv = 5 * (1 - sstep(3, 18, Math.abs(x - riverX(z)))) * sstep(20, 120, t);
+  return cv > 0.01 ? Math.max(.3, hh - cv) : hh;
 }
 
-export function terrainH(x,z){
-  return terrainBaseH(x,z) + terrainHeightOffset(x, z);
+export function terrainH(x, z) {
+  return terrainBaseH(x, z) + terrainHeightOffset(x, z);
 }
 
-export const SCX=20,SCZ=-30,SFY=-9;
+// -----------------------------------------------------------------------------
+// Sewer network
+// -----------------------------------------------------------------------------
+export const SCX = 20, SCZ = -30, SFY = -9;
+export function sewerFloor() { return SFY; }
 
-export function sewerFloor(){return SFY;}
+/** Default surface manholes; buildSewer() appends any conditional exits. */
+export const manholes = [[-4, 24], [48, -16], [-40, -30], [20, -66]];
+export const sewerLights = [], manholeCovers = [], manholeOpen = [], manholeHoles = [], sRects = [];
 
-// ---- Sewer network: real tunnels beneath the city streets (no teleport) ----
-export const manholes=[[-4,24],[48,-16],[-40,-30],[20,-66]];
+export const aura = { ahCull: null, ahF: null, ahHint: null, hospitalSpawn: null, culls: [], estates: null };
 
-export const sewerLights=[], manholeCovers=[], manholeOpen=[], manholeHoles=[], sRects=[];
+export function sewerOK(x, z, r) {
+  for (let i = 0; i < sRects.length; i++) {
+    const q = sRects[i];
+    if (x >= q[0] + r && x <= q[1] - r && z >= q[2] + r && z <= q[3] - r) return true;
+  }
+  return false;
+}
 
-export const aura = { ahCull: null, ahF: null, ahHint: null, hospitalSpawn: null, culls: [] };
+export const under = () => player.y < -1.2;
+export const climb = { on: false, dir: 0, t: 0, i: 0 };
 
-export function sewerOK(x,z,r){for(let i=0;i<sRects.length;i++){const q=sRects[i];if(x>=q[0]+r&&x<=q[1]-r&&z>=q[2]+r&&z<=q[3]-r)return true;}return false;}
+// -----------------------------------------------------------------------------
+// Police & wanted level
+// -----------------------------------------------------------------------------
+export const AO = { heat: 0, calm: 0, cops: [], cars: [], spawnT: 0, shotT: 0, lastAtk: 0 };
+export const stars = () => Math.min(5, Math.ceil(AO.heat - .001));
 
-export const under=()=>player.y<-1.2;
+export function crime(a) {
+  if (under()) return;
+  const s0 = stars();
+  AO.heat = Math.min(5, AO.heat + a);
+  AO.calm = 0;
+  if (stars() > s0) pushFeed('WANTED LEVEL ' + stars() + ' — POLICE DISPATCHED', 'border-l-blue-500');
+}
 
-export const climb={on:false,dir:0,t:0,i:0};
+// -----------------------------------------------------------------------------
+// World rebuild support
+//
+// buildWorld() is idempotent: it calls this before rebuilding so no stale
+// collider, zone or bound survives from the previous build. NPC/AI state is
+// intentionally left alone — it is owned by the NPC layer, not the world.
+// -----------------------------------------------------------------------------
+export function resetWorldState() {
+  worldBoxes.length = 0;
+  driveableRamps.length = 0;
+  mapShapes.length = 0;
+  enterableZones.length = 0;
+  smashableCrates.length = 0;
+  hazardBarrels.length = 0;
+  worldPickups.length = 0;
+  particleBursts.length = 0;
+  projectileWieners.length = 0;
+  lampPosts.length = 0;
+  aviationBeacons.length = 0;
+  buildingLods.length = 0;
+  skyscrapers.length = 0;
+  sausageRefillZones.length = 0;
+  waterZones.length = 0;
+  iceZones.length = 0;
 
-// ---- Police & wanted level ----
-export const AO={heat:0,calm:0,cops:[],cars:[],spawnT:0,shotT:0,lastAtk:0};
+  sewerLights.length = 0;
+  manholeCovers.length = 0;
+  manholeOpen.length = 0;
+  manholeHoles.length = 0;
+  sRects.length = 0;
+  manholes.length = 0;
+  manholes.push([-4, 24], [48, -16], [-40, -30], [20, -66]);
 
-export const stars=()=>Math.min(5,Math.ceil(AO.heat-.001));
+  aura.ahCull = null;
+  aura.ahF = null;
+  aura.ahHint = null;
+  aura.hospitalSpawn = null;
+  aura.culls = [];
+  aura.estates = null;
 
-export function crime(a){if(under())return;const s0=stars();AO.heat=Math.min(5,AO.heat+a);AO.calm=0;if(stars()>s0)pushFeed('WANTED LEVEL '+stars()+' — POLICE DISPATCHED','border-l-blue-500');}
+  resetWorldBounds();
+}
 
 Object.assign(hooks, { recomputeWorldBounds });

@@ -1,5 +1,7 @@
 // =============================================================================
-// engine.js — Three.js scene, camera, renderer (initEngine), lighting, sky, procedural PBR textures, makeMat() and graphics tier controller.
+// engine.js — Three.js scene, camera, renderer (initEngine), lighting, sky,
+// procedural PBR textures, makeMat(), graphics tier controller and the
+// rebuild-safe graphics registries.
 // =============================================================================
 import * as THREE from 'three';
 import { gameState } from './state.js';
@@ -17,14 +19,45 @@ scene.fog = new THREE.FogExp2(0xd6a374, 0.0028);
 
 const sunScreenPosition = new THREE.Vector3();
 
-// Sun Offset Vector Constant & Helper for position updates
+// Sun Offset Vector Constant & Helper for position updates.
+// The shadow-casting light follows the player, but the *direction* stays fixed
+// because the light target moves with it.
 export const SUN_OFFSET = new THREE.Vector3(78, 130, 52);
 
+export const sunTarget = new THREE.Object3D();
+sunTarget.name = 'SunTarget';
+scene.add(sunTarget);
+
+const SHADOW_CELL = 6;
+const sunAnchor = new THREE.Vector3();
+let lastShadowKey = '';
+
+/** Force one shadow-map re-render on the next frame (static shadows otherwise). */
+export function invalidateShadows() {
+  if (renderer && renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate = true;
+}
+
+/**
+ * Anchor the sun rig to the player. Quantised to a 6 m grid so the baked shadow
+ * map is only re-rendered when the anchor actually crosses a cell, instead of
+ * every single frame.
+ */
 export function updateSunPosition(targetPos) {
-  if (targetPos) {
-    sunLight.position.copy(targetPos).add(SUN_OFFSET);
-  } else {
-    sunLight.position.copy(SUN_OFFSET);
+  if (targetPos) sunAnchor.set(targetPos.x || 0, targetPos.y || 0, targetPos.z || 0);
+  else sunAnchor.set(0, 0, 0);
+
+  const qx = Math.round(sunAnchor.x / SHADOW_CELL) * SHADOW_CELL;
+  const qy = Math.round(sunAnchor.y / SHADOW_CELL) * SHADOW_CELL;
+  const qz = Math.round(sunAnchor.z / SHADOW_CELL) * SHADOW_CELL;
+
+  sunTarget.position.set(qx, qy, qz);
+  sunLight.position.set(qx, qy, qz).add(SUN_OFFSET);
+
+  // A world rebuild swaps worldRoot's children — the old shadow map is invalid.
+  const key = `${qx}|${qy}|${qz}|${worldRoot.children.length}`;
+  if (key !== lastShadowKey) {
+    lastShadowKey = key;
+    invalidateShadows();
   }
 }
 
@@ -34,6 +67,7 @@ export function buildStudioEnvMap() {
     c.width = 128;
     c.height = 128;
     const ctx = c.getContext('2d');
+
     if (face === 'py') {
       const g = ctx.createRadialGradient(84, 44, 6, 64, 64, 96);
       g.addColorStop(0, '#ffffff');
@@ -65,6 +99,7 @@ export function buildStudioEnvMap() {
     }
     return c;
   });
+
   const cubeTex = new THREE.CubeTexture(faces);
   cubeTex.colorSpace = THREE.SRGBColorSpace;
   cubeTex.needsUpdate = true;
@@ -84,6 +119,7 @@ scene.add(hemiLight);
 
 export const sunLight = new THREE.DirectionalLight(0xffd28e, 2.2);
 sunLight.position.copy(SUN_OFFSET);
+sunLight.target = sunTarget;
 sunLight.castShadow = true;
 sunLight.shadow.mapSize.width = 1024;
 sunLight.shadow.mapSize.height = 1024;
@@ -98,15 +134,17 @@ sunLight.shadow.camera.top = sb;
 sunLight.shadow.camera.bottom = -sb;
 sunLight.shadow.bias = -0.0003;
 sunLight.shadow.normalBias = 0.04;
-
 scene.add(sunLight);
 
 export const rimLight = new THREE.DirectionalLight(0xffb97a, 0);
 rimLight.position.set(-72, 56, -85);
 scene.add(rimLight);
 
-// Procedural Sky Dome with Horizon Haze Gradient & Sun Glow Scattering
+// Procedural Sky Dome with Horizon Haze Gradient & Sun Glow Scattering.
+// The dome is anchored to the camera every frame so it can never be outrun by
+// the player (the world extends well past the dome radius).
 export const skyGroup = new THREE.Group();
+skyGroup.name = 'Sky';
 
 export const skyCanvas = document.createElement('canvas');
 skyCanvas.width = 32;
@@ -120,31 +158,23 @@ skyGrad.addColorStop(1.0, '#fef08a');
 sCtx.fillStyle = skyGrad;
 sCtx.fillRect(0, 0, 32, 256);
 
+// Fixed sky-space sun direction (independent of the player-following light).
+const SUN_SKY_DIR = new THREE.Vector3(160, 225, 120);
+
 export const skyShaderMaterial = new THREE.ShaderMaterial({
   uniforms: {
     topColor: { value: new THREE.Color(0x1e3a8a) },
     horizonColor: { value: new THREE.Color(0xf97316) },
     hazeColor: { value: new THREE.Color(0xfde68a) },
-    sunPosition: { value: sunLight.position }
+    sunPosition: { value: SUN_SKY_DIR.clone() }
   },
-  vertexShader: `
-    varying vec3 vWorldPosition;
-    varying vec3 vSunDir;
-    uniform vec3 sunPosition;
-    void main() {
-      vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-      vWorldPosition = worldPosition.xyz;
-      vSunDir = normalize(sunPosition);
-      gl_Position = projectionMatrix * viewMatrix * worldPosition;
-    }
-  `,
+  vertexShader: `varying vec3 vWorldPosition; varying vec3 vSunDir; uniform vec3 sunPosition; void main() { vec4 worldPosition = modelMatrix * vec4(position, 1.0); vWorldPosition = position.xyz; vSunDir = normalize(sunPosition); gl_Position = projectionMatrix * viewMatrix * worldPosition; }`,
   fragmentShader: `
     varying vec3 vWorldPosition;
     varying vec3 vSunDir;
     uniform vec3 topColor;
     uniform vec3 horizonColor;
     uniform vec3 hazeColor;
-
     void main() {
       vec3 dir = normalize(vWorldPosition);
       float h = max(-0.1, dir.y);
@@ -167,7 +197,6 @@ export const skyShaderMaterial = new THREE.ShaderMaterial({
       float s24 = s12 * s12;
       float sunHalo = s24 * 0.65 + s6 * 0.25;
       vec3 haloColor = vec3(1.0, 0.88, 0.62);
-
       skyCol += haloColor * sunHalo;
 
       gl_FragColor = vec4(skyCol, 1.0);
@@ -178,23 +207,20 @@ export const skyShaderMaterial = new THREE.ShaderMaterial({
   depthWrite: false
 });
 
-export const skyDome = new THREE.Mesh(
-  new THREE.SphereGeometry(380, 24, 16),
-  skyShaderMaterial
-);
+export const skyDome = new THREE.Mesh(new THREE.SphereGeometry(380, 24, 16), skyShaderMaterial);
 skyGroup.add(skyDome);
 
 export const sunDisc = new THREE.Mesh(
   new THREE.CircleGeometry(22, 20),
   new THREE.MeshBasicMaterial({ color: 0xfffae6, fog: false, depthWrite: false })
 );
-sunDisc.position.set(160, 225, 120);
+sunDisc.position.copy(SUN_SKY_DIR);
 sunDisc.lookAt(0, 0, 0);
 skyGroup.add(sunDisc);
 
 export const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffedd5, transparent: true, opacity: 0.82, fog: false });
 
-// Batch all 36 cloud boxes into a single InstancedMesh (1 draw call instead of 36)
+// Batch every cloud puff into a single InstancedMesh (1 draw call).
 const CLOUD_COUNT = 18;
 const cloudInstancedMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), cloudMat, CLOUD_COUNT * 2);
 {
@@ -222,9 +248,13 @@ const cloudInstancedMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1
   cloudInstancedMesh.instanceMatrix.needsUpdate = true;
 }
 skyGroup.add(cloudInstancedMesh);
-
 skyGroup.visible = true;
 scene.add(skyGroup);
+
+/** Keep the sky dome centred on the viewer so it never clips or gets outrun. */
+export function updateSkyAnchor() {
+  skyGroup.position.copy(camera.position);
+}
 
 // PS3-Era Motion Vignette & Camera FOV Kick Controller State
 const prevCamQuat = new THREE.Quaternion();
@@ -236,28 +266,26 @@ let cachedFlareEl = null;
 let cachedFlareGhosts = null;
 let cachedFlareSource = null;
 let lastFlareOpacity = '';
+
 const BASE_FOV = 72;
 const GHOST_POSITIONS = [0.42, 0.78, 1.18];
 
 export function updateSunLensFlare() {
+  updateSkyAnchor();
   camera.updateMatrixWorld();
 
   // ---- Camera Rotation Speed Tracking & Dynamic FOV Kick / Vignette Overlay ----
   camera.getWorldQuaternion(curCamQuat);
   const angleDiff = prevCamQuat.angleTo(curCamQuat);
   prevCamQuat.copy(curCamQuat);
-
   const rawTurnSpeed = Math.min(1.0, angleDiff * 16.0);
   turnSpeedSmooth += (rawTurnSpeed - turnSpeedSmooth) * 0.18;
 
-  // Dynamic FOV Kick on fast camera turns
   const targetFov = BASE_FOV + turnSpeedSmooth * 6.5;
   if (Math.abs(camera.fov - targetFov) > 0.01) {
     camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, 0.15);
     camera.updateProjectionMatrix();
   }
-
-
 
   // GPU-friendly CSS Edge Vignette Overlay (avoids full-screen backdrop-filter readbacks)
   if (!motionBlurOverlayEl && typeof document !== 'undefined') {
@@ -272,7 +300,6 @@ export function updateSunLensFlare() {
       document.body.appendChild(motionBlurOverlayEl);
     }
   }
-
   if (motionBlurOverlayEl) {
     const blurOpacity = turnSpeedSmooth < 0.005 ? '0' : Math.min(0.85, turnSpeedSmooth * 1.25).toFixed(2);
     if (blurOpacity !== lastBlurOpacity) {
@@ -290,6 +317,7 @@ export function updateSunLensFlare() {
       lastFlareOpacity = '';
     }
   }
+
   const flare = cachedFlareEl;
   if (!flare) return;
 
@@ -323,7 +351,6 @@ export function updateSunLensFlare() {
 
   const sunXStr = `${sunX.toFixed(2)}%`;
   const sunYStr = `${sunY.toFixed(2)}%`;
-
   if (cachedFlareGhosts) {
     for (let index = 0; index < cachedFlareGhosts.length; index++) {
       const ghost = cachedFlareGhosts[index];
@@ -337,10 +364,9 @@ export function updateSunLensFlare() {
     cachedFlareSource.style.top = sunYStr;
   }
 }
+
 // Subtle psychedelic world breathing & liquid shear (zero extra draw calls)
 export function updateWorldWobble(elapsed, intensity = 1.0) {
-  if (!camera) return;
-
   // Reset from current fov/aspect so values never drift over time
   camera.updateProjectionMatrix();
   if (intensity <= 0) return;
@@ -366,7 +392,6 @@ export function updateWorldWobble(elapsed, intensity = 1.0) {
   e[5] *= scaleY;
   e[4] += shearX;
   e[1] += shearY;
-
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
 }
 
@@ -433,6 +458,9 @@ retBeam.position.y = 21;
 meteorReticle.add(retOuter, retInner, retBeam);
 scene.add(meteorReticle);
 
+// -----------------------------------------------------------------------------
+// Procedural PBR textures
+// -----------------------------------------------------------------------------
 export function buildTexture(type) {
   const c = document.createElement('canvas');
   c.width = 128;
@@ -634,7 +662,8 @@ export function buildTexture(type) {
   return tex;
 }
 
-// Lazily construct procedural textures on first access so 'low' graphics tier skips startup generation
+// Lazily construct procedural textures on first access so 'low' graphics tier
+// skips startup generation entirely.
 const PROC_TEXTURE_TYPES = [
   'asphalt', 'sidewalk', 'cobblestone', 'marble', 'granite', 'concrete',
   'diamondplate', 'brushedsteel', 'corrugated', 'fabric', 'water', 'sand',
@@ -654,13 +683,59 @@ for (const texType of PROC_TEXTURE_TYPES) {
   });
 }
 
+// -----------------------------------------------------------------------------
+// Graphics registries
+//
+// Materials are tracked through WeakRefs so a world rebuild (which drops and
+// disposes thousands of meshes) does not leave the tier controller walking dead
+// materials forever. Detached-but-cached groups keep their materials alive and
+// are therefore never pruned.
+// -----------------------------------------------------------------------------
 export const registeredMaterials = [];
 export const highDetailObjects = [];
 export let animatedWaterTex = null;
 
+const HAS_WEAK_REF = typeof WeakRef === 'function';
+const highDetailSeen = typeof WeakSet === 'function' ? new WeakSet() : null;
+
+function trackMaterial(mat, opts, defaultBumpScales) {
+  const entry = {
+    texType: opts.texType,
+    repeatX: opts.repeatX ?? 2,
+    repeatY: opts.repeatY ?? 2,
+    bumpScale: opts.bumpScale ?? (defaultBumpScales[opts.texType] || 0),
+    keepSmooth: opts.flatShading === false
+  };
+  if (HAS_WEAK_REF) {
+    const ref = new WeakRef(mat);
+    Object.defineProperty(entry, 'mat', { enumerable: true, get: () => ref.deref() });
+  } else {
+    entry.mat = mat;
+  }
+  registeredMaterials.push(entry);
+}
+
+/** Drop collected materials and detached high-detail meshes. Cheap; call after a rebuild. */
+export function pruneGraphicsRegistries() {
+  for (let i = registeredMaterials.length - 1; i >= 0; i--) {
+    if (!registeredMaterials[i].mat) registeredMaterials.splice(i, 1);
+  }
+  for (let i = highDetailObjects.length - 1; i >= 0; i--) {
+    let o = highDetailObjects[i];
+    let attached = false;
+    while (o) {
+      if (o === scene) { attached = true; break; }
+      o = o.parent;
+    }
+    if (!attached) {
+      if (highDetailSeen) highDetailSeen.delete(highDetailObjects[i]);
+      highDetailObjects.splice(i, 1);
+    }
+  }
+}
+
 export function makeMat(hex, opts = {}) {
   const usePhysical = opts.clearcoat !== undefined || opts.isCarMetal;
-
   const defaultRoughness = opts.roughness ?? (opts.isCarMetal ? 0.35 : (opts.metalness > 0.4 ? 0.45 : 0.72));
   const emissiveVal = opts.emissive ?? 0x000000;
   const defaultEmissiveIntensity = opts.emissiveIntensity ?? (emissiveVal ? 2.5 : 0);
@@ -701,20 +776,14 @@ export function makeMat(hex, opts = {}) {
       metallicflake: 0.025,
       sidewalk: 0.03
     };
-
-    registeredMaterials.push({
-      mat,
-      texType: opts.texType,
-      repeatX: opts.repeatX ?? 2,
-      repeatY: opts.repeatY ?? 2,
-      bumpScale: opts.bumpScale ?? (defaultBumpScales[opts.texType] || 0),
-      keepSmooth: opts.flatShading === false
-    });
+    trackMaterial(mat, opts, defaultBumpScales);
   }
+
   return mat;
 }
 
 const sharedMatCache = new Map();
+
 export function makeSharedMat(hex, opts = {}) {
   const keys = Object.keys(opts).sort();
   let key = String(hex);
@@ -731,7 +800,9 @@ export function makeSharedMat(hex, opts = {}) {
   return mat;
 }
 
-// Shared Real Transparent Glass Material for All Windows (FrontSide halves fragment overdraw)
+// Shared Real Transparent Glass Material for All Windows.
+// FrontSide halves fragment overdraw; callers place a second flipped pane when
+// the glass must read from both directions.
 export const realWindowGlassMat = new THREE.MeshPhysicalMaterial({
   color: 0xbae6fd,
   roughness: 0.07,
@@ -746,11 +817,19 @@ export const realWindowGlassMat = new THREE.MeshPhysicalMaterial({
 
 export function regHigh(obj) {
   obj.visible = gameState.settings.graphics === 'high';
-  highDetailObjects.push(obj);
+  if (highDetailSeen) {
+    if (!highDetailSeen.has(obj)) {
+      highDetailSeen.add(obj);
+      highDetailObjects.push(obj);
+    }
+  } else if (highDetailObjects.indexOf(obj) === -1) {
+    highDetailObjects.push(obj);
+  }
   return obj;
 }
 
 const tierTexCache = new Map();
+
 function tierTexture(texType, repeatX, repeatY, anisotropy) {
   const key = texType + '|' + repeatX + '|' + repeatY;
   let tex = tierTexCache.get(key);
@@ -771,27 +850,37 @@ function tierTexture(texType, repeatX, repeatY, anisotropy) {
 
 export function applyGraphicsTier(tier) {
   gameState.settings.graphics = tier;
+  pruneGraphicsRegistries();
+
   const useTextures = tier === 'medium' || tier === 'high';
   const isHigh = tier === 'high';
   const maxAniso = renderer ? Math.min(4, renderer.capabilities.getMaxAnisotropy()) : 1;
   const targetAniso = isHigh ? maxAniso : 1;
 
-  for (let i = 0; i < registeredMaterials.length; i++) {
+  for (let i = registeredMaterials.length - 1; i >= 0; i--) {
     const entry = registeredMaterials[i];
+    const mat = entry.mat;
+    if (!mat) { registeredMaterials.splice(i, 1); continue; }
+
     const wantMap = useTextures && PROC_TEXTURE_TYPES.includes(entry.texType)
       ? tierTexture(entry.texType, entry.repeatX, entry.repeatY, targetAniso)
       : null;
     const wantBump = isHigh && entry.bumpScale > 0 ? wantMap : null;
     const wantFlat = entry.keepSmooth ? false : true;
+
     let changed = false;
-    if (entry.mat.map !== wantMap) { entry.mat.map = wantMap; changed = true; }
-    if (entry.mat.bumpMap !== wantBump) { entry.mat.bumpMap = wantBump; entry.mat.bumpScale = wantBump ? entry.bumpScale : 0; changed = true; }
-    if (entry.mat.flatShading !== wantFlat) { entry.mat.flatShading = wantFlat; changed = true; }
+    if (mat.map !== wantMap) { mat.map = wantMap; changed = true; }
+    if (mat.bumpMap !== wantBump) {
+      mat.bumpMap = wantBump;
+      mat.bumpScale = wantBump ? entry.bumpScale : 0;
+      changed = true;
+    }
+    if (mat.flatShading !== wantFlat) { mat.flatShading = wantFlat; changed = true; }
     if (wantMap && entry.texType === 'water') animatedWaterTex = wantMap;
-    if (changed) entry.mat.needsUpdate = true;
+    if (changed) mat.needsUpdate = true;
   }
 
-  // Keep full clearcoat reflections on 'high' tier while avoiding dual-lobe cost on 'low'/'medium'
+  // Keep full clearcoat reflections on 'high' while avoiding dual-lobe cost lower down
   const wantGlassClearcoat = isHigh ? 1.0 : 0.0;
   if (realWindowGlassMat.clearcoat !== wantGlassClearcoat) {
     realWindowGlassMat.clearcoat = wantGlassClearcoat;
@@ -801,6 +890,7 @@ export function applyGraphicsTier(tier) {
   for (let i = 0; i < highDetailObjects.length; i++) {
     highDetailObjects[i].visible = isHigh;
   }
+
   skyGroup.visible = true;
   rimLight.intensity = isHigh ? 0.65 : 0;
   sunLight.intensity = isHigh ? 2.4 : 2.0;
@@ -819,7 +909,6 @@ export function applyGraphicsTier(tier) {
       }
       renderer.shadowMap.needsUpdate = true;
     }
-
     const maxDpr = tier === 'low' ? 1.0 : tier === 'medium' ? 1.35 : 1.85;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr) * PIXEL_RENDER_SCALE);
     resizeRenderer();
@@ -844,23 +933,42 @@ const viewport = { container: null, observer: null, callbacks: [] };
 
 /** Size of the render area: the canvas' parent in Studio, the whole window in the game. */
 export function getViewportSize() {
-  if (viewport.container) return { width: Math.max(1, viewport.container.clientWidth), height: Math.max(1, viewport.container.clientHeight) };
-  return { width: window.innerWidth, height: window.innerHeight };
+  if (viewport.container) {
+    return {
+      width: Math.max(1, viewport.container.clientWidth || 1),
+      height: Math.max(1, viewport.container.clientHeight || 1)
+    };
+  }
+  return { width: Math.max(1, window.innerWidth), height: Math.max(1, window.innerHeight) };
 }
 
 export function resizeRenderer() {
   if (!renderer) return;
   const { width, height } = getViewportSize();
   renderer.setSize(width, height, !viewport.container);
+  const aspect = width / height;
+  if (Math.abs(camera.aspect - aspect) > 1e-4) {
+    camera.aspect = aspect;
+    camera.updateProjectionMatrix();
+  }
 }
 
-/** Register a callback fired with (width, height) whenever the viewport container is resized (Studio). */
-export function onViewportResize(cb) { viewport.callbacks.push(cb); }
+/** Register a resize callback (Studio). Returns an unsubscribe function. */
+export function onViewportResize(cb) {
+  viewport.callbacks.push(cb);
+  return () => {
+    const i = viewport.callbacks.indexOf(cb);
+    if (i !== -1) viewport.callbacks.splice(i, 1);
+  };
+}
+
+let contextHandlersBound = false;
 
 /**
  * Create the WebGL renderer.
- *  - initEngine()            -> full-screen canvas on document.body (game).
- *  - initEngine({ canvas })  -> render into the given canvas and follow its parent's size (Studio).
+ *   initEngine()           -> full-screen canvas on document.body (game).
+ *   initEngine({ canvas }) -> render into the given canvas, follow its parent's size (Studio).
+ * Safe to call more than once with the same canvas.
  */
 export async function initEngine({ canvas: providedCanvas } = {}) {
   let el = providedCanvas || null;
@@ -873,6 +981,12 @@ export async function initEngine({ canvas: providedCanvas } = {}) {
       document.body.appendChild(el);
     }
   }
+
+  if (renderer && canvas === el) {
+    resizeRenderer();
+    return { scene, camera, renderer, worldRoot };
+  }
+
   canvas = el;
   renderer = new THREE.WebGLRenderer({
     canvas: el,
@@ -881,14 +995,28 @@ export async function initEngine({ canvas: providedCanvas } = {}) {
     stencil: false
   });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.35) * PIXEL_RENDER_SCALE);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = gameState.settings.graphics !== 'low';
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.shadowMap.autoUpdate = false;
   renderer.shadowMap.needsUpdate = true;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.18;
+
+  if (!contextHandlersBound) {
+    contextHandlersBound = true;
+    el.addEventListener('webglcontextlost', (ev) => { ev.preventDefault(); }, false);
+    el.addEventListener('webglcontextrestored', () => {
+      lastShadowKey = '';
+      invalidateShadows();
+      applyGraphicsTier(gameState.settings.graphics);
+    }, false);
+  }
+
   viewport.container = providedCanvas ? (providedCanvas.parentElement || null) : null;
   resizeRenderer();
+
+  if (viewport.observer) { viewport.observer.disconnect(); viewport.observer = null; }
   if (viewport.container && typeof ResizeObserver !== 'undefined') {
     viewport.observer = new ResizeObserver(() => {
       resizeRenderer();
@@ -897,5 +1025,9 @@ export async function initEngine({ canvas: providedCanvas } = {}) {
     });
     viewport.observer.observe(viewport.container);
   }
+
+  lastShadowKey = '';
+  updateSunPosition(null);
+
   return { scene, camera, renderer, worldRoot };
 }

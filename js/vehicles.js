@@ -1,5 +1,5 @@
 // =============================================================================
-// vehicles.js — Vehicle mesh builders, 6-speed manual gearbox, driving physics, 
+// vehicles.js — Vehicle mesh builders, 6-speed manual gearbox, driving physics,
 // car-to-car collisions, 3D terrain physics, suspension & exhaust flame effects.
 // =============================================================================
 import * as THREE from 'three';
@@ -12,12 +12,46 @@ import { spawnParticles } from './items.js';
 export const vehicles = [];
 
 export const GEAR_LABELS = ['R', 'N', '1', '2', '3', '4', '5', '6'];
-
+// Index 0 = Reverse, 1 = Neutral (cap 0 is intentional), 2..7 = forward gears.
 export const GEAR_CAPS_MPH = [36, 0, 39, 66, 95, 125, 154, 180];
-
 export const GEAR_RATIO_MULT = [-0.55, 0, 1.0, 0.66, 0.46, 0.34, 0.26, 0.21];
 
+const DEFAULT_SCALE = 1.35;
+let vehicleUid = 0;
 const carCollisionCooldowns = new Map();
+
+/**
+ * Live gearbox caps from levelData (Studio tuning used to be ignored entirely).
+ * Falls back to the built-in table and repairs malformed saves so a bad value
+ * can never produce a divide-by-zero or a forward gear that cannot accelerate.
+ */
+export function getGearCaps() {
+  const out = GEAR_CAPS_MPH.slice();
+  const src = levelData?.params?.vehicles?.gearCapsMph;
+  if (Array.isArray(src)) {
+    for (let i = 0; i < out.length; i++) {
+      const n = Number(src[i]);
+      if (!Number.isFinite(n) || n < 0) continue;
+      out[i] = i >= 2 ? Math.max(6, n) : n;
+    }
+  }
+  // Forward caps must ascend, otherwise an upshift would lose top speed.
+  for (let i = 3; i < out.length; i++) out[i] = Math.max(out[i], out[i - 1] + 1);
+  return out;
+}
+
+/** Safe positive tuning multiplier — a malformed save can never NaN the physics. */
+function tune(key, fallback = 1) {
+  const n = Number(levelData?.params?.vehicles?.[key]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** Tanks are physically wider/longer than the donor sports-car shell. */
+function footprintScale(v) {
+  return (v.carScale || DEFAULT_SCALE) * (v.isTank ? 1.28 : 1);
+}
+function wheelHalfX(v) { return (v.isTank ? 1.55 : 0.98) * (v.carScale || DEFAULT_SCALE); }
+function wheelHalfZ(v) { return (v.isTank ? 2.05 : 1.38) * (v.carScale || DEFAULT_SCALE); }
 
 // Build remapped roughness & clearcoat maps from assets/textures/metal.png
 // so clean paint has a true metallic clearcoat sheen while white scratches look scuffed.
@@ -37,7 +71,6 @@ function createRemappedTexture(defaultFill) {
 
 const carBaseRough = createRemappedTexture(56);
 const carClearcoatRough = createRemappedTexture(36);
-
 const texLoader = new THREE.TextureLoader();
 const carScratchBumpTex = texLoader.load('assets/textures/metal.png', (tex) => {
   const img = tex.image;
@@ -59,13 +92,11 @@ const carScratchBumpTex = texLoader.load('assets/textures/metal.png', (tex) => {
   for (let i = 0; i < rd.length; i += 4) {
     const lum = (rd[i] + rd[i + 1] + rd[i + 2]) / 3;
     const t = lum / 255;
-
     // Metallic base: [54..222] -> effective roughness ~0.18 on clean paint, ~0.76 on scratches
     const baseVal = Math.round(54 + t * 168);
     rd[i] = baseVal;
     rd[i + 1] = baseVal;
     rd[i + 2] = baseVal;
-
     // Clearcoat layer: [34..185] -> crisp automotive gloss on clean paint, dull on scratches
     const coatVal = Math.round(34 + t * 151);
     cd[i] = coatVal;
@@ -73,7 +104,6 @@ const carScratchBumpTex = texLoader.load('assets/textures/metal.png', (tex) => {
     cd[i + 2] = coatVal;
     cd[i + 3] = 255;
   }
-
   rCtx.putImageData(rData, 0, 0);
   cCtx.putImageData(cData, 0, 0);
   carBaseRough.tex.needsUpdate = true;
@@ -83,12 +113,23 @@ carScratchBumpTex.wrapS = THREE.RepeatWrapping;
 carScratchBumpTex.wrapT = THREE.RepeatWrapping;
 carScratchBumpTex.repeat.set(3, 3);
 
-export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, accentHex = 0xf8fafc, x = 0, z = 0, yaw = 0, isCoupe = true, isSupercar = false } = {}) {
+export function buildSportsCarMesh({
+  name = 'SPORTS CAR',
+  bodyHex = 0xdc2626,
+  accentHex = 0xf8fafc,
+  x = 0,
+  y = 0.12,
+  z = 0,
+  yaw = 0,
+  scale = DEFAULT_SCALE,
+  isCoupe = true,
+  isSupercar = false
+} = {}) {
   const root = new THREE.Group();
   root.userData.studioName = name;
-  const carScale = 1.35;
+  const carScale = Number.isFinite(scale) && scale > 0.2 ? scale : DEFAULT_SCALE;
   root.scale.setScalar(carScale);
-  root.position.set(x, 0.12, z);
+  root.position.set(x, Number.isFinite(y) ? y : 0.12, z);
   root.rotation.order = 'YXZ';
   root.rotation.y = yaw;
 
@@ -158,13 +199,13 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
   const lowerY = isSupercar ? 0.54 : 0.62;
   const bodyLen = 4.46;
   const bodyHalfZ = bodyLen / 2;
-
   const doorLen = isSupercar ? 1.34 : (isCoupe ? 1.44 : 1.32);
   const doorFrontZ = isSupercar ? 0.62 : (isCoupe ? 0.54 : 0.72);
   const doorRearZ = doorFrontZ - doorLen;
   const doorCenterZ = (doorFrontZ + doorRearZ) * 0.5;
 
-  // Split lower body into front nose, rear quarter/trunk, and recessed interior tub so opening doors reveal the cabin
+  // Split lower body into front nose, rear quarter/trunk, and recessed interior tub
+  // so opening doors reveal the cabin.
   const frontLen = bodyHalfZ - doorFrontZ;
   const lowerFront = new THREE.Mesh(new THREE.BoxGeometry(2.04, lowerH, frontLen), bodyMat);
   lowerFront.userData.studioName = 'Body Front';
@@ -203,6 +244,7 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
   const cabin = new THREE.Group();
   cabin.userData.studioName = 'Cabin';
   cabin.position.set(0, lowerY + lowerH / 2 + cabinH / 2 - 0.02, cabinZ);
+
   const roof = new THREE.Mesh(new THREE.BoxGeometry(1.74, 0.09, cabinLen), bodyMat);
   roof.userData.studioName = 'Cabin roof';
   roof.position.y = cabinH / 2 - 0.045;
@@ -260,7 +302,6 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
 
     const mirrorArm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.035, 0.05), carbonMat);
     mirrorArm.position.set(side * 0.09, lowerH * 0.5 + 0.05, -0.14);
-
     const mirrorCap = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.075, 0.09), bodyMat);
     mirrorCap.position.set(side * 0.15, lowerH * 0.5 + 0.07, -0.14);
 
@@ -274,6 +315,7 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
   const dashboard = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.15, 0.42), carbonMat);
   dashboard.userData.studioName = 'Dashboard';
   dashboard.position.set(0, lowerY + lowerH / 2 + 0.08, 0.76);
+
   const seatBackHeight = isSupercar ? 0.25 : 0.38;
   const seats = [];
   for (const side of [-1, 1]) {
@@ -286,6 +328,7 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
     seat.position.x = side * 0.4;
     seats.push(seat);
   }
+
   const steeringPivot = new THREE.Group();
   steeringPivot.userData.studioName = 'Steering assembly';
   steeringPivot.position.set(-0.42, cabin.position.y - (isSupercar ? 0.12 : 0.16), 0.54);
@@ -343,7 +386,6 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
   flameL.add(fOuterL, fInnerL);
   flameL.position.set(-0.52, 0.34, -2.35);
   flameL.visible = false;
-
   const flameR = flameL.clone();
   flameR.position.x = 0.52;
   flameR.visible = false;
@@ -370,9 +412,9 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
   const tireMat = makeMat(0x111827, { roughness: 0.85, flatShading: false });
   const rimMat = chromeMat;
   const brakeCaliperMat = makeMat(isSupercar ? 0xef4444 : accentHex, { metalness: 0.55, roughness: 0.32 });
+
   const wheelPivots = [];
   const wheelSpinners = [];
-
   [
     [-0.98, 0.38, 1.38],
     [0.98, 0.38, 1.38],
@@ -382,18 +424,14 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
     const steerPivot = new THREE.Group();
     steerPivot.userData.studioName = `${idx < 2 ? 'Front' : 'Rear'} ${idx % 2 === 0 ? 'left' : 'right'} wheel`;
     steerPivot.position.set(wx, wy, wz);
-
     const spinGroup = new THREE.Group();
     const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 0.28, 18), tireMat);
     tire.rotation.z = Math.PI / 2;
     tire.castShadow = true;
-
     const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.295, 14), rimMat);
     rim.rotation.z = Math.PI / 2;
-
     const caliper = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.14, 0.12), brakeCaliperMat);
     caliper.position.set(idx % 2 === 0 ? -0.06 : 0.06, 0.11, -0.09);
-
     spinGroup.add(tire, rim, caliper);
     steerPivot.add(spinGroup);
     root.add(steerPivot);
@@ -402,8 +440,8 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
   });
 
   return {
-    root, chassis, doorLeftPivot, doorRightPivot, wheelPivots, wheelSpinners, flameL, flameR, windowMaterial: glassMat,
-    steeringPivot, name, isSupercar, carScale,
+    root, chassis, doorLeftPivot, doorRightPivot, wheelPivots, wheelSpinners, flameL, flameR,
+    windowMaterial: glassMat, steeringPivot, name, isSupercar, carScale,
     cameraSeat: new THREE.Vector3(-0.38, isSupercar ? 1.02 : 1.30, 0.12),
     cameraYaw: yaw + Math.PI, cameraPitch: 0.25, cameraLookIdle: 2, lastCameraYaw: yaw
   };
@@ -411,19 +449,25 @@ export function buildSportsCarMesh({ name = 'SPORTS CAR', bodyHex = 0xdc2626, ac
 
 export function buildSportsCar(cfg) {
   const { name, x, z, yaw, isSupercar = false } = cfg;
+  // Rest on the actual surface below the spawn point (showroom marble, speedway
+  // tarmac, desert highway) instead of a hardcoded street height.
+  const spawnY = Number.isFinite(cfg.y) ? cfg.y : computeSupportFloor(x, z, 1.2, 0.9) + 0.02;
   const {
-    root, chassis, doorLeftPivot, doorRightPivot, wheelPivots, wheelSpinners, flameL, flameR, windowMaterial,
-    steeringPivot, carScale, cameraSeat, cameraYaw, cameraPitch, cameraLookIdle, lastCameraYaw
-  } = buildSportsCarMesh(cfg);
+    root, chassis, doorLeftPivot, doorRightPivot, wheelPivots, wheelSpinners, flameL, flameR,
+    windowMaterial, steeringPivot, carScale, cameraSeat, cameraYaw, cameraPitch, cameraLookIdle, lastCameraYaw
+  } = buildSportsCarMesh({ ...cfg, y: spawnY });
+
   worldRoot.add(root);
 
   const carObj = {
+    uid: ++vehicleUid,
     name,
     isSupercar,
     x,
-    y: 0.12,
+    y: spawnY,
     z,
     yaw,
+    vy: 0,
     pitch: 0,
     roll: 0,
     pitchSway: 0,
@@ -460,8 +504,19 @@ export function buildSportsCar(cfg) {
     wheelPivots,
     wheelSpinners
   };
+  root.userData.vehicleUid = carObj.uid;
   vehicles.push(carObj);
   return carObj;
+}
+
+/** Drop every vehicle record (used by world rebuilds; meshes go with worldRoot). */
+export function resetVehicles() {
+  for (const v of vehicles) {
+    if (v.entryAnim) disposeEntryProxy(v.entryAnim);
+    if (v.root && v.root.parent) v.root.parent.remove(v.root);
+  }
+  vehicles.length = 0;
+  carCollisionCooldowns.clear();
 }
 
 // Lightweight character proxy shown during third-person enter/exit transitions
@@ -480,11 +535,9 @@ function buildEntryProxyMesh() {
   const torso = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.54, 0.22), shirtMat);
   torso.position.y = 0.27;
   torso.castShadow = true;
-
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.27, 0.25), skinMat);
   head.position.y = 0.70;
   head.castShadow = true;
-
   const hair = new THREE.Mesh(new THREE.BoxGeometry(0.27, 0.09, 0.27), pantsMat);
   hair.position.y = 0.82;
 
@@ -511,7 +564,7 @@ function disposeEntryProxy(anim) {
 }
 
 function computeVehicleExitSpot(v) {
-  const exitDistance = 2.1 * (v.carScale || 1.35);
+  const exitDistance = 2.1 * footprintScale(v);
   const forwardX = Math.sin(v.yaw);
   const forwardZ = Math.cos(v.yaw);
   const candidates = [
@@ -563,6 +616,7 @@ export function getNearestVehicle(maxDist = 5.2) {
   let best = null;
   let bestDist = maxDist;
   vehicles.forEach((v, idx) => {
+    if (v.entryAnim) return;
     if (hooks.mpCarLocked(idx)) return;
     const d = Math.hypot(player.x - v.x, player.z - v.z);
     if (d < bestDist && Math.abs(player.y - v.y) < 2.2) {
@@ -595,7 +649,6 @@ export function enterVehicle(idx) {
   }
   v.doorAutoCloseTimer = 0;
 
-  const scale = v.carScale || 1.35;
   const doorwayLocal = new THREE.Vector3(sideSign * 1.48, 0.05, 0.05);
   const outsideWorld = v.root.localToWorld(doorwayLocal);
   outsideWorld.y = Math.max(player.y, v.y + 0.04);
@@ -649,13 +702,11 @@ export function exitCurrentCar(silent = false) {
     finalizeExitCar(idx, null, { x: player.x, y: player.y, z: player.z }, silent);
     return;
   }
-
   const exitSpot = computeVehicleExitSpot(v);
   if (silent) {
     finalizeExitCar(idx, v, exitSpot, true);
     return;
   }
-
   if (v.entryAnim) return;
 
   const exDx = exitSpot.x - v.x;
@@ -699,12 +750,10 @@ export function exitCurrentCar(silent = false) {
 function stepVehicleEntryExitAnim(v, dt) {
   const anim = v.entryAnim;
   if (!anim) return false;
-
   anim.timer += dt;
   const rawT = Math.min(1, anim.timer / anim.duration);
   const ease = rawT < 0.5 ? 2 * rawT * rawT : 1 - Math.pow(-2 * rawT + 2, 2) / 2;
   const duckDip = Math.sin(rawT * Math.PI) * 0.22;
-
   const seatWorld = v.root.localToWorld(v.cameraSeat.clone());
   const seatFloorWorld = v.root.localToWorld(new THREE.Vector3(v.cameraSeat.x, 0.24, v.cameraSeat.z));
 
@@ -732,7 +781,6 @@ function stepVehicleEntryExitAnim(v, dt) {
       curPos.lerp(seatFloorWorld, sitT);
       curPos.y -= duckDip * 0.6;
       anim.proxy.rig.position.copy(curPos);
-
       const startYaw = v.yaw + (anim.sideSign > 0 ? Math.PI * 0.5 : -Math.PI * 0.5);
       anim.proxy.rig.rotation.y = startYaw + (v.yaw - startYaw) * sitT;
       anim.proxy.hip.position.y = 0.88 - sitT * 0.34;
@@ -745,7 +793,6 @@ function stepVehicleEntryExitAnim(v, dt) {
       const targetCamPos = seatWorld.clone();
       targetCamPos.y -= duckDip;
       camera.position.lerpVectors(anim.startCamPos, targetCamPos, ease);
-
       const lookTarget = v.root.localToWorld(new THREE.Vector3(
         v.cameraSeat.x * (1 - ease),
         v.cameraSeat.y + 0.05,
@@ -755,7 +802,7 @@ function stepVehicleEntryExitAnim(v, dt) {
       const endQuat = new THREE.Quaternion().setFromRotationMatrix(endMat);
       camera.quaternion.slerpQuaternions(anim.startCamQuat, endQuat, ease);
     } else {
-      const aerialDist = 11.4 * (v.carScale || 1.35);
+      const aerialDist = 11.4 * (v.carScale || DEFAULT_SCALE);
       const horizontalDist = aerialDist * Math.cos(v.cameraPitch);
       const endCamPos = new THREE.Vector3(
         v.x + Math.sin(v.cameraYaw) * horizontalDist,
@@ -778,7 +825,6 @@ function stepVehicleEntryExitAnim(v, dt) {
     }
   } else if (anim.type === 'exit') {
     const exitPos = new THREE.Vector3(anim.exitSpot.x, anim.exitSpot.y, anim.exitSpot.z);
-
     if (rawT >= 0.72) {
       v.doorTargetL = 0;
       v.doorTargetR = 0;
@@ -794,7 +840,6 @@ function stepVehicleEntryExitAnim(v, dt) {
       const curPos = new THREE.Vector3().lerpVectors(seatFloorWorld, exitPos, ease);
       curPos.y -= duckDip * 0.5;
       anim.proxy.rig.position.copy(curPos);
-
       const outYaw = v.yaw + (anim.sideSign > 0 ? -Math.PI * 0.5 : Math.PI * 0.5);
       anim.proxy.rig.rotation.y = v.yaw + (outYaw - v.yaw) * standT;
       anim.proxy.hip.position.y = 0.54 + standT * 0.34;
@@ -808,7 +853,6 @@ function stepVehicleEntryExitAnim(v, dt) {
       const midCamPos = new THREE.Vector3().lerpVectors(seatWorld, endCamPos, ease);
       midCamPos.y -= duckDip;
       camera.position.copy(midCamPos);
-
       const exitYaw = v.yaw + Math.PI;
       const lookTarget = new THREE.Vector3(
         camera.position.x - Math.sin(exitYaw) * 4,
@@ -839,7 +883,6 @@ function stepVehicleEntryExitAnim(v, dt) {
       return true;
     }
   }
-
   return true;
 }
 
@@ -875,7 +918,7 @@ export function shiftVehicleGear(delta) {
 
 // 2-Circle Capsule Geometry for Car Body Representation
 function getCarCircles(v) {
-  const scale = v.carScale || 1.35;
+  const scale = footprintScale(v);
   const d = 0.95 * scale;
   const r = 0.92 * scale;
   const fx = Math.sin(v.yaw);
@@ -892,24 +935,28 @@ function resolveVehicleCollisions(dt) {
   const numCars = vehicles.length;
   if (numCars < 2) return;
 
+  // Cooldowns are keyed by stable uid so removing a vehicle can't re-map them.
+  if (carCollisionCooldowns.size > 256) {
+    for (const [key, stamp] of carCollisionCooldowns) {
+      if (now - stamp > 4000) carCollisionCooldowns.delete(key);
+    }
+  }
+
   for (let i = 0; i < numCars; i++) {
     const v1 = vehicles[i];
     if (!v1) continue;
-
     for (let j = i + 1; j < numCars; j++) {
       const v2 = vehicles[j];
       if (!v2) continue;
-
       const dx = v2.x - v1.x;
       const dz = v2.z - v1.z;
       const dist = Math.hypot(dx, dz);
-      const s1 = v1.carScale || 1.35;
-      const s2 = v2.carScale || 1.35;
+      const s1 = footprintScale(v1);
+      const s2 = footprintScale(v2);
       if (dist > (s1 + s2) * 2.2 || dist < 0.0001) continue;
 
       const circles1 = getCarCircles(v1);
       const circles2 = getCarCircles(v2);
-
       let maxOverlap = 0;
       let colNormalX = 0;
       let colNormalZ = 0;
@@ -934,13 +981,11 @@ function resolveVehicleCollisions(dt) {
           }
         }
       }
-
       if (maxOverlap <= 0) continue;
 
-      const m1 = v1.isTank ? 3.5 : (v1.carScale || 1.35);
-      const m2 = v2.isTank ? 3.5 : (v2.carScale || 1.35);
+      const m1 = v1.isTank ? 3.5 : (v1.carScale || DEFAULT_SCALE);
+      const m2 = v2.isTank ? 3.5 : (v2.carScale || DEFAULT_SCALE);
       const totalMass = m1 + m2;
-
       const owner1 = hooks.mpCarOwner ? hooks.mpCarOwner(i) : null;
       const owner2 = hooks.mpCarOwner ? hooks.mpCarOwner(j) : null;
       const isDriven1 = gameState.inCar && gameState.activeCarIndex === i;
@@ -948,7 +993,6 @@ function resolveVehicleCollisions(dt) {
 
       const w1 = m2 / totalMass;
       const w2 = m1 / totalMass;
-
       v1.x -= colNormalX * maxOverlap * w1;
       v1.z -= colNormalZ * maxOverlap * w1;
       v2.x += colNormalX * maxOverlap * w2;
@@ -958,7 +1002,6 @@ function resolveVehicleCollisions(dt) {
       const vz1 = v1.velZ || (Math.cos(v1.yaw) * v1.speed);
       const vx2 = v2.velX || (Math.sin(v2.yaw) * v2.speed);
       const vz2 = v2.velZ || (Math.cos(v2.yaw) * v2.speed);
-
       const rvx = vx1 - vx2;
       const rvz = vz1 - vz2;
       const velAlongNormal = rvx * colNormalX + rvz * colNormalZ;
@@ -966,10 +1009,8 @@ function resolveVehicleCollisions(dt) {
       if (velAlongNormal > 0) {
         const restitution = 0.35;
         const impulseMag = ((1 + restitution) * velAlongNormal) / (1 / m1 + 1 / m2);
-
         const impulseX = impulseMag * colNormalX;
         const impulseZ = impulseMag * colNormalZ;
-
         v1.velX = vx1 - impulseX / m1;
         v1.velZ = vz1 - impulseZ / m1;
         v2.velX = vx2 + impulseX / m2;
@@ -984,29 +1025,23 @@ function resolveVehicleCollisions(dt) {
         const rz1 = contactZ - v1.z;
         const rx2 = contactX - v2.x;
         const rz2 = contactZ - v2.z;
-
         const torque1 = rx1 * (-impulseZ) - rz1 * (-impulseX);
         const torque2 = rx2 * impulseZ - rz2 * impulseX;
-
         const inertia1 = m1 * 1.8;
         const inertia2 = m2 * 1.8;
-
         const yawImpulse1 = torque1 / inertia1;
         const yawImpulse2 = torque2 / inertia2;
-
         v1.yaw += yawImpulse1 * 0.45;
         v2.yaw += yawImpulse2 * 0.45;
 
-        const pairKey = `${i}_${j}`;
+        const pairKey = `${v1.uid}_${v2.uid}`;
         const lastHit = carCollisionCooldowns.get(pairKey) || 0;
         const impactSpeed = Math.abs(velAlongNormal);
-
         if (now - lastHit > 250 && impactSpeed > 1.8) {
           carCollisionCooldowns.set(pairKey, now);
           sfx.hit();
           const pCount = Math.min(14, Math.max(4, Math.floor(impactSpeed * 1.5)));
           spawnParticles(contactX, (v1.y + v2.y) * 0.5 + 0.4, contactZ, 0xfbbf24, pCount, 4.5);
-
           if ((isDriven1 || isDriven2) && impactSpeed > 7.0) {
             hooks.applyPlayerDamage(Math.min(30, (impactSpeed - 7.0) * 1.6), 'VEHICLE COLLISION');
           }
@@ -1026,334 +1061,340 @@ function resolveVehicleCollisions(dt) {
 
 // Per-frame driving model (6-speed gearbox, grip, collisions, 3D slope physics & side-roll tipping).
 export function stepVehicleDriving(dt, elapsed) {
-    resolveVehicleCollisions(dt);
+  resolveVehicleCollisions(dt);
+  if (!gameState.inCar) return;
+  const v = vehicles[gameState.activeCarIndex];
+  if (!v) return;
 
-    const v = vehicles[gameState.activeCarIndex];
-    if (!v) return;
+  const animLock = Boolean(v.entryAnim);
+  const throttleInput = animLock ? 0 : (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0);
+  const brakeInput = animLock ? 1 : (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0);
+  const steerInput = animLock ? 0 : ((keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0) - (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0));
+  const handbrake = animLock ? 0 : (keys['Space'] ? 1 : 0);
 
-    const animLock = Boolean(v.entryAnim);
-    const throttleInput = animLock ? 0 : (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0);
-    const brakeInput = animLock ? 1 : (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0);
-    const steerInput = animLock ? 0 : ((keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0) - (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0));
-    const handbrake = animLock ? 0 : (keys['Space'] ? 1 : 0);
+  const accelMul = tune('accelMultiplier');
+  const brakeMul = tune('brakeMultiplier');
+  const steerMul = tune('steerMultiplier');
+  const gripMulData = tune('gripMultiplier');
 
-    const gIdx = v.gearIndex;
-    const gearCapMps = GEAR_CAPS_MPH[gIdx] / 2.237 * (v.isTank ? 0.48 : 1);
-    const gearRatio = GEAR_RATIO_MULT[gIdx];
-    const prevSpeed = v.speed;
+  const gIdx = v.gearIndex;
+  const gearCapMps = getGearCaps()[gIdx] / 2.237 * (v.isTank ? 0.48 : 1);
+  const gearRatio = GEAR_RATIO_MULT[gIdx];
+  const prevSpeed = v.speed;
 
-    if (v.flameTimer > 0) {
-      v.flameTimer -= dt;
-      const flOn = v.flameTimer > 0 && Math.sin(elapsed * 65) > -0.35;
-      v.flameL.visible = flOn;
-      v.flameR.visible = flOn;
-      if (flOn) {
-        const s = 0.8 + Math.random() * 0.65;
-        v.flameL.scale.set(1, 1, s);
-        v.flameR.scale.set(1, 1, s);
+  if (v.flameTimer > 0) {
+    v.flameTimer -= dt;
+    const flOn = v.flameTimer > 0 && Math.sin(elapsed * 65) > -0.35;
+    v.flameL.visible = flOn;
+    v.flameR.visible = flOn;
+    if (flOn) {
+      const s = 0.8 + Math.random() * 0.65;
+      v.flameL.scale.set(1, 1, s);
+      v.flameR.scale.set(1, 1, s);
+    }
+  } else {
+    v.flameL.visible = false;
+    v.flameR.visible = false;
+  }
+
+  let onLimiter = false;
+  if (gIdx === 1) { // Neutral
+    if (throttleInput) v.rpm = Math.min(7900, v.rpm + 6400 * dt);
+    else v.rpm = Math.max(880, v.rpm - 4400 * dt);
+    v.speed *= Math.max(0, 1 - 0.45 * dt);
+  } else if (gIdx === 0) { // Reverse
+    const targetRpm = 900 + (Math.abs(v.speed) / Math.max(1, gearCapMps)) * 6600;
+    v.rpm += (targetRpm - v.rpm) * Math.min(1, dt * 10);
+    if (throttleInput) {
+      v.speed = Math.max(-gearCapMps, v.speed - 14.5 * dt);
+    } else {
+      v.speed *= Math.max(0, 1 - 1.5 * dt);
+    }
+  } else { // Forward Gears 1-6
+    const speedRatio = Math.max(0, v.speed / Math.max(1, gearCapMps));
+    const rawRpm = 900 + speedRatio * 6950;
+    v.rpm += (Math.min(8000, rawRpm) - v.rpm) * Math.min(1, dt * 11);
+    const normRpm = v.rpm / 8000;
+    const torqueCurve = Math.max(0.32, 1 - Math.pow((normRpm - 0.62) / 0.65, 2));
+    const superMult = v.isTank ? 0.62 : v.isSupercar ? 1.32 : 1.0;
+    const driveAccel = 23.0 * superMult * gearRatio * torqueCurve * accelMul;
+    if (throttleInput) {
+      if (v.speed < gearCapMps) {
+        v.speed = Math.min(gearCapMps, v.speed + driveAccel * dt);
+      } else {
+        onLimiter = true;
+        v.rpm = 7750 + Math.sin(elapsed * 55) * 240;
+        v.speed -= 4.0 * dt;
       }
     } else {
-      v.flameL.visible = false;
-      v.flameR.visible = false;
+      const engineBrake = 2.4 + (1.45 / Math.max(0.2, gearRatio)) * 0.55;
+      v.speed = Math.max(0, v.speed - engineBrake * dt);
     }
+  }
 
-    let onLimiter = false;
-    if (gIdx === 1) { // Neutral
-      if (throttleInput) v.rpm = Math.min(7900, v.rpm + 6400 * dt);
-      else v.rpm = Math.max(880, v.rpm - 4400 * dt);
-      v.speed *= Math.max(0, 1 - 0.45 * dt);
-    } else if (gIdx === 0) { // Reverse
-      const targetRpm = 900 + (Math.abs(v.speed) / Math.max(1, gearCapMps)) * 6600;
-      v.rpm += (targetRpm - v.rpm) * Math.min(1, dt * 10);
-      if (throttleInput) {
-        v.speed = Math.max(-gearCapMps, v.speed - 14.5 * dt);
-      } else {
-        v.speed *= Math.max(0, 1 - 1.5 * dt);
-      }
-    } else { // Forward Gears 1-6
-      const speedRatio = Math.max(0, v.speed / Math.max(1, gearCapMps));
-      const rawRpm = 900 + speedRatio * 6950;
-      v.rpm += (Math.min(8000, rawRpm) - v.rpm) * Math.min(1, dt * 11);
+  if (brakeInput) {
+    if (v.speed > 0.2) v.speed = Math.max(0, v.speed - 36.0 * brakeMul * dt);
+    else if (v.speed < -0.2) v.speed = Math.min(0, v.speed + 36.0 * brakeMul * dt);
+    else v.speed = 0;
+  }
+  if (handbrake) {
+    v.speed *= Math.max(0, 1 - (v.isSupercar ? 2.1 : 3.2) * dt);
+  }
 
-      const normRpm = v.rpm / 8000;
-      const torqueCurve = Math.max(0.32, 1 - Math.pow((normRpm - 0.62) / 0.65, 2));
-      const superMult = v.isTank ? 0.62 : v.isSupercar ? 1.32 : 1.0;
-      const driveAccel = 23.0 * superMult * gearRatio * torqueCurve * levelData.params.vehicles.accelMultiplier;
+  const targetSteer = steerInput * (v.isSupercar ? 0.54 : 0.46) * steerMul;
+  v.steerAngle += (targetSteer - v.steerAngle) * Math.min(1, dt * 11);
+  const speedFactor = Math.min(1, Math.abs(v.speed) / 4.2);
+  const dirSign = v.speed >= 0 ? 1 : -1;
+  const driftYawMult = handbrake ? (v.isSupercar ? 1.55 : 1.32) : 1.0;
+  v.yaw += v.steerAngle * 2.45 * speedFactor * dirSign * driftYawMult * dt;
 
-      if (throttleInput) {
-        if (v.speed < gearCapMps) {
-          v.speed = Math.min(gearCapMps, v.speed + driveAccel * dt);
-        } else {
-          onLimiter = true;
-          v.rpm = 7750 + Math.sin(elapsed * 55) * 240;
-          v.speed -= 4.0 * dt;
-        }
-      } else {
-        const engineBrake = 2.4 + (1.45 / Math.max(0.2, gearRatio)) * 0.55;
-        v.speed = Math.max(0, v.speed - engineBrake * dt);
-      }
-    }
+  const headX = Math.sin(v.yaw);
+  const headZ = Math.cos(v.yaw);
+  const sideX = Math.cos(v.yaw);
+  const sideZ = -Math.sin(v.yaw);
+  const targetVx = headX * v.speed;
+  const targetVz = headZ * v.speed;
+  const isTipping = Math.abs(v.roll || 0) > 0.78;
+  const lateralGrip = isTipping ? 0.8 : (handbrake ? (v.isSupercar ? 1.35 : 1.8) : (v.isSupercar ? 8.2 : 6.8));
+  const gripMul = Math.min(1, surfaceGrip(v.x, v.z) / 14 + 0.12) * gripMulData;
 
-    if (brakeInput) {
-      if (v.speed > 0.2) v.speed = Math.max(0, v.speed - 36.0 * levelData.params.vehicles.brakeMultiplier * dt);
-      else if (v.speed < -0.2) v.speed = Math.min(0, v.speed + 36.0 * levelData.params.vehicles.brakeMultiplier * dt);
-      else v.speed = 0;
-    }
-    if (handbrake) {
-      v.speed *= Math.max(0, 1 - (v.isSupercar ? 2.1 : 3.2) * dt);
-    }
+  if (isInWater(v.x, v.z)) v.speed *= Math.max(0, 1 - 1.4 * dt);
+  v.velX += (targetVx - v.velX) * Math.min(1, lateralGrip * gripMul * dt);
+  v.velZ += (targetVz - v.velZ) * Math.min(1, lateralGrip * gripMul * dt);
 
-    const targetSteer = steerInput * (v.isSupercar ? 0.54 : 0.46) * levelData.params.vehicles.steerMultiplier;
-    v.steerAngle += (targetSteer - v.steerAngle) * Math.min(1, dt * 11);
+  const slipSpeed = Math.hypot(v.velX - targetVx, v.velZ - targetVz);
+  const isSkidding = (handbrake && Math.abs(v.speed) > 4.5)
+    || (slipSpeed > 3.6 && Math.abs(v.speed) > 6.5)
+    || (brakeInput && Math.abs(v.speed) > 12);
+  if (isSkidding) {
+    sfx.skid(dt);
+    const rWheelX = v.x - headX * 1.4;
+    const rWheelZ = v.z - headZ * 1.4;
+    spawnParticles(rWheelX, v.y + 0.14, rWheelZ, handbrake && v.isSupercar ? 0xf8fafc : 0xcbd5e1, 1, 1.8);
+  }
 
-    const speedFactor = Math.min(1, Math.abs(v.speed) / 4.2);
-    const dirSign = v.speed >= 0 ? 1 : -1;
-    const driftYawMult = handbrake ? (v.isSupercar ? 1.55 : 1.32) : 1.0;
-    v.yaw += v.steerAngle * 2.45 * speedFactor * dirSign * driftYawMult * dt;
+  const nextX = v.x + v.velX * dt;
+  const nextZ = v.z + v.velZ * dt;
+  const cfx = headX, cfz = headZ;
+  const crx = sideX, crz = sideZ;
+  const wheelZ = wheelHalfZ(v);
+  const wheelX = wheelHalfX(v);
 
-    const headX = Math.sin(v.yaw);
-    const headZ = Math.cos(v.yaw);
-    const sideX = Math.cos(v.yaw);
-    const sideZ = -Math.sin(v.yaw);
+  const getWheelY = (forwardSign, sideSign) => computeSupportFloor(
+    nextX + cfx * (forwardSign * wheelZ) + crx * (sideSign * wheelX),
+    nextZ + cfz * (forwardSign * wheelZ) + crz * (sideSign * wheelX),
+    v.y + 0.65,
+    0.42
+  );
+  const frontLeftY = getWheelY(1, -1);
+  const frontRightY = getWheelY(1, 1);
+  const rearLeftY = getWheelY(-1, -1);
+  const rearRightY = getWheelY(-1, 1);
+  const centerY = computeSupportFloor(nextX, nextZ, v.y + 0.65, 0.8);
+  const wheelAvgY = (frontLeftY + frontRightY + rearLeftY + rearRightY) * 0.25;
+  const groundSupportY = Math.max(centerY, Math.min(wheelAvgY, centerY + 0.9));
+  const groundY = groundSupportY + 0.02;
 
-    const targetVx = headX * v.speed;
-    const targetVz = headZ * v.speed;
-    const isTipping = Math.abs(v.roll || 0) > 0.78;
-    const lateralGrip = isTipping ? 0.8 : (handbrake ? (v.isSupercar ? 1.35 : 1.8) : (v.isSupercar ? 8.2 : 6.8));
-    const gripMul = Math.min(1, surfaceGrip(v.x, v.z) / 14 + 0.12) * levelData.params.vehicles.gripMultiplier;
-    if (isInWater(v.x, v.z)) v.speed *= Math.max(0, 1 - 1.4 * dt);
-    v.velX += (targetVx - v.velX) * Math.min(1, lateralGrip * gripMul * dt);
-    v.velZ += (targetVz - v.velZ) * Math.min(1, lateralGrip * gripMul * dt);
-
-    const slipSpeed = Math.hypot(v.velX - targetVx, v.velZ - targetVz);
-    const isSkidding = (handbrake && Math.abs(v.speed) > 4.5) || (slipSpeed > 3.6 && Math.abs(v.speed) > 6.5) || (brakeInput && Math.abs(v.speed) > 12);
-    if (isSkidding) {
-      sfx.skid(dt);
-      const rWheelX = v.x - headX * 1.4;
-      const rWheelZ = v.z - headZ * 1.4;
-      spawnParticles(rWheelX, v.y + 0.14, rWheelZ, handbrake && v.isSupercar ? 0xf8fafc : 0xcbd5e1, 1, 1.8);
-    }
-
-    const nextX = v.x + v.velX * dt;
-    const nextZ = v.z + v.velZ * dt;
-
-    const cfx = headX, cfz = headZ;
-    const crx = sideX, crz = sideZ;
-
-    const carScale = v.carScale || 1.35;
-    const wheelZ = 1.38 * carScale;
-    const wheelX = 0.98 * carScale;
-
-    const getWheelY = (forwardSign, sideSign) => computeSupportFloor(
-      nextX + cfx * (forwardSign * wheelZ) + crx * (sideSign * wheelX),
-      nextZ + cfz * (forwardSign * wheelZ) + crz * (sideSign * wheelX),
-      v.y + 0.65,
-      0.42
-    );
-
-    const frontLeftY  = getWheelY(1, -1);
-    const frontRightY = getWheelY(1, 1);
-    const rearLeftY   = getWheelY(-1, -1);
-    const rearRightY  = getWheelY(-1, 1);
-
-    const centerY = computeSupportFloor(nextX, nextZ, v.y + 0.65, 0.8);
-    const wheelAvgY = (frontLeftY + frontRightY + rearLeftY + rearRightY) * 0.25;
-
-    const groundSupportY = Math.max(centerY, Math.min(wheelAvgY, centerY + 0.9));
-    const groundY = groundSupportY + 0.02;
-
-    v.vy = v.vy || 0;
-    if (groundY > v.y + 0.08) {
-      v.vy = Math.max(0, v.vy);
+  v.vy = v.vy || 0;
+  if (groundY > v.y + 0.08) {
+    v.vy = Math.max(0, v.vy);
+    v.y = groundY;
+  } else if (groundY < v.y) {
+    v.vy -= 19.5 * dt;
+    v.y += v.vy * dt;
+    if (v.y <= groundY) {
       v.y = groundY;
-    } else if (groundY < v.y) {
-      v.vy -= 19.5 * dt;
-      v.y += v.vy * dt;
-      if (v.y <= groundY) {
-        v.y = groundY;
-        v.vy = 0;
-      }
-    } else {
       v.vy = 0;
-      v.y = groundY;
     }
+  } else {
+    v.vy = 0;
+    v.y = groundY;
+  }
 
-    // 3D Slope Gravity & Hill-Climbing Torque
-    const frontAvgY = (frontLeftY + frontRightY) * 0.5;
-    const rearAvgY  = (rearLeftY + rearRightY) * 0.5;
-    const leftAvgY  = (frontLeftY + rearLeftY) * 0.5;
-    const rightAvgY = (frontRightY + rearRightY) * 0.5;
+  // 3D Slope Gravity & Hill-Climbing Torque
+  const frontAvgY = (frontLeftY + frontRightY) * 0.5;
+  const rearAvgY = (rearLeftY + rearRightY) * 0.5;
+  const leftAvgY = (frontLeftY + rearLeftY) * 0.5;
+  const rightAvgY = (frontRightY + rearRightY) * 0.5;
+  const slopeForward = (frontAvgY - rearAvgY) / (wheelZ * 2);
+  const slopeSide = (rightAvgY - leftAvgY) / (wheelX * 2);
+  v.speed += -19.5 * slopeForward * dt;
+  const lateralGravityMag = -19.5 * slopeSide * dt;
+  v.velX += sideX * lateralGravityMag;
+  v.velZ += sideZ * lateralGravityMag;
+  if (throttleInput > 0 && slopeForward > 0.08 && !isTipping) {
+    const climbAssist = 19.5 * Math.min(slopeForward, 0.45) * (v.isSupercar ? 1.35 : 1.15);
+    v.speed += climbAssist * dt;
+  }
 
-    const slopeForward = (frontAvgY - rearAvgY) / (wheelZ * 2);
-    const slopeSide    = (rightAvgY - leftAvgY) / (wheelX * 2);
+  // Side-to-Side Roll & Tipping
+  const rawPitch = Math.atan(slopeForward);
+  const rawRoll = Math.atan(slopeSide);
+  const accelDelta = (v.speed - prevSpeed) / Math.max(0.008, dt);
+  const targetPitchSway = Math.max(-0.06, Math.min(0.06, -accelDelta * 0.0022));
+  const targetRollSway = Math.max(-0.08, Math.min(0.08, v.steerAngle * (v.speed / 28) * 0.14));
+  v.pitchSway = v.pitchSway || 0;
+  v.rollSway = v.rollSway || 0;
+  // Smooth out suspension pitch & roll sway so braking / handbrake doesn't tilt immediately
+  v.pitchSway += (targetPitchSway - v.pitchSway) * Math.min(1, dt * 5.5);
+  v.rollSway += (targetRollSway - v.rollSway) * Math.min(1, dt * 5.5);
 
-    v.speed += -19.5 * slopeForward * dt;
-    const lateralGravityMag = -19.5 * slopeSide * dt;
-    v.velX += sideX * lateralGravityMag;
-    v.velZ += sideZ * lateralGravityMag;
+  const targetPitch = rawPitch;
+  const targetRoll = rawRoll;
+  v.pitch = v.pitch || 0;
+  v.roll = v.roll || 0;
+  v.pitch += (targetPitch - v.pitch) * Math.min(1, dt * 10);
+  if (Math.abs(v.roll) > 0.78 || Math.abs(rawRoll) > 0.78) {
+    const rollDir = Math.sign(v.roll || rawRoll || 1);
+    v.roll += rollDir * 4.5 * dt;
+    if (v.roll > Math.PI * 2) v.roll -= Math.PI * 2;
+    if (v.roll < -Math.PI * 2) v.roll += Math.PI * 2;
+  } else {
+    v.roll += (targetRoll - v.roll) * Math.min(1, dt * 10);
+  }
 
-    if (throttleInput > 0 && slopeForward > 0.08 && !isTipping) {
-      const climbAssist = 19.5 * Math.min(slopeForward, 0.45) * (v.isSupercar ? 1.35 : 1.15);
-      v.speed += climbAssist * dt;
+  // Lamp Post & NPC interactions
+  for (const lp of lampPosts) {
+    if (lp.state === 'standing' && Math.hypot(nextX - lp.x, nextZ - lp.z) < 1.85 && Math.abs(v.y - lp.pivot.position.y) < 2.4) {
+      hooks.knockOverLamppost(lp, v.yaw, Math.abs(v.speed));
+      v.speed *= 0.88;
     }
-
-    // Side-to-Side Roll & Tipping
-    const rawPitch = Math.atan(slopeForward);
-    const rawRoll  = Math.atan(slopeSide);
-
-    const accelDelta = (v.speed - prevSpeed) / Math.max(0.008, dt);
-    const targetPitchSway = Math.max(-0.06, Math.min(0.06, -accelDelta * 0.0022));
-    const targetRollSway  = Math.max(-0.08, Math.min(0.08, v.steerAngle * (v.speed / 28) * 0.14));
-
-    v.pitchSway = v.pitchSway || 0;
-    v.rollSway = v.rollSway || 0;
-
-    // Smooth out suspension pitch & roll sway so braking / handbrake doesn't tilt immediately
-    v.pitchSway += (targetPitchSway - v.pitchSway) * Math.min(1, dt * 5.5);
-    v.rollSway  += (targetRollSway - v.rollSway) * Math.min(1, dt * 5.5);
-
-    const targetPitch = rawPitch;
-    const targetRoll  = rawRoll;
-
-    v.pitch = v.pitch || 0;
-    v.roll  = v.roll  || 0;
-
-    v.pitch += (targetPitch - v.pitch) * Math.min(1, dt * 10);
-
-    if (Math.abs(v.roll) > 0.78 || Math.abs(rawRoll) > 0.78) {
-      const rollDir = Math.sign(v.roll || rawRoll || 1);
-      v.roll += rollDir * 4.5 * dt;
-      if (v.roll > Math.PI * 2) v.roll -= Math.PI * 2;
-      if (v.roll < -Math.PI * 2) v.roll += Math.PI * 2;
-    } else {
-      v.roll += (targetRoll - v.roll) * Math.min(1, dt * 10);
+  }
+  for (const npc of npcs) {
+    if (npc.spawned && !npc.asleep && Math.hypot(nextX - npc.x, nextZ - npc.z) < 1.85 && Math.abs(v.speed) > 2.2 && Math.abs(v.y - npc.y) < 2.4) {
+      hooks.damageNpc(npc, Math.abs(v.speed) * 4.5, v.yaw);
+      sfx.hit();
+      spawnParticles(npc.x, npc.y + 1.0, npc.z, 0xfacc15, 7, 5.0);
+      v.speed *= 0.85;
     }
-
-    // Lamp Post & NPC interactions
-    for (const lp of lampPosts) {
-      if (lp.state === 'standing' && Math.hypot(nextX - lp.x, nextZ - lp.z) < 1.85 && Math.abs(v.y - 0.18) < 2.0) {
-        hooks.knockOverLamppost(lp, v.yaw, Math.abs(v.speed));
-        v.speed *= 0.88;
+  }
+  if (hooks.mpActive() && Math.abs(v.speed) > 3) {
+    for (const tp of hooks.mpTargets()) {
+      if (tp.inCar) continue;
+      if (Math.hypot(nextX - tp.x, nextZ - tp.z) < 2.0 && Math.abs(v.y - tp.y) < 2.2) {
+        hooks.mpHitPlayer(tp.id, Math.abs(v.speed) * 3.5, 'VEHICLE IMPACT');
+        spawnParticles(tp.x, tp.y + 1, tp.z, 0xfacc15, 7, 5.0);
+        v.speed *= 0.8;
       }
     }
+  }
 
-    for (const npc of npcs) {
-      if (npc.spawned && !npc.asleep && Math.hypot(nextX - npc.x, nextZ - npc.z) < 1.85 && Math.abs(v.speed) > 2.2 && Math.abs(v.y - 0.18) < 2.0) {
-        hooks.damageNpc(npc, Math.abs(v.speed) * 4.5, v.yaw);
-        sfx.hit();
-        spawnParticles(npc.x, 1.1, npc.z, 0xfacc15, 7, 5.0);
-        v.speed *= 0.85;
-      }
-    }
-
-    if (hooks.mpActive() && Math.abs(v.speed) > 3) {
-      for (const tp of hooks.mpTargets()) {
-        if (tp.inCar) continue;
-        if (Math.hypot(nextX - tp.x, nextZ - tp.z) < 2.0 && Math.abs(v.y - tp.y) < 2.2) {
-          hooks.mpHitPlayer(tp.id, Math.abs(v.speed) * 3.5, 'VEHICLE IMPACT');
-          spawnParticles(tp.x, tp.y + 1, tp.z, 0xfacc15, 7, 5.0);
-          v.speed *= 0.8;
+  // Traversable Slope & Collision Checks
+  const isTraversableSlope = (px, pz) => {
+    const dzX = (terrainH(px + 0.4, pz) - terrainH(px - 0.4, pz)) / 0.8;
+    const dzZ = (terrainH(px, pz + 0.4) - terrainH(px, pz - 0.4)) / 0.8;
+    return Math.hypot(dzX, dzZ) < 1.4;
+  };
+  const ptScale = v.isTank ? 1.3 : 1;
+  const carHit = (px, pz) => {
+    for (let q = 0; q < CAR_PTS.length; q++) {
+      const ptX = px + (cfx * CAR_PTS[q][0] + crx * CAR_PTS[q][1]) * ptScale;
+      const ptZ = pz + (cfz * CAR_PTS[q][0] + crz * CAR_PTS[q][1]) * ptScale;
+      if (collidesHorizontally(ptX, ptZ, v.y + 0.25, 1.3, 0.28)) {
+        const isStructure = collidesHorizontally(ptX, ptZ, terrainH(ptX, ptZ) + 4.0, 1.3, 0.28);
+        if (isStructure || !isTraversableSlope(ptX, ptZ)) {
+          return true;
         }
       }
     }
+    return false;
+  };
 
-    // Traversable Slope & Collision Checks
-    const isTraversableSlope = (px, pz) => {
-      const dzX = (terrainH(px + 0.4, pz) - terrainH(px - 0.4, pz)) / 0.8;
-      const dzZ = (terrainH(px, pz + 0.4) - terrainH(px, pz - 0.4)) / 0.8;
-      return Math.hypot(dzX, dzZ) < 1.4;
-    };
-
-    const carHit = (px, pz) => {
-      for (let q = 0; q < CAR_PTS.length; q++) {
-        const ptX = px + cfx * CAR_PTS[q][0] + crx * CAR_PTS[q][1];
-        const ptZ = pz + cfz * CAR_PTS[q][0] + crz * CAR_PTS[q][1];
-        if (collidesHorizontally(ptX, ptZ, v.y + 0.25, 1.3, 0.28)) {
-          const isStructure = collidesHorizontally(ptX, ptZ, terrainH(ptX, ptZ) + 4.0, 1.3, 0.28);
-          if (isStructure || !isTraversableSlope(ptX, ptZ)) {
-            return true;
-          }
-        }
-      }
-      return false;
-    };
-
-    let okX = true, okZ = true;
-    const nSub = Math.max(1, Math.ceil(Math.hypot(nextX - v.x, nextZ - v.z) / 0.45));
-    const stX = (nextX - v.x) / nSub, stZ = (nextZ - v.z) / nSub;
-    for (let si = 0; si < nSub && (okX || okZ); si++) {
-      if (okX) { if (carHit(v.x + stX, v.z)) okX = false; else v.x += stX; }
-      if (okZ) { if (carHit(v.x, v.z + stZ)) okZ = false; else v.z += stZ; }
+  let okX = true, okZ = true;
+  const nSub = Math.max(1, Math.ceil(Math.hypot(nextX - v.x, nextZ - v.z) / 0.45));
+  const stX = (nextX - v.x) / nSub, stZ = (nextZ - v.z) / nSub;
+  for (let si = 0; si < nSub && (okX || okZ); si++) {
+    if (okX) { if (carHit(v.x + stX, v.z)) okX = false; else v.x += stX; }
+    if (okZ) { if (carHit(v.x, v.z + stZ)) okZ = false; else v.z += stZ; }
+  }
+  if (!okX) v.velX *= -0.28;
+  if (!okZ) v.velZ *= -0.28;
+  if (!okX || !okZ) {
+    const impact = Math.abs(v.speed);
+    v.speed *= (okX || okZ) ? 0.82 : -0.3;
+    if (impact > 5) {
+      sfx.hit();
+      spawnParticles(v.x, v.y + 0.7, v.z, 0xfbbf24, 6, 4);
+      if (impact > 14) hooks.applyPlayerDamage(Math.min(30, (impact - 14) * 1.6), 'CRASH IMPACT');
     }
-    if (!okX) v.velX *= -0.28;
-    if (!okZ) v.velZ *= -0.28;
-    if (!okX || !okZ) {
-      const impact = Math.abs(v.speed);
-      v.speed *= (okX || okZ) ? 0.82 : -0.3;
-      if (impact > 5) {
-        sfx.hit();
-        spawnParticles(v.x, v.y + 0.7, v.z, 0xfbbf24, 6, 4);
-        if (impact > 14) hooks.applyPlayerDamage(Math.min(30, (impact - 14) * 1.6), 'CRASH IMPACT');
-      }
+  }
+
+  // Mesh Transformations
+  v.root.position.set(v.x, v.y, v.z);
+  v.root.rotation.order = 'YXZ';
+  v.root.rotation.y = v.yaw;
+  v.root.rotation.x = v.pitch;
+  v.root.rotation.z = v.roll;
+  v.chassis.rotation.x = v.pitchSway;
+  v.chassis.rotation.z = v.rollSway;
+  v.wheelPivots[0].rotation.y = v.steerAngle;
+  v.wheelPivots[1].rotation.y = v.steerAngle;
+  const wheelRot = (v.speed * dt) / 0.38;
+  v.wheelSpinners.forEach((ws) => { ws.rotation.x += wheelRot; });
+
+  sfx.updateEngine(true, v.rpm, Boolean(throttleInput), onLimiter);
+  player.x = v.x;
+  player.y = v.y + 0.06;
+  player.z = v.z;
+
+  // Run enter/exit camera & character transition if active
+  if (v.entryAnim && stepVehicleEntryExitAnim(v, dt)) {
+    return;
+  }
+
+  if (!gameState.thirdPerson) {
+    let yawStep = v.yaw - (v.lastCameraYaw === undefined ? v.yaw : v.lastCameraYaw);
+    while (yawStep > Math.PI) yawStep -= Math.PI * 2;
+    while (yawStep < -Math.PI) yawStep += Math.PI * 2;
+    player.yaw += yawStep;
+    v.lastCameraYaw = v.yaw;
+    camera.position.copy(v.root.localToWorld(v.cameraSeat.clone()));
+    camera.rotation.y = player.yaw;
+    camera.rotation.x = player.pitch;
+    v.steeringPivot.rotation.z = -v.steerAngle * 1.7;
+  } else {
+    v.cameraLookIdle = (v.cameraLookIdle || 0) + dt;
+    if (v.cameraLookIdle > 2) {
+      const followYaw = v.yaw + Math.PI;
+      const yawDelta = Math.atan2(Math.sin(followYaw - v.cameraYaw), Math.cos(followYaw - v.cameraYaw));
+      const followBlend = 1 - Math.exp(-dt * 1.8);
+      v.cameraYaw += yawDelta * followBlend;
+      v.cameraPitch += (0.25 - v.cameraPitch) * followBlend;
     }
+    const aerialDist = (11.4 * (v.carScale || DEFAULT_SCALE)) + Math.min(5.0, Math.abs(v.speed) * 0.085);
+    const horizontalDist = aerialDist * Math.cos(v.cameraPitch);
+    const camX = v.x + Math.sin(v.cameraYaw) * horizontalDist;
+    const camZ = v.z + Math.cos(v.cameraYaw) * horizontalDist;
+    const camY = Math.max(
+      v.y + 1.15 + Math.sin(v.cameraPitch) * aerialDist,
+      terrainH(camX, camZ) + 3.0,
+      2.4
+    );
+    camera.position.set(camX, camY, camZ);
+    camera.lookAt(v.x, v.y + 0.95, v.z);
+  }
+}
 
-    // Mesh Transformations
-    v.root.position.set(v.x, v.y, v.z);
-    v.root.rotation.order = 'YXZ';
-    v.root.rotation.y = v.yaw;
-    v.root.rotation.x = v.pitch;
-    v.root.rotation.z = v.roll;
-
-    v.chassis.rotation.x = v.pitchSway;
-    v.chassis.rotation.z = v.rollSway;
-
-    v.wheelPivots[0].rotation.y = v.steerAngle;
-    v.wheelPivots[1].rotation.y = v.steerAngle;
-    const wheelRot = (v.speed * dt) / 0.38;
-    v.wheelSpinners.forEach((ws) => { ws.rotation.x += wheelRot; });
-
-    sfx.updateEngine(true, v.rpm, Boolean(throttleInput), onLimiter);
-
-    player.x = v.x;
-    player.y = v.y + 0.06;
-    player.z = v.z;
-
-    // Run enter/exit camera & character transition if active
-    if (v.entryAnim && stepVehicleEntryExitAnim(v, dt)) {
-      return;
+/**
+ * Parked cars keep their authored height unless they are clearly floating or a
+ * surface has risen under them, so showroom / hideout placements stay intact.
+ */
+function settleParkedCar(v, dt) {
+  const rest = computeSupportFloor(v.x, v.z, v.y + 0.65, 0.85) + 0.02;
+  v.vy = v.vy || 0;
+  if (rest > v.y + 0.08) {
+    v.y = rest;
+    v.vy = 0;
+  } else if (v.y - rest > 0.35) {
+    v.vy -= 19.5 * dt;
+    v.y += v.vy * dt;
+    if (v.y <= rest) {
+      v.y = rest;
+      v.vy = 0;
     }
-
-    if (!gameState.thirdPerson) {
-      let yawStep = v.yaw - (v.lastCameraYaw === undefined ? v.yaw : v.lastCameraYaw);
-      while (yawStep > Math.PI) yawStep -= Math.PI * 2;
-      while (yawStep < -Math.PI) yawStep += Math.PI * 2;
-      player.yaw += yawStep;
-      v.lastCameraYaw = v.yaw;
-      camera.position.copy(v.root.localToWorld(v.cameraSeat.clone()));
-      camera.rotation.y = player.yaw;
-      camera.rotation.x = player.pitch;
-      v.steeringPivot.rotation.z = -v.steerAngle * 1.7;
-    } else {
-      v.cameraLookIdle = (v.cameraLookIdle || 0) + dt;
-      if (v.cameraLookIdle > 2) {
-        const followYaw = v.yaw + Math.PI;
-        const yawDelta = Math.atan2(Math.sin(followYaw - v.cameraYaw), Math.cos(followYaw - v.cameraYaw));
-        const followBlend = 1 - Math.exp(-dt * 1.8);
-        v.cameraYaw += yawDelta * followBlend;
-        v.cameraPitch += (0.25 - v.cameraPitch) * followBlend;
-      }
-      const aerialDist = (11.4 * (v.carScale || 1.35)) + Math.min(5.0, Math.abs(v.speed) * 0.085);
-      const horizontalDist = aerialDist * Math.cos(v.cameraPitch);
-      const camX = v.x + Math.sin(v.cameraYaw) * horizontalDist;
-      const camZ = v.z + Math.cos(v.cameraYaw) * horizontalDist;
-      const camY = Math.max(
-        v.y + 1.15 + Math.sin(v.cameraPitch) * aerialDist,
-        terrainH(camX, camZ) + 3.0,
-        2.4
-      );
-      camera.position.set(camX, camY, camZ);
-      camera.lookAt(v.x, v.y + 0.95, v.z);
-    }
+  } else {
+    v.vy = 0;
+  }
 }
 
 // Car suspension & terrain spring physics + door open/close animation
@@ -1361,10 +1402,10 @@ export function suspFrame(dt, t) {
   if (!gameState.inCar) {
     resolveVehicleCollisions(dt);
   }
-
   for (let vi = 0; vi < vehicles.length; vi++) {
     const v = vehicles[vi];
-    const ch = v.chassis; if (!ch) continue;
+    const ch = v.chassis;
+    if (!ch) continue;
     const S = v.sus || (v.sus = { hy: 0, hv: 0, p: 0, pv: 0, r: 0, rv: 0, pa: 0, ps: v.speed || 0, lat: 0 });
     const driven = gameState.inCar && gameState.activeCarIndex === vi;
     const owner = hooks.mpCarOwner ? hooks.mpCarOwner(vi) : null;
@@ -1391,34 +1432,43 @@ export function suspFrame(dt, t) {
       v.doorRightPivot.rotation.y = -v.doorOpenR * 1.08;
     }
 
-    const acc = (v.speed - S.ps) / Math.max(dt, .001); S.ps = v.speed;
+    const acc = (v.speed - S.ps) / Math.max(dt, .001);
+    S.ps = v.speed;
     const lat = -(v.steerAngle || 0) * v.speed * Math.abs(v.speed) * .03;
     const bump = (Math.sin(v.x * 1.7 + v.z * 1.3) * .5 + Math.sin(v.x * .37) * .5) * Math.min(1, Math.abs(v.speed) / 12) * .35;
     const k = 70, c = 9;
-    S.hv += (-k * S.hy - c * S.hv + bump * 30) * dt; S.hy += S.hv * dt;
-    S.pv += (-k * .9 * S.p - c * .8 * S.pv - Math.max(-14, Math.min(14, acc)) * .07 * k * .25) * dt; S.p += S.pv * dt;
-    S.rv += (-k * .9 * S.r - c * .8 * S.rv + Math.max(-14, Math.min(14, lat)) * .02 * k) * dt; S.r += S.rv * dt;
-
+    S.hv += (-k * S.hy - c * S.hv + bump * 30) * dt;
+    S.hy += S.hv * dt;
+    S.pv += (-k * .9 * S.p - c * .8 * S.pv - Math.max(-14, Math.min(14, acc)) * .07 * k * .25) * dt;
+    S.p += S.pv * dt;
+    S.rv += (-k * .9 * S.r - c * .8 * S.rv + Math.max(-14, Math.min(14, lat)) * .02 * k) * dt;
+    S.r += S.rv * dt;
     ch.position.y = S.hy * .35;
+
     if (!driven && !remoteDriven) {
+      settleParkedCar(v, dt);
       v.pitch = v.pitch || 0;
       v.roll = v.roll || 0;
       const cfx = Math.sin(v.yaw), cfz = Math.cos(v.yaw);
       const crx = Math.cos(v.yaw), crz = -Math.sin(v.yaw);
-      const carScale = v.carScale || 1.35;
-      const wheelZ = 1.38 * carScale;
-      const wheelX = 0.98 * carScale;
-
-      const getWheelY = (f, s) => computeSupportFloor(v.x + cfx * (f * wheelZ) + crx * (s * wheelX), v.z + cfz * (f * wheelZ) + crz * (s * wheelX), v.y + 0.65, 0.42);
+      const wheelZ = wheelHalfZ(v);
+      const wheelX = wheelHalfX(v);
+      const getWheelY = (f, s) => computeSupportFloor(
+        v.x + cfx * (f * wheelZ) + crx * (s * wheelX),
+        v.z + cfz * (f * wheelZ) + crz * (s * wheelX),
+        v.y + 0.65,
+        0.42
+      );
       const fLY = getWheelY(1, -1), fRY = getWheelY(1, 1), rLY = getWheelY(-1, -1), rRY = getWheelY(-1, 1);
-      const fAvg = (fLY + fRY) * 0.5, rAvg = (rLY + rRY) * 0.5, lAvg = (fLY + rLY) * 0.5, riAvg = (fRY + rRY) * 0.5;
-
+      const fAvg = (fLY + fRY) * 0.5, rAvg = (rLY + rRY) * 0.5;
+      const lAvg = (fLY + rLY) * 0.5, riAvg = (fRY + rRY) * 0.5;
       const sFwd = (fAvg - rAvg) / (wheelZ * 2);
-      const sSd  = (riAvg - lAvg) / (wheelX * 2);
-
+      const sSd = (riAvg - lAvg) / (wheelX * 2);
       v.pitch += (Math.atan(sFwd) - v.pitch) * Math.min(1, dt * 8);
-      v.roll  += (Math.atan(sSd) - v.roll) * Math.min(1, dt * 8);
+      v.roll += (Math.atan(sSd) - v.roll) * Math.min(1, dt * 8);
 
+      // Sync the mesh: collision shoves used to move the body but leave it behind.
+      v.root.position.set(v.x, v.y, v.z);
       v.root.rotation.order = 'YXZ';
       v.root.rotation.y = v.yaw;
       v.root.rotation.x = v.pitch + S.p * 0.2;
