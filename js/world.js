@@ -1,33 +1,17 @@
 // =============================================================================
-// world.js — Grand Theft Aura
-// Roads, the continuous I-88 interstate, biomes, walk-in interiors, the
-// data-driven skyscraper system, Aura Hills, sewers, the Los Aura expansion,
-// Los Aura International Airport, the AURA ARMORY and the entity spawner.
+// world.js — Grand Theft Aura (refactored)
+// Roads, continuous I-88, biomes, walk-in interiors, data-driven skyscrapers,
+// Aura Hills, sewers, Los Aura expansion, LAX, AURA ARMORY, entity spawner.
 //
-// PHASE 1 — Skyscrapers
-//   • Four exterior archetypes (glass / deco / slab / brutalist) and three
-//     interior archetypes (corporate / finance / residential) share ONE unit
-//     box geometry and a material cache.
-//   • Every tower is one line in TOWER_PLACEMENTS, validated against reserved
-//     road footprints + the live collider registry before it is built, so a
-//     tower can never spawn on a carriageway again.
-//   • Detached lobby caches are disposed on rebuild (GPU leak closed).
-//   • Studio paths are stable, name-based keys.
-//
-// PHASE 2 — Ground integrity & the county line
-//   • Northern range extended west/east to match the collision heightfield.
-//   • Shoreline gaps patched, jungle floor skirted, Forest Road given real
-//     thickness and opened over the Emerald stream.
-//   • Dark backstop planes under all land so no ray ever reaches the void.
-//   • A themed perimeter barrier that fades in as you approach it.
-//
-// PHASE 3 — Content
-//   • Los Aura International: landside lobby, departures board, security
-//     checkpoint, gate lounge, baggage carousel and covered jet walkways.
-//   • AURA ARMORY: buy with cash [E], or find the sledgehammer in the dumpster
-//     behind the store and smash the display glass with [F].
-//   • Northern mountains reforested (groved pines, trunks, snow line species)
-//     and Frostpine valley densified.
+// ARCHITECTURE
+//   • ONE shared UNIT_BOX geometry; every static box is a scaled mesh of it.
+//   • makeBox() carries EXPLICIT shadow flags and EXPLICIT collider specs —
+//     nothing is auto-derived, so gameplay is bit-identical to the original.
+//   • Districts, blocks and props are config/data driven: future map growth
+//     (2× footprint, more detail) is new data rows, not new builder code.
+//   • RNG consumption order and builder order are frozen — the seeded world
+//     lays out identically on every build.
+//   • Studio paths are stable, name-based keys at the landmark root level.
 // =============================================================================
 import * as THREE from 'three';
 import { colorToHex, levelData, terrainHeightOffset } from './levelData.js';
@@ -57,7 +41,6 @@ import {
 
 export const rockMat = new THREE.MeshStandardMaterial({ color: 0x5a554d, roughness: 1, flatShading: true });
 export const pipeMat = new THREE.MeshStandardMaterial({ color: 0x6f7f77, roughness: .8, metalness: .35, side: THREE.BackSide });
-
 const treeBarkTexture = loadTexture('assets/textures/bark.png', { repeatX: 1, repeatY: 4 });
 const treeLeafTexture = loadTexture('assets/textures/lushfoliage.png', { repeatX: 2, repeatY: 2 });
 const treeBarkMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, map: treeBarkTexture, roughness: 0.92, flatShading: true });
@@ -65,6 +48,83 @@ const treeLeafMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, map: 
 treeBarkMaterial.userData.shared = true;
 treeLeafMaterial.userData.shared = true;
 rockMat.userData.shared = true;
+
+// =============================================================================
+// SHARED BUILD TOOLKIT
+// =============================================================================
+const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
+UNIT_BOX.userData.shared = true;
+
+/**
+ * makeBox(parent, w, h, d, x, y, z, material, opts)
+ * opts: {
+ *   cast, recv          — explicit shadow flags (defaults false/false)
+ *   rx, ry, rz          — rotation
+ *   order               — renderOrder
+ *   name                — userData.studioName
+ *   box: ['tag', climbable]                      — centered AABB from dims
+ *      | [x0,x1,y0,y1,z0,z1,'tag',climbable]     — explicit world AABB
+ * }
+ * Colliders are ALWAYS explicit data; never inferred from geometry.
+ */
+function makeBox(parent, w, h, d, x, y, z, material, o = {}) {
+  const m = new THREE.Mesh(UNIT_BOX, material);
+  m.scale.set(w, h, d);
+  m.position.set(x, y, z);
+  if (o.rx) m.rotation.x = o.rx;
+  if (o.ry) m.rotation.y = o.ry;
+  if (o.rz) m.rotation.z = o.rz;
+  m.castShadow = !!o.cast;
+  m.receiveShadow = !!o.recv;
+  if (o.order !== undefined) m.renderOrder = o.order;
+  if (o.name) m.userData.studioName = o.name;
+  parent.add(m);
+  if (o.box) {
+    const b = o.box;
+    if (b.length === 2) addWorldBox(x - w / 2, x + w / 2, y - h / 2, y + h / 2, z - d / 2, z + d / 2, b[0], b[1]);
+    else addWorldBox(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+  }
+  return m;
+}
+
+/** Compound landmark builder. parts: [w,h,d, dx,dy,dz, material, opts?]; dx/dz relative to (bx,bz), dy to by. */
+function buildCompound(parent, bx, bz, parts, by = 0) {
+  const out = [];
+  for (const p of parts) out.push(makeBox(parent, p[0], p[1], p[2], bx + p[3], by + p[4], bz + p[5], p[6], p[7] || {}));
+  return out;
+}
+
+/** Instance-matrix accumulator (shared dummy — sequential use only). */
+const _dm = new THREE.Object3D();
+function xform(list, x, y, z, sx = 1, sy = 1, sz = 1, rx = 0, ry = 0, rz = 0) {
+  _dm.position.set(x, y, z);
+  _dm.rotation.set(rx, ry, rz);
+  _dm.scale.set(sx, sy, sz);
+  _dm.updateMatrix();
+  list.push(_dm.matrix.clone());
+}
+function flushInstances(parent, geo, material, transforms, { cast = false, recv = false } = {}) {
+  if (!transforms.length) return null;
+  const im = new THREE.InstancedMesh(geo, material, transforms.length);
+  transforms.forEach((m, i) => im.setMatrixAt(i, m));
+  im.instanceMatrix.needsUpdate = true;
+  im.castShadow = cast;
+  im.receiveShadow = recv;
+  parent.add(im);
+  return im;
+}
+
+/** Squared planar distance — hot-loop threshold checks (no sqrt). */
+function dist2(ax, az, bx, bz) { const dx = ax - bx, dz = az - bz; return dx * dx + dz * dz; }
+
+/** Prop registry — add a row here, place it anywhere with placeProps(type, coords). */
+const PROP_BUILDERS = {
+  lamppost: ([x, z]) => buildKnockableLamppost(x, z),
+  tree: ([x, z, s = 1, y = 0.18]) => createTree(x, z, s, y),
+  hydrant: ([x, z]) => createHydrant(x, z),
+  shelter: ([x, z, r = 0]) => createBusShelter(x, z, r)
+};
+function placeProps(type, coords) { for (const c of coords) PROP_BUILDERS[type](c); }
 
 // -----------------------------------------------------------------------------
 // Real ground textures
@@ -76,38 +136,21 @@ const GROUND_TEXTURES = {
   sand: loadTexture('assets/textures/sand.png', { repeatX: 1, repeatY: 1 }),
   concrete: loadTexture('assets/textures/concrete.png', { repeatX: 1, repeatY: 1 })
 };
-
 for (const tex of Object.values(GROUND_TEXTURES)) {
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
 }
-
 const groundMatCache = new Map();
-
 /** Simple tiled ground material for flat / mostly-single-surface ground. */
-function makeGroundMat(kind, {
-  color = 0xffffff,
-  repeatX = 1,
-  repeatY = 1,
-  roughness = 0.95,
-  metalness = 0
-} = {}) {
+function makeGroundMat(kind, { color = 0xffffff, repeatX = 1, repeatY = 1, roughness = 0.95, metalness = 0 } = {}) {
   const key = `${kind}|${color}|${repeatX}|${repeatY}|${roughness}|${metalness}`;
   if (groundMatCache.has(key)) return groundMatCache.get(key);
-
   const tex = GROUND_TEXTURES[kind].clone();
   tex.needsUpdate = true;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(repeatX, repeatY);
-
-  const mat = new THREE.MeshStandardMaterial({
-    color,
-    map: tex,
-    roughness,
-    metalness
-  });
-
+  const mat = new THREE.MeshStandardMaterial({ color, map: tex, roughness, metalness });
   groundMatCache.set(key, mat);
   return mat;
 }
@@ -116,49 +159,31 @@ function makeGroundMat(kind, {
 // Seamless natural-terrain blending: grass / dirt / rock / sand / concrete
 // -----------------------------------------------------------------------------
 function makeTerrainBlendMaterial({ roughness = 1, metalness = 0 } = {}) {
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    vertexColors: true,
-    roughness,
-    metalness
-  });
-
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness, metalness });
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uGrass = { value: GROUND_TEXTURES.grass };
     shader.uniforms.uDirt = { value: GROUND_TEXTURES.dirt };
     shader.uniforms.uRock = { value: GROUND_TEXTURES.rock };
     shader.uniforms.uSand = { value: GROUND_TEXTURES.sand };
     shader.uniforms.uConcrete = { value: GROUND_TEXTURES.concrete };
-
-    // World-space texture density. Larger number = smaller/tighter tiles.
     shader.uniforms.uGrassScale = { value: new THREE.Vector2(0.12, 0.12) };
     shader.uniforms.uDirtScale = { value: new THREE.Vector2(0.10, 0.10) };
     shader.uniforms.uRockScale = { value: new THREE.Vector2(0.06, 0.06) };
     shader.uniforms.uSandScale = { value: new THREE.Vector2(0.14, 0.14) };
     shader.uniforms.uConcreteScale = { value: new THREE.Vector2(0.08, 0.08) };
-
     shader.vertexShader = shader.vertexShader
-      .replace(
-        '#include <common>',
-        `#include <common>
+      .replace('#include <common>', `#include <common>
         attribute vec4 terrainSplat;
         attribute float terrainConcrete;
         varying vec4 vSplat;
         varying float vConcrete;
-        varying vec2 vGroundXZ;`
-      )
-      .replace(
-        '#include <begin_vertex>',
-        `#include <begin_vertex>
+        varying vec2 vGroundXZ;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
         vSplat = terrainSplat;
         vConcrete = terrainConcrete;
-        vGroundXZ = (modelMatrix * vec4(transformed, 1.0)).xz;`
-      );
-
+        vGroundXZ = (modelMatrix * vec4(transformed, 1.0)).xz;`);
     shader.fragmentShader = shader.fragmentShader
-      .replace(
-        '#include <common>',
-        `#include <common>
+      .replace('#include <common>', `#include <common>
         uniform sampler2D uGrass;
         uniform sampler2D uDirt;
         uniform sampler2D uRock;
@@ -171,34 +196,25 @@ function makeTerrainBlendMaterial({ roughness = 1, metalness = 0 } = {}) {
         uniform vec2 uConcreteScale;
         varying vec4 vSplat;
         varying float vConcrete;
-        varying vec2 vGroundXZ;`
-      )
-      .replace(
-        '#include <map_fragment>',
-        `
+        varying vec2 vGroundXZ;`)
+      .replace('#include <map_fragment>', `
         vec2 groundUV = vGroundXZ;
-
         vec3 grassCol = texture2D(uGrass, groundUV * uGrassScale).rgb;
         vec3 dirtCol  = texture2D(uDirt,  groundUV * uDirtScale).rgb;
         vec3 rockCol  = texture2D(uRock,  groundUV * uRockScale).rgb;
         vec3 sandCol  = texture2D(uSand,  groundUV * uSandScale).rgb;
         vec3 concCol  = texture2D(uConcrete, groundUV * uConcreteScale).rgb;
-
         float total = vSplat.x + vSplat.y + vSplat.z + vSplat.w + vConcrete + 0.0001;
-
         vec3 blendedGround =
           grassCol * vSplat.x +
           dirtCol  * vSplat.y +
           rockCol  * vSplat.z +
           sandCol  * vSplat.w +
           concCol  * vConcrete;
-
         blendedGround /= total;
         diffuseColor.rgb *= blendedGround;
-        `
-      );
+      `);
   };
-
   mat.customProgramCacheKey = () => 'aura-terrain-blend-v1';
   return mat;
 }
@@ -207,87 +223,65 @@ function makeTerrainBlendMaterial({ roughness = 1, metalness = 0 } = {}) {
 function paintTerrainSplat(geometry, mode, offsetX = 0, offsetZ = 0) {
   const pos = geometry.attributes.position;
   const count = pos.count;
-
-  const splat = new Float32Array(count * 4); // grass, dirt, rock, sand
+  const splat = new Float32Array(count * 4);
   const concrete = new Float32Array(count);
-
-  // Blend shader uses vertexColors; make sure a color attribute exists.
   if (!geometry.attributes.color) {
     const white = new Float32Array(count * 3);
     white.fill(1);
     geometry.setAttribute('color', new THREE.BufferAttribute(white, 3));
   }
-
   for (let i = 0; i < count; i++) {
-    const x = pos.getX(i) + offsetX;
-    const z = pos.getZ(i) + offsetZ;
-
+    const x = pos.getX(i) + offsetX, z = pos.getZ(i) + offsetZ;
     const h = terrainBaseH(x, z);
     const slope =
       Math.abs(terrainBaseH(x + 3, z) - terrainBaseH(x - 3, z)) / 6 +
       Math.abs(terrainBaseH(x, z + 3) - terrainBaseH(x, z - 3)) / 6;
-
     let grass = 0, dirt = 0, rock = 0, sand = 0, conc = 0;
-
     if (mode === 'mountains') {
       const riverBed = 1 - sstep(4, 14, Math.abs(x - riverX(z)));
-
       grass = 1 - sstep(55, 105, h);
       dirt = sstep(35, 85, h) * (1 - sstep(105, 150, h));
       rock = sstep(95, 150, h) + sstep(0.35, 0.75, slope);
       sand = riverBed * 0.8;
-    }
-    else if (mode === 'hills') {
+    } else if (mode === 'hills') {
       grass = 1 - sstep(45, 85, h);
       dirt = sstep(30, 70, h) * 0.5;
       rock = sstep(60, 100, h) + sstep(0.4, 0.8, slope);
-    }
-    else if (mode === 'alpine') {
+    } else if (mode === 'alpine') {
       const creekBed = 1 - sstep(3, 9, Math.abs(x - frostCreekX(z)));
-
       grass = 1 - sstep(5, 9, h);
       dirt = sstep(4, 8, h) * 0.4;
       rock = sstep(7, 11, h) + sstep(0.35, 0.7, slope);
       sand = creekBed * 0.7;
-    }
-    else if (mode === 'jungle') {
+    } else if (mode === 'jungle') {
       grass = 1;
       dirt = sstep(0.2, 0.5, slope) * 0.4;
-    }
-    else if (mode === 'woods') {
+    } else if (mode === 'woods') {
       grass = 1;
       dirt = (1 - sstep(3, 8, Math.abs(z - 150))) * 0.6;
-    }
-    else if (mode === 'desert') {
+    } else if (mode === 'desert') {
       sand = 1;
       rock = sstep(0.35, 0.7, slope) * 0.7;
       dirt = sstep(20, 70, h) * 0.25;
-    }
-    else if (mode === 'cove') {
+    } else if (mode === 'cove') {
       sand = 1;
-    }
-    else if (mode === 'north') {
+    } else if (mode === 'north') {
       grass = 1;
       dirt = sstep(0.25, 0.6, slope) * 0.3;
-    }
-    else {
+    } else {
       grass = 1;
     }
-
     const sum = grass + dirt + rock + sand + conc || 1;
-
     splat[i * 4 + 0] = grass / sum;
     splat[i * 4 + 1] = dirt / sum;
     splat[i * 4 + 2] = rock / sum;
     splat[i * 4 + 3] = sand / sum;
     concrete[i] = conc / sum;
   }
-
   geometry.setAttribute('terrainSplat', new THREE.BufferAttribute(splat, 4));
   geometry.setAttribute('terrainConcrete', new THREE.BufferAttribute(concrete, 1));
   geometry.userData.terrainSplatMode = mode;
 }
-
 function paintMeshTerrainSplat(mesh, mode) {
   paintTerrainSplat(mesh.geometry, mode, mesh.position.x, mesh.position.z);
   mesh.userData.terrainSplatMode = mode;
@@ -296,15 +290,10 @@ function paintMeshTerrainSplat(mesh, mode) {
 /** Studio road entities superseded by the built-in continuous I-88 viaduct. */
 const RETIRED_ENTITY_IDS = new Set(['road_mwr8epy21', 'road_mwr8fxyy2', 'road_mwsebg0p1']);
 
-/**
- * Roots that existed before the first world build (player rig, engine helpers).
- * They survive every rebuild; everything else in worldRoot is world-owned.
- */
+/** Roots that existed before the first world build survive every rebuild. */
 let foreignRoots = null;
 
-// -----------------------------------------------------------------------------
 // Water-system frame guard
-// -----------------------------------------------------------------------------
 let lastWaterFrame = -Infinity;
 function updateWaterOnce(dt, elapsed) {
   if (elapsed === lastWaterFrame) return;
@@ -316,7 +305,6 @@ function updateWaterOnce(dt, elapsed) {
 // Terrain sculpting
 // -----------------------------------------------------------------------------
 export const sculptableTerrainMeshes = [];
-
 function registerSculptableTerrain(mesh) {
   const positions = mesh.geometry.attributes.position;
   mesh.userData.terrainBaseY = Float32Array.from(positions.array.filter((_, index) => index % 3 === 1));
@@ -330,7 +318,6 @@ function registerSculptableTerrain(mesh) {
   refreshTerrainSculpt(mesh.position.x, mesh.position.z, Infinity, mesh);
   return mesh;
 }
-
 /** Update visible terrain meshes after a sculpt stroke or undo/redo. */
 export function refreshTerrainSculpt(centerX = null, centerZ = null, radius = Infinity, onlyMesh = null) {
   const meshes = onlyMesh ? [onlyMesh] : sculptableTerrainMeshes;
@@ -341,30 +328,24 @@ export function refreshTerrainSculpt(centerX = null, centerZ = null, radius = In
     const bounds = mesh.userData.terrainBounds;
     if (partial && (centerX + radius < bounds.minX - 3 || centerX - radius > bounds.maxX + 3
       || centerZ + radius < bounds.minZ - 3 || centerZ - radius > bounds.maxZ + 3)) continue;
+    const r2 = (radius + 3) * (radius + 3);
     let changed = false;
     for (let i = 0; i < positions.count; i++) {
       const x = mesh.position.x + positions.getX(i), z = mesh.position.z + positions.getZ(i);
-      if (partial && Math.hypot(x - centerX, z - centerZ) > radius + 3) continue;
+      if (partial && dist2(x, z, centerX, centerZ) > r2) continue;
       positions.setY(i, baseY[i] + terrainHeightOffset(x, z));
       changed = true;
     }
     if (changed) {
-  positions.needsUpdate = true;
-  mesh.geometry.computeVertexNormals();
-  mesh.geometry.computeBoundingSphere();
-
-  if (mesh.userData.terrainSplatMode) {
-    paintTerrainSplat(
-      mesh.geometry,
-      mesh.userData.terrainSplatMode,
-      mesh.position.x,
-      mesh.position.z
-    );
+      positions.needsUpdate = true;
+      mesh.geometry.computeVertexNormals();
+      mesh.geometry.computeBoundingSphere();
+      if (mesh.userData.terrainSplatMode) {
+        paintTerrainSplat(mesh.geometry, mesh.userData.terrainSplatMode, mesh.position.x, mesh.position.z);
+      }
+    }
   }
 }
-  }
-}
-
 function terrainPlane(width, depth, x, y, z, material) {
   const geometry = new THREE.PlaneGeometry(width, depth, Math.ceil(width / 2), Math.ceil(depth / 2));
   geometry.rotateX(-Math.PI / 2);
@@ -374,7 +355,6 @@ function terrainPlane(width, depth, x, y, z, material) {
   registerSculptableTerrain(mesh);
   return mesh;
 }
-
 /** Highest natural ground over a rectangular footprint (for founding buildings). */
 function maxTerrainOver(x0, x1, z0, z1) {
   let m = -Infinity;
@@ -393,39 +373,21 @@ export function buildWallWithRealWindow(parent, width, height, thick, winW, winH
   const sideW = Math.max(0.1, (width - winW) / 2);
   const botH = Math.max(0.1, winCenterY - winH / 2);
   const topH = Math.max(0.1, height - (winCenterY + winH / 2));
-
-  const leftWall = new THREE.Mesh(new THREE.BoxGeometry(sideW, height, thick), wallMat);
-  leftWall.position.set(-(winW / 2 + sideW / 2), height / 2, 0);
-  leftWall.castShadow = true;
-  leftWall.receiveShadow = true;
-  const rightWall = leftWall.clone();
-  rightWall.position.x = winW / 2 + sideW / 2;
-
-  const botWall = new THREE.Mesh(new THREE.BoxGeometry(winW, botH, thick), wallMat);
-  botWall.position.set(0, botH / 2, 0);
-  botWall.castShadow = true;
-  botWall.receiveShadow = true;
-  const topWall = new THREE.Mesh(new THREE.BoxGeometry(winW, topH, thick), wallMat);
-  topWall.position.set(0, winCenterY + winH / 2 + topH / 2, 0);
-  topWall.castShadow = true;
-
+  makeBox(group, sideW, height, thick, -(winW / 2 + sideW / 2), height / 2, 0, wallMat, { cast: true, recv: true });
+  makeBox(group, sideW, height, thick, winW / 2 + sideW / 2, height / 2, 0, wallMat, { cast: true, recv: true });
+  makeBox(group, winW, botH, thick, 0, botH / 2, 0, wallMat, { cast: true, recv: true });
+  makeBox(group, winW, topH, thick, 0, winCenterY + winH / 2 + topH / 2, 0, wallMat, { cast: true });
   const paneGeo = new THREE.PlaneGeometry(winW, winH);
   const glassOut = new THREE.Mesh(paneGeo, realWindowGlassMat);
   glassOut.position.set(0, winCenterY, 0.012);
   const glassIn = new THREE.Mesh(paneGeo, realWindowGlassMat);
   glassIn.position.set(0, winCenterY, -0.012);
   glassIn.rotation.y = Math.PI;
-
-  const sill = new THREE.Mesh(new THREE.BoxGeometry(winW + 0.16, 0.08, thick + 0.12), makeMat(0xf8fafc));
-  sill.position.set(0, winCenterY - winH / 2, 0);
-  group.add(leftWall, rightWall, botWall, topWall, glassOut, glassIn, sill);
-
+  makeBox(group, winW + 0.16, 0.08, thick + 0.12, 0, winCenterY - winH / 2, 0, makeMat(0xf8fafc));
+  group.add(glassOut, glassIn);
   if (addMullions) {
-    const mH = new THREE.Mesh(new THREE.BoxGeometry(winW, 0.05, 0.06), makeMat(0xf8fafc));
-    mH.position.set(0, winCenterY, 0);
-    const mV = new THREE.Mesh(new THREE.BoxGeometry(0.05, winH, 0.06), makeMat(0xf8fafc));
-    mV.position.set(0, winCenterY, 0);
-    group.add(mH, mV);
+    makeBox(group, winW, 0.05, 0.06, 0, winCenterY, 0, makeMat(0xf8fafc));
+    makeBox(group, 0.05, winH, 0.06, 0, winCenterY, 0, makeMat(0xf8fafc));
   }
   parent.add(group);
   return group;
@@ -435,7 +397,6 @@ export function buildWallWithRealWindow(parent, width, height, thick, winW, winH
 // Neon signs — auto-fitting text, cached by text + colours
 // -----------------------------------------------------------------------------
 const signCache = new Map();
-
 export function createNeonSign(parent, text, x, y, z, bgHex, textHex, w = 4.4, h = 1.1) {
   const key = `${text}|${bgHex}|${textHex}`;
   let cached = signCache.get(key);
@@ -472,12 +433,17 @@ export function createNeonSign(parent, text, x, y, z, bgHex, textHex, w = 4.4, h
     signCache.set(key, cached);
   }
   const { faceMat, sideMat } = cached;
-  const sign = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.22),
-    [sideMat, sideMat, sideMat, sideMat, faceMat, faceMat]);
-  sign.position.set(x, y, z);
-  sign.userData.studioName = `Sign: ${text}`;
-  parent.add(sign);
-  return sign;
+  return makeBox(parent, w, h, 0.22, x, y, z,
+    [sideMat, sideMat, sideMat, sideMat, faceMat, faceMat], { name: `Sign: ${text}` });
+}
+/** GPU-leak fix: sign face textures/materials are cache-owned, so the world
+ *  disposal pass skips them — dispose them explicitly on rebuild. */
+function disposeSignCache() {
+  for (const { faceMat } of signCache.values()) {
+    if (faceMat.map) faceMat.map.dispose();
+    faceMat.dispose();
+  }
+  signCache.clear();
 }
 
 // =============================================================================
@@ -532,14 +498,12 @@ function buildRiverSystem({
   const smoothed = pts.map((p, i) =>
     (pts[Math.max(0, i - 1)].y + p.y * 2 + pts[Math.min(pts.length - 1, i + 1)].y) / 4);
   pts.forEach((p, i) => { p.y = smoothed[i]; });
-
   const surfAt = (z) => {
     const t = THREE.MathUtils.clamp((z - z0) / step, 0, pts.length - 1);
     const i = Math.floor(t), f = t - i;
     const a = pts[i], b = pts[Math.min(pts.length - 1, i + 1)];
     return a.y + (b.y - a.y) * f;
   };
-
   const cShallow = new THREE.Color(shallowColor), cDeep = new THREE.Color(deepColor);
   const geo = ribbonGeometry(pts, halfWidth, (p, s) => p.y - 0.03 * Math.abs(s), {
     cols: [-1, -0.42, 0.42, 1], uvScale: 7,
@@ -563,7 +527,6 @@ function buildRiverSystem({
   mesh.renderOrder = 2;
   mesh.userData.studioName = `River: ${id}`;
   parent.add(mesh);
-
   for (let za = z0, n = 0; za < z1 - 0.5; za += segment, n++) {
     const zb = Math.min(z1, za + segment);
     let minX = Infinity, maxX = -Infinity;
@@ -587,19 +550,16 @@ function buildRiverBridge(parent, cx, z, deckY, span, { stone = false, deckW = 4
   const mat = stone
     ? makeMat(0x9aa0a6, { texType: 'cobblestone', repeatX: 5, repeatY: 2, roughness: 0.9 })
     : makeMat(0x78350f, { texType: 'wood', repeatX: 5, repeatY: 2 });
-  const deck = new THREE.Mesh(new THREE.BoxGeometry(span, 0.26, deckW), mat);
-  deck.position.set(cx, deckY - 0.13, z);
-  deck.castShadow = true; deck.receiveShadow = true;
-  deck.userData.studioName = stone ? 'Stone arch bridge' : 'River footbridge';
-  parent.add(deck);
-  addWorldBox(cx - span / 2, cx + span / 2, deckY - 0.26, deckY, z - deckW / 2, z + deckW / 2, stone ? 'stone_bridge' : 'river_bridge', true);
+  makeBox(parent, span, 0.26, deckW, cx, deckY - 0.13, z, mat, {
+    cast: true, recv: true, name: stone ? 'Stone arch bridge' : 'River footbridge',
+    box: [cx - span / 2, cx + span / 2, deckY - 0.26, deckY, z - deckW / 2, z + deckW / 2, stone ? 'stone_bridge' : 'river_bridge', true]
+  });
   for (const s of [-1, 1]) {
-    const rail = new THREE.Mesh(new THREE.BoxGeometry(span, 0.8, 0.2), mat);
-    rail.position.set(cx, deckY + 0.4, z + s * (deckW / 2 - 0.1));
-    rail.castShadow = true;
-    parent.add(rail);
-    addWorldBox(cx - span / 2, cx + span / 2, deckY, deckY + 0.8,
-      z + s * (deckW / 2 - 0.1) - 0.1, z + s * (deckW / 2 - 0.1) + 0.1, 'bridge_rail', true);
+    makeBox(parent, span, 0.8, 0.2, cx, deckY + 0.4, z + s * (deckW / 2 - 0.1), mat, {
+      cast: true,
+      box: [cx - span / 2, cx + span / 2, deckY, deckY + 0.8,
+        z + s * (deckW / 2 - 0.1) - 0.1, z + s * (deckW / 2 - 0.1) + 0.1, 'bridge_rail', true]
+    });
   }
   if (stone) {
     for (const s of [-1, 1]) {
@@ -649,15 +609,11 @@ function buildRowboat(parent, x, z, hullHex = 0x926c44) {
   g.position.set(x, 0.3, z);
   g.rotation.y = rnd() * Math.PI * 2;
   g.userData.studioName = 'Rowboat';
-  const hull = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.5, 3.2), makeMat(hullHex, { texType: 'wood', repeatX: 1, repeatY: 3 }));
-  hull.castShadow = true;
-  const gunwale = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.12, 3.4), makeMat(0x57534e));
-  gunwale.position.y = 0.28;
-  const seatA = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.08, 0.4), makeMat(0xb45309, { texType: 'wood' }));
-  seatA.position.set(0, 0.22, 0.7);
-  const seatB = seatA.clone();
-  seatB.position.z = -0.7;
-  g.add(hull, gunwale, seatA, seatB);
+  makeBox(g, 1.3, 0.5, 3.2, 0, 0, 0, makeMat(hullHex, { texType: 'wood', repeatX: 1, repeatY: 3 }), { cast: true });
+  makeBox(g, 1.5, 0.12, 3.4, 0, 0.28, 0, makeMat(0x57534e));
+  const seatMat = makeMat(0xb45309, { texType: 'wood' });
+  makeBox(g, 1.1, 0.08, 0.4, 0, 0.22, 0.7, seatMat);
+  makeBox(g, 1.1, 0.08, 0.4, 0, 0.22, -0.7, seatMat);
   parent.add(g);
   registerFloatingProp(g, x, z, 0.12, 0.95);
 }
@@ -681,44 +637,31 @@ function buildFrostpineLoopRoad(grp, keep) {
     return (a + b * 2 + p.y * 4 + c * 2 + d) / 10;
   });
   pts.forEach((p, i) => { p.y = sm[i]; });
-
   const ROAD_DY = 0.12, HW = 4.5;
   const normalAt = (i) => {
     const prev = pts[(i - 1 + pts.length) % pts.length], next = pts[(i + 1) % pts.length];
     const tx = next.x - prev.x, tz = next.z - prev.z, l = Math.hypot(tx, tz) || 1;
     return { nx: tz / l, nz: -tx / l, yaw: Math.atan2(tx, tz) };
   };
-
   const asphalt = makeMat(0x2b3138, { texType: 'asphalt', repeatX: 2, repeatY: 1, roughness: 0.86, bumpScale: 0.015 });
   if (asphalt.map) { asphalt.map.wrapS = asphalt.map.wrapT = THREE.RepeatWrapping; }
   const road = new THREE.Mesh(ribbonGeometry(pts, HW, (p) => p.y + ROAD_DY, { uvScale: 9 }), asphalt);
   road.receiveShadow = true;
   road.userData.studioName = 'Frostpine Loop Road';
   grp.add(road);
-
   const edgeMat = new THREE.MeshBasicMaterial({ color: 0xf1f5f9, side: THREE.DoubleSide });
   for (const s of [-1, 1]) {
     grp.add(new THREE.Mesh(
       ribbonGeometry(pts, 0.11, (p) => p.y + ROAD_DY + 0.02, { offset: s * (HW - 0.35) }), edgeMat));
   }
-
   const dashT = [];
-  const dm = new THREE.Object3D();
   for (let i = 0; i < pts.length - 1; i += 2) {
     const p = pts[i], { nx, nz, yaw } = normalAt(i);
     for (const off of [-0.28, 0.28]) {
-      dm.position.set(p.x + nx * off, p.y + ROAD_DY + 0.03, p.z + nz * off);
-      dm.rotation.set(0, yaw, 0);
-      dm.scale.set(1, 1, 1);
-      dm.updateMatrix();
-      dashT.push(dm.matrix.clone());
+      xform(dashT, p.x + nx * off, p.y + ROAD_DY + 0.03, p.z + nz * off, 1, 1, 1, 0, yaw, 0);
     }
   }
-  const dashes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.2, 0.04, 3.4), new THREE.MeshBasicMaterial({ color: 0xfacc15 }), dashT.length);
-  dashT.forEach((m, i) => dashes.setMatrixAt(i, m));
-  dashes.instanceMatrix.needsUpdate = true;
-  grp.add(dashes);
-
+  flushInstances(grp, new THREE.BoxGeometry(0.2, 0.04, 3.4), new THREE.MeshBasicMaterial({ color: 0xfacc15 }), dashT);
   const railMat = makeMat(0xcbd5e1, { texType: 'brushedsteel', metalness: 0.85, roughness: 0.3, flatShading: false });
   const postGeo = new THREE.CylinderGeometry(0.09, 0.11, 0.95, 6);
   let railBeams = 0;
@@ -736,14 +679,12 @@ function buildFrostpineLoopRoad(grp, keep) {
         if (prevStation && i - prevStation.i <= 4) {
           const a = prevStation;
           const len = Math.hypot(ex - a.x, ez - a.z) + 0.3;
-          const beam = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.55, len), railMat);
-          beam.position.set((ex + a.x) / 2, (p.y + a.y) / 2 + ROAD_DY + 0.72, (ez + a.z) / 2);
-          beam.rotation.y = Math.atan2(ex - a.x, ez - a.z);
-          beam.castShadow = true;
-          grp.add(beam);
-          addWorldBox(Math.min(ex, a.x) - 0.3, Math.max(ex, a.x) + 0.3,
-            Math.min(p.y, a.y) + ROAD_DY + 0.1, Math.max(p.y, a.y) + ROAD_DY + 1.0,
-            Math.min(ez, a.z) - 0.3, Math.max(ez, a.z) + 0.3, 'guardrail', true);
+          makeBox(grp, 0.26, 0.55, len, (ex + a.x) / 2, (p.y + a.y) / 2 + ROAD_DY + 0.72, (ez + a.z) / 2, railMat, {
+            cast: true, ry: Math.atan2(ex - a.x, ez - a.z),
+            box: [Math.min(ex, a.x) - 0.3, Math.max(ex, a.x) + 0.3,
+              Math.min(p.y, a.y) + ROAD_DY + 0.1, Math.max(p.y, a.y) + ROAD_DY + 1.0,
+              Math.min(ez, a.z) - 0.3, Math.max(ez, a.z) + 0.3, 'guardrail', true]
+          });
           railBeams++;
         }
         prevStation = { i, x: ex, z: ez, y: p.y };
@@ -752,7 +693,6 @@ function buildFrostpineLoopRoad(grp, keep) {
       }
     }
   }
-
   const pullouts = [
     { f: 0.16, name: 'GLACIER POINT VISTA' },
     { f: 0.46, name: 'FROSTPINE VALLEY VIEW' },
@@ -766,25 +706,15 @@ function buildFrostpineLoopRoad(grp, keep) {
     const dropR = p.y - terrainH(p.x - nx * 9, p.z - nz * 9);
     const side = dropL >= dropR ? 1 : -1;
     const cx = p.x + nx * side * (HW + 3.2), cz = p.z + nz * side * (HW + 3.2);
-    const pad = new THREE.Mesh(new THREE.BoxGeometry(6.4, 0.12, 9), makeMat(0x3a4048, { texType: 'asphalt', repeatX: 2, repeatY: 3, roughness: 0.88 }));
-    pad.position.set(cx, p.y + ROAD_DY - 0.02, cz);
-    pad.rotation.y = yaw;
-    pad.receiveShadow = true;
-    pad.userData.studioName = `Pullout: ${po.name}`;
-    grp.add(pad);
-    addWorldBox(cx - 4.6, cx + 4.6, p.y + ROAD_DY - 0.14, p.y + ROAD_DY + 0.04, cz - 4.6, cz + 4.6, 'vista_pullout', true);
-
+    makeBox(grp, 6.4, 0.12, 9, cx, p.y + ROAD_DY - 0.02, cz,
+      makeMat(0x3a4048, { texType: 'asphalt', repeatX: 2, repeatY: 3, roughness: 0.88 }), {
+        recv: true, ry: yaw, name: `Pullout: ${po.name}`,
+        box: [cx - 4.6, cx + 4.6, p.y + ROAD_DY - 0.14, p.y + ROAD_DY + 0.04, cz - 4.6, cz + 4.6, 'vista_pullout', true]
+      });
     const ox = p.x + nx * side * (HW + 5.4), oz = p.z + nz * side * (HW + 5.4);
-    const bench = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.12, 0.7), benchWood);
-    bench.position.set(ox, p.y + 0.62, oz);
-    bench.rotation.y = yaw;
-    bench.castShadow = true;
-    grp.add(bench);
+    makeBox(grp, 2.2, 0.12, 0.7, ox, p.y + 0.62, oz, benchWood, { cast: true, ry: yaw });
     for (const s of [-1, 1]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.45, 0.6), railMat);
-      leg.position.set(ox + Math.cos(yaw) * s * 0.9, p.y + 0.38, oz - Math.sin(yaw) * s * 0.9);
-      leg.rotation.y = yaw;
-      grp.add(leg);
+      makeBox(grp, 0.12, 0.45, 0.6, ox + Math.cos(yaw) * s * 0.9, p.y + 0.38, oz - Math.sin(yaw) * s * 0.9, railMat, { ry: yaw });
     }
     const scopePole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 1.15, 8), railMat);
     scopePole.position.set(ox + Math.cos(yaw) * 2.2, p.y + 0.7, oz - Math.sin(yaw) * 2.2);
@@ -793,22 +723,16 @@ function buildFrostpineLoopRoad(grp, keep) {
     scopeHead.rotation.y = yaw;
     scopeHead.position.set(scopePole.position.x, p.y + 1.35, scopePole.position.z);
     grp.add(scopePole, scopeHead);
-
     const signG = new THREE.Group();
     signG.position.set(p.x + nx * side * (HW + 1.4), p.y, p.z + nz * side * (HW + 1.4));
     signG.rotation.y = Math.atan2(-nx * side, -nz * side);
-    for (const s of [-1, 1]) {
-      const post = new THREE.Mesh(new THREE.BoxGeometry(0.18, 2.3, 0.18), makeMat(0x57534e, { texType: 'wood' }));
-      post.position.set(s * 1.9, 1.15, 0);
-      post.castShadow = true;
-      signG.add(post);
-    }
+    const signPostMat = makeMat(0x57534e, { texType: 'wood' });
+    for (const s of [-1, 1]) makeBox(signG, 0.18, 2.3, 0.18, s * 1.9, 1.15, 0, signPostMat, { cast: true });
     createNeonSign(signG, po.name, 0, 2.15, 0, '#1c1917', '#fcd34d', 4.4, 0.85);
     grp.add(signG);
     keep.push({ x: cx, z: cz, r: 8 });
     mapShapes.push({ x: cx, z: cz, w: 8, d: 8, color: '#475569', border: '#fcd34d', enterable: false });
   }
-
   for (const f of [0.3, 0.62]) {
     const i = Math.floor(f * N) % pts.length;
     const p = pts[i], { nx, nz } = normalAt(i);
@@ -816,13 +740,10 @@ function buildFrostpineLoopRoad(grp, keep) {
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 2.1, 6), railMat);
     post.position.set(sx, p.y + 1.05, sz);
     grp.add(post);
-    const diamond = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.95, 0.08), makeMat(0xfacc15, { emissive: 0xca8a04, emissiveIntensity: 0.25 }));
-    diamond.rotation.z = Math.PI / 4;
-    diamond.position.set(sx, p.y + 2.2, sz);
-    grp.add(diamond);
+    makeBox(grp, 0.95, 0.95, 0.08, sx, p.y + 2.2, sz,
+      makeMat(0xfacc15, { emissive: 0xca8a04, emissiveIntensity: 0.25 }), { rz: Math.PI / 4 });
     createNeonSign(grp, '25', sx, p.y + 2.2, sz + 0.06, '#facc15', '#1c1917', 0.62, 0.5);
   }
-
   return { pts, normalAt, ROAD_DY, HW };
 }
 
@@ -836,7 +757,6 @@ function buildInterstate88() {
   const grp = new THREE.Group();
   grp.userData.studioName = 'I-88 Interstate';
   worldRoot.add(grp);
-
   const fwyMat = makeMat(0x1f2937, { texType: 'asphalt', repeatX: 4, repeatY: 90, roughness: 0.84, bumpScale: 0.015 });
   const deckMat = makeMat(0x27303d, { texType: 'concrete', repeatX: 4, repeatY: 40, roughness: 0.86 });
   const barrierMat = makeMat(0xd1d5db, { texType: 'concrete', repeatX: 24, repeatY: 1, roughness: 0.88 });
@@ -845,51 +765,27 @@ function buildInterstate88() {
   const yellowMat = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
   const whiteMat = new THREE.MeshBasicMaterial({ color: 0xf8fafc });
   const studMat = new THREE.MeshBasicMaterial({ color: 0xffb020 });
-
-  const box = (w, h, d, mat, x, y, z, cast = false) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y, z);
-    m.castShadow = cast;
-    m.receiveShadow = true;
-    grp.add(m);
-    return m;
-  };
+  const box = (w, h, d, m, x, y, z, cast = false) => makeBox(grp, w, h, d, x, y, z, m, { cast, recv: true });
 
   const yellowT = [], whiteT = [], studT = [];
-  const md = new THREE.Object3D();
-  const mark = (list, x, y, z, sx, sy, sz, rx = 0) => {
-    md.position.set(x, y, z);
-    md.rotation.set(rx, 0, 0);
-    md.scale.set(sx, sy, sz);
-    md.updateMatrix();
-    list.push(md.matrix.clone());
-  };
   const markings = (z0, z1, yAt, angle = 0) => {
-    const mid = (z0 + z1) / 2;
-    const len = z1 - z0;
-    const ym = yAt(mid);
-    const lift = 0.035;
-    for (const off of [-0.3, 0.3]) mark(yellowT, X + off, ym + lift, mid, 0.22, 0.05, len - 0.4, angle);
-    for (const off of [-(HW - 0.9), HW - 0.9]) mark(whiteT, X + off, ym + lift, mid, 0.22, 0.05, len - 0.4, angle);
+    const mid = (z0 + z1) / 2, len = z1 - z0, ym = yAt(mid), lift = 0.035;
+    for (const off of [-0.3, 0.3]) xform(yellowT, X + off, ym + lift, mid, 0.22, 0.05, len - 0.4, angle);
+    for (const off of [-(HW - 0.9), HW - 0.9]) xform(whiteT, X + off, ym + lift, mid, 0.22, 0.05, len - 0.4, angle);
     for (let z = z0 + 4; z < z1 - 3; z += 8) {
-      for (const off of [-5.5, 5.5]) mark(whiteT, X + off, yAt(z) + lift, z, 0.24, 0.05, 3.4, angle);
-      mark(studT, X, yAt(z) + lift + 0.02, z, 0.2, 0.05, 0.2, angle);
+      for (const off of [-5.5, 5.5]) xform(whiteT, X + off, yAt(z) + lift, z, 0.24, 0.05, 3.4, angle);
+      xform(studT, X, yAt(z) + lift + 0.02, z, 0.2, 0.05, 0.2, angle);
     }
   };
-  const flat = (z0, z1, y, thick = 0.14, mat = fwyMat) => {
-    box(W, thick, z1 - z0, mat, X, y - thick / 2, (z0 + z1) / 2);
+  const flat = (z0, z1, y, thick = 0.14, m = fwyMat) => {
+    box(W, thick, z1 - z0, m, X, y - thick / 2, (z0 + z1) / 2);
     addWorldBox(X - HW, X + HW, y - thick, y, z0, z1, 'i88_surface', true);
     markings(z0, z1, () => y, 0);
   };
   const ramp = (z0, z1, y0, y1) => {
     const run = z1 - z0, rise = y1 - y0;
     const hyp = Math.hypot(run, rise), ang = Math.atan2(rise, run);
-    const m = new THREE.Mesh(new THREE.BoxGeometry(W, 0.4, hyp), fwyMat);
-    m.position.set(X, (y0 + y1) / 2 - 0.2, (z0 + z1) / 2);
-    m.rotation.x = -ang;
-    m.castShadow = true;
-    m.receiveShadow = true;
-    grp.add(m);
+    makeBox(grp, W, 0.4, hyp, X, (y0 + y1) / 2 - 0.2, (z0 + z1) / 2, fwyMat, { cast: true, recv: true, rx: -ang });
     addDriveableRamp({ minX: X - HW, maxX: X + HW, minZ: z0, maxZ: z1, startY: y0, endY: y1, axis: 'z', dir: 1 });
     const yAt = (z) => y0 + rise * ((z - z0) / run);
     markings(z0, z1, yAt, -ang);
@@ -899,11 +795,7 @@ function buildInterstate88() {
     const run = z1 - z0, rise = y1 - y0;
     const hyp = Math.hypot(run, rise), ang = Math.atan2(rise, run);
     for (const s of [-1, 1]) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.05, hyp), barrierMat);
-      m.position.set(X + s * RAIL_X, (y0 + y1) / 2 + 0.52, (z0 + z1) / 2);
-      m.rotation.x = -ang;
-      m.castShadow = true;
-      grp.add(m);
+      makeBox(grp, 0.7, 1.05, hyp, X + s * RAIL_X, (y0 + y1) / 2 + 0.52, (z0 + z1) / 2, barrierMat, { cast: true, recv: true, rx: -ang });
       addWorldBox(X + s * RAIL_X - 0.35, X + s * RAIL_X + 0.35,
         Math.min(y0, y1), Math.max(y0, y1) + 1.05, z0, z1, 'i88_rail', true);
     }
@@ -952,7 +844,6 @@ function buildInterstate88() {
   slopedRail(F.bridgeRampStart, F.bridgeRampEnd, F.deckY, F.bridgeY);
   flat(F.bridgeStart, F.bridgeEnd, F.bridgeY, 0.65, deckMat);
   flatRail(F.bridgeStart, F.bridgeEnd, F.bridgeY);
-
   const towerTopY = 48.0;
   const towerZs = [248, 332];
   for (const tz of towerZs) {
@@ -978,7 +869,6 @@ function buildInterstate88() {
       return F.bridgeY + 1.2 + (towerTopY - F.bridgeY - 2.0) * t * t;
     }
     if (z >= towerZs[1]) {
-      const t = Math.max(0, (F.bridgeEnd - z) / (towerZs[1] - F.bridgeEnd + towerZs[1]));
       const u = Math.max(0, (F.bridgeEnd - z) / (F.bridgeEnd - towerZs[1]));
       return F.bridgeY + 1.2 + (towerTopY - F.bridgeY - 2.0) * u * u;
     }
@@ -1000,40 +890,21 @@ function buildInterstate88() {
   slopedRail(F.rampDownStart, F.rampDownEnd, F.bridgeY, F.northY);
   flat(F.rampDownEnd, F.northEnd, F.northY);
   barrierRun(F.rampDownEnd, F.northEnd, F.northY, F.westOpenings.concat(F.eastOpenings));
-
-  const flush = (list, mat) => {
-    if (!list.length) return;
-    const im = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mat, list.length);
-    list.forEach((m, i) => im.setMatrixAt(i, m));
-    im.instanceMatrix.needsUpdate = true;
-    im.receiveShadow = false;
-    grp.add(im);
-  };
-  flush(yellowT, yellowMat);
-  flush(whiteT, whiteMat);
-  flush(studT, studMat);
+  flushInstances(grp, UNIT_BOX, yellowMat, yellowT);
+  flushInstances(grp, UNIT_BOX, whiteMat, whiteT);
+  flushInstances(grp, UNIT_BOX, studMat, studT);
 
   const poleT = [], headT = [];
-  const ld = new THREE.Object3D();
   const lampAt = (x, y, z, s) => {
-    ld.position.set(x, y + 4.5, z); ld.rotation.set(0, 0, 0); ld.scale.set(1, 1, 1); ld.updateMatrix();
-    poleT.push(ld.matrix.clone());
-    ld.position.set(x - s * 1.1, y + 9.0, z); ld.updateMatrix();
-    headT.push(ld.matrix.clone());
+    xform(poleT, x, y + 4.5, z);
+    xform(headT, x - s * 1.1, y + 9.0, z);
   };
   for (let z = F.southEnd + 10; z < F.rampUpStart - 4; z += 27) for (const s of [-1, 1]) lampAt(X + s * (HW + 1.6), F.groundY, z, s);
   for (let z = F.rampDownEnd + 12; z < F.northEnd - 6; z += 27) for (const s of [-1, 1]) lampAt(X + s * (HW + 1.6), F.northY, z, s);
   for (let z = F.deckStart + 10; z < F.deckEnd; z += 24) for (const s of [-1, 1]) lampAt(X + s * (HW - 0.1), F.deckY, z, s);
   for (let z = F.bridgeStart + 12; z < F.bridgeEnd; z += 24) for (const s of [-1, 1]) lampAt(X + s * (HW - 0.1), F.bridgeY, z, s);
-  if (poleT.length) {
-    const poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.12, 0.16, 9, 8), makeMat(0x6b7280, { metalness: 0.6 }), poleT.length);
-    poleT.forEach((m, i) => poles.setMatrixAt(i, m));
-    poles.instanceMatrix.needsUpdate = true;
-    const heads = new THREE.InstancedMesh(new THREE.BoxGeometry(2.2, 0.2, 0.5), new THREE.MeshBasicMaterial({ color: 0xfff7d6 }), headT.length);
-    headT.forEach((m, i) => heads.setMatrixAt(i, m));
-    heads.instanceMatrix.needsUpdate = true;
-    grp.add(poles, heads);
-  }
+  flushInstances(grp, new THREE.CylinderGeometry(0.12, 0.16, 9, 8), makeMat(0x6b7280, { metalness: 0.6 }), poleT);
+  flushInstances(grp, new THREE.BoxGeometry(2.2, 0.2, 0.5), new THREE.MeshBasicMaterial({ color: 0xfff7d6 }), headT);
 
   const gantry = (z, y, text, bg = '#065f46', fg = '#f8fafc', w = 15) => {
     for (const s of [-1, 1]) box(0.45, 7.4, 0.45, steelMat, X + s * (HW + 0.7), y + 3.7, z, true);
@@ -1047,25 +918,21 @@ function buildInterstate88() {
   gantry(462, F.northY, 'DOWNTOWN LOS AURA   EXIT 14');
   gantry(556, F.northY, 'LOS AURA INTL AIRPORT   EXIT 16');
   gantry(730, F.northY, 'MOTOR SPEEDWAY   EXIT 18');
-
   mapShapes.push({
     x: X, z: (F.southEnd + F.northEnd) / 2, w: W, d: F.northEnd - F.southEnd,
     color: '#334155', border: '#f59e0b', enterable: false
   });
   mapShapes.push({ x: X, z: 290, w: W, d: 208, color: '#dc2626', border: '#facc15', enterable: false });
 }
-
 // =============================================================================
 // RESERVED FOOTPRINTS — roads & civic surfaces that are not colliders.
 // Every building placement is tested against these, so nothing can ever be
 // dropped on a carriageway, a sidewalk corridor or a plaza again.
 // =============================================================================
 const reservedFootprints = [];
-
 export function reserveFootprint(minX, maxX, minZ, maxZ, tag = 'reserved') {
   reservedFootprints.push({ minX, maxX, minZ, maxZ, tag });
 }
-
 /** True when a w×d footprint at (cx,cz) is clear of roads, props and the spawn. */
 export function footprintClear(cx, cz, w, d, pad = 2.5) {
   const x0 = cx - w / 2 - pad, x1 = cx + w / 2 + pad;
@@ -1079,128 +946,110 @@ export function footprintClear(cx, cz, w, d, pad = 2.5) {
       if (collidesHorizontally(cx + a, cz + b, 0.2, 1.8, 1.2)) return false;
     }
   }
-  for (const m of manholes) if (Math.hypot(cx - m[0], cz - m[1]) < Math.max(w, d)) return false;
-  if (Math.hypot(cx + 11.5, cz - 18.5) < 26) return false;
+  const mr = Math.max(w, d);
+  for (const m of manholes) if (dist2(cx, cz, m[0], m[1]) < mr * mr) return false;
+  if (dist2(cx, cz, -11.5, 18.5) < 676) return false;
   return true;
+}
+
+// =============================================================================
+// DISTRICT GENERATORS — a new district is a config object, not a new builder.
+// =============================================================================
+/**
+ * roadGrid(parent, ns, ew, cross)
+ * axis config: { at:[coords], w, d, c, top, thick, mat,
+ *                tag?               — collider tag (omit for non-solid roads)
+ *                map?[color,border] — minimap rectangle
+ *                dash?{span,step,y,geo,mat} }
+ * Reserved footprint is always the slab bounds + 1 unit on every side.
+ */
+function roadGrid(parent, ns, ew, cross) {
+  const dashT = { ns: [], ew: [] };
+  const run = (a, other, isNS) => {
+    const w = isNS ? a.w : a.d, d = isNS ? a.d : a.w;
+    for (const c of a.at) {
+      const x = isNS ? c : a.c, z = isNS ? a.c : c;
+      makeBox(parent, w, a.thick, d, x, a.top - a.thick / 2, z, a.mat, { recv: true });
+      if (a.tag) addWorldBox(x - w / 2, x + w / 2, a.top - a.thick, a.top, z - d / 2, z + d / 2, a.tag, true);
+      reserveFootprint(x - w / 2 - 1, x + w / 2 + 1, z - d / 2 - 1, z + d / 2 + 1, 'road');
+      if (a.map) mapShapes.push({ x, z, w, d, color: a.map[0], border: a.map[1], enterable: false });
+      if (a.dash) {
+        for (let t = -a.dash.span; t <= a.dash.span; t += a.dash.step) {
+          const p = a.c + t;
+          if (other.at.some((o) => Math.abs(p - o) < 7.5)) continue;
+          xform(dashT[isNS ? 'ns' : 'ew'], isNS ? c : p, a.dash.y, isNS ? p : c);
+        }
+      }
+    }
+  };
+  run(ns, ew, true);
+  run(ew, ns, false);
+  if (ns.dash) flushInstances(parent, ns.dash.geo, ns.dash.mat, dashT.ns);
+  if (ew.dash) flushInstances(parent, ew.dash.geo, ew.dash.mat, dashT.ew);
+  if (cross) {
+    const nsT = [], ewT = [];
+    for (const ix of ns.at) for (const iz of ew.at) {
+      for (let s = -4; s <= 4; s += 2) {
+        xform(nsT, ix + s, cross.y, iz - cross.off);
+        xform(nsT, ix + s, cross.y, iz + cross.off);
+        xform(ewT, ix - cross.off, cross.y, iz + s);
+        xform(ewT, ix + cross.off, cross.y, iz + s);
+      }
+    }
+    flushInstances(parent, cross.nsGeo, cross.mat, nsT);
+    flushInstances(parent, cross.ewGeo, cross.mat, ewT);
+  }
+}
+/** Layered block surfaces (curb / sidewalk / inner) plus optional corner props. */
+function cityBlocks(parent, xs, zs, layers, posts = null) {
+  for (const bx of xs) for (const bz of zs) {
+    for (const [w, h, d, y, m] of layers(bx, bz)) makeBox(parent, w, h, d, bx, y, bz, m, { recv: true });
+    if (posts) posts(bx, bz);
+  }
 }
 
 // -----------------------------------------------------------------------------
 // City roads & desert highway
 // -----------------------------------------------------------------------------
 export function buildRoadsFreewayAndDesert() {
-  const cityGround = terrainPlane(360, 440, -16, 0, -30,makeGroundMat('grass', { repeatX: 52, repeatY: 64, roughness: 0.94 }));
+  const cityGround = terrainPlane(360, 440, -16, 0, -30, makeGroundMat('grass', { repeatX: 52, repeatY: 64, roughness: 0.94 }));
   cityGround.userData.studioName = 'City ground';
   worldRoot.add(cityGround);
-
   const desertGround = terrainPlane(260, 460, 294, 0.02, -10, makeGroundMat('sand', { repeatX: 38, repeatY: 64, roughness: 0.95 }));
   desertGround.userData.studioName = 'Redrock desert ground';
   worldRoot.add(desertGround);
-
   const nsRoads = [-120, -72, -24, 24, 72, 120];
   const ewRoads = [-168, -120, -72, -24, 24, 72];
   const asphaltNS = makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 36, roughness: 0.86, bumpScale: 0.015 });
   const asphaltEW = makeMat(0x313946, { texType: 'asphalt', repeatX: 36, repeatY: 2, roughness: 0.86, bumpScale: 0.015 });
   const yellowMat = makeMat(0xfacc15, { roughness: 0.55 });
   const whiteMat = makeMat(0xf1f5f9, { roughness: 0.55 });
-
-  const nsDashTransforms = [];
-  nsRoads.forEach((rx) => {
-    const r = new THREE.Mesh(new THREE.BoxGeometry(12, 0.08, 252), asphaltNS);
-    r.position.set(rx, 0.04, -48);
-    r.receiveShadow = true;
-    worldRoot.add(r);
-    reserveFootprint(rx - 7, rx + 7, -175, 79, 'road');
-    for (let z = -170; z <= 74; z += 6) {
-      if (!ewRoads.some((iz) => Math.abs(z - iz) < 7.5)) nsDashTransforms.push([rx, 0.05, z]);
-    }
-  });
-
-  const ewDashTransforms = [];
-  ewRoads.forEach((rz) => {
-    const r = new THREE.Mesh(new THREE.BoxGeometry(252, 0.08, 12), asphaltEW);
-    r.position.set(0, 0.04, rz);
-    r.receiveShadow = true;
-    worldRoot.add(r);
-    reserveFootprint(-127, 127, rz - 7, rz + 7, 'road');
-    for (let x = -122; x <= 122; x += 6) {
-      if (!nsRoads.some((ix) => Math.abs(x - ix) < 7.5)) ewDashTransforms.push([x, 0.05, rz]);
-    }
-  });
-
-  {
-    const dm = new THREE.Object3D();
-    const nsDashes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.26, 0.09, 2.5), yellowMat, nsDashTransforms.length);
-    nsDashTransforms.forEach(([x, y, z], i) => { dm.position.set(x, y, z); dm.updateMatrix(); nsDashes.setMatrixAt(i, dm.matrix); });
-    nsDashes.instanceMatrix.needsUpdate = true;
-    const ewDashes = new THREE.InstancedMesh(new THREE.BoxGeometry(2.5, 0.09, 0.26), yellowMat, ewDashTransforms.length);
-    ewDashTransforms.forEach(([x, y, z], i) => { dm.position.set(x, y, z); dm.updateMatrix(); ewDashes.setMatrixAt(i, dm.matrix); });
-    ewDashes.instanceMatrix.needsUpdate = true;
-    worldRoot.add(nsDashes, ewDashes);
-  }
-  {
-    const dm = new THREE.Object3D();
-    const count = nsRoads.length * ewRoads.length * 5;
-    const cwNS = new THREE.InstancedMesh(new THREE.BoxGeometry(0.85, 0.095, 2.1), whiteMat, count * 2);
-    const cwEW = new THREE.InstancedMesh(new THREE.BoxGeometry(2.1, 0.095, 0.85), whiteMat, count * 2);
-    let iNS = 0, iEW = 0;
-    nsRoads.forEach((ix) => {
-      ewRoads.forEach((iz) => {
-        for (let s = -4; s <= 4; s += 2) {
-          dm.position.set(ix + s, 0.052, iz - 7.3); dm.updateMatrix(); cwNS.setMatrixAt(iNS++, dm.matrix);
-          dm.position.set(ix + s, 0.052, iz + 7.3); dm.updateMatrix(); cwNS.setMatrixAt(iNS++, dm.matrix);
-          dm.position.set(ix - 7.3, 0.052, iz + s); dm.updateMatrix(); cwEW.setMatrixAt(iEW++, dm.matrix);
-          dm.position.set(ix + 7.3, 0.052, iz + s); dm.updateMatrix(); cwEW.setMatrixAt(iEW++, dm.matrix);
-        }
-      });
-    });
-    cwNS.instanceMatrix.needsUpdate = true;
-    cwEW.instanceMatrix.needsUpdate = true;
-    worldRoot.add(cwNS, cwEW);
-  }
-
-const curbMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 16, repeatY: 1, roughness: 0.9 });
-const sidewalkMat = makeGroundMat('concrete', { color: 0xcbd5e1, repeatX: 12, repeatY: 12, roughness: 0.85 });
-const downtownPlazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repeatY: 14, roughness: 0.82 });
-const lawnMat = makeGroundMat('grass', { color: 0x5ca450, repeatX: 10, repeatY: 10, roughness: 0.94 });
-  [-96, -48, 0, 48, 96].forEach((bx) => {
-    [-144, -96, -48, 0, 48].forEach((bz) => {
-      const curb = new THREE.Mesh(new THREE.BoxGeometry(36.3, 0.16, 36.3), curbMat);
-      curb.position.set(bx, 0.08, bz);
-      curb.receiveShadow = true;
-      const sw = new THREE.Mesh(new THREE.BoxGeometry(36, 0.18, 36), sidewalkMat);
-      sw.position.set(bx, 0.09, bz);
-      sw.receiveShadow = true;
-      const inner = new THREE.Mesh(new THREE.BoxGeometry(30.4, 0.20, 30.4), bz <= -72 ? downtownPlazaMat : lawnMat);
-      inner.position.set(bx, 0.10, bz);
-      inner.receiveShadow = true;
-      worldRoot.add(curb, sw, inner);
-    });
-  });
-
+  roadGrid(worldRoot,
+    { at: nsRoads, w: 12, d: 252, c: -48, top: 0.08, thick: 0.08, mat: asphaltNS,
+      dash: { span: 122, step: 6, y: 0.05, geo: new THREE.BoxGeometry(0.26, 0.09, 2.5), mat: yellowMat } },
+    { at: ewRoads, w: 12, d: 252, c: 0, top: 0.08, thick: 0.08, mat: asphaltEW,
+      dash: { span: 122, step: 6, y: 0.05, geo: new THREE.BoxGeometry(2.5, 0.09, 0.26), mat: yellowMat } },
+    { y: 0.052, off: 7.3, mat: whiteMat,
+      nsGeo: new THREE.BoxGeometry(0.85, 0.095, 2.1), ewGeo: new THREE.BoxGeometry(2.1, 0.095, 0.85) });
+  const curbMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 16, repeatY: 1, roughness: 0.9 });
+  const sidewalkMat = makeGroundMat('concrete', { color: 0xcbd5e1, repeatX: 12, repeatY: 12, roughness: 0.85 });
+  const downtownPlazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repeatY: 14, roughness: 0.82 });
+  const lawnMat = makeGroundMat('grass', { color: 0x5ca450, repeatX: 10, repeatY: 10, roughness: 0.94 });
+  cityBlocks(worldRoot, [-96, -48, 0, 48, 96], [-144, -96, -48, 0, 48], (bx, bz) => [
+    [36.3, 0.16, 36.3, 0.08, curbMat],
+    [36, 0.18, 36, 0.09, sidewalkMat],
+    [30.4, 0.20, 30.4, 0.10, bz <= -72 ? downtownPlazaMat : lawnMat]
+  ]);
   buildInterstate88();
-
-  [-24, 72].forEach((cz) => {
-    const conn = new THREE.Mesh(new THREE.BoxGeometry(46, 0.09, 12), asphaltEW);
-    conn.position.set(141, 0.045, cz);
-    conn.receiveShadow = true;
-    worldRoot.add(conn);
+  for (const cz of [-24, 72]) {
+    makeBox(worldRoot, 46, 0.09, 12, 141, 0.045, cz, asphaltEW, { recv: true });
     reserveFootprint(118, 164, cz - 7, cz + 7, 'road');
-  });
-
-  const desertHwy = new THREE.Mesh(new THREE.BoxGeometry(198, 0.09, 12), asphaltEW);
-  desertHwy.position.set(261, 0.055, 40);
-  desertHwy.receiveShadow = true;
-  worldRoot.add(desertHwy);
-  reserveFootprint(162, 360, 33, 47, 'road');
-  {
-    const positions = [];
-    for (let x = 168; x <= 354; x += 7) positions.push([x, 0.065, 40]);
-    const hwyDashes = new THREE.InstancedMesh(new THREE.BoxGeometry(3.2, 0.10, 0.26), yellowMat, positions.length);
-    const dm = new THREE.Object3D();
-    positions.forEach(([x, y, z], i) => { dm.position.set(x, y, z); dm.updateMatrix(); hwyDashes.setMatrixAt(i, dm.matrix); });
-    hwyDashes.instanceMatrix.needsUpdate = true;
-    worldRoot.add(hwyDashes);
   }
+  makeBox(worldRoot, 198, 0.09, 12, 261, 0.055, 40, asphaltEW, { recv: true });
+  reserveFootprint(162, 360, 33, 47, 'road');
+  const hwyT = [];
+  for (let x = 168; x <= 354; x += 7) xform(hwyT, x, 0.065, 40);
+  flushInstances(worldRoot, new THREE.BoxGeometry(3.2, 0.10, 0.26), yellowMat, hwyT);
   mapShapes.push({ x: 280, z: 10, w: 220, d: 396, color: '#d97706', border: '#92400e', enterable: false });
   mapShapes.push({ x: 261, z: 40, w: 196, d: 12, color: '#334155', border: '#facc15', enterable: false });
 }
@@ -1213,24 +1062,17 @@ export function buildRedrockDesertBiome() {
   const mesaCapMat = makeMat(0xd97706, { texType: 'sand', repeatX: 4, repeatY: 4, roughness: 0.92 });
   const cactusMat = makeMat(0x15803d, { roughness: 0.85 });
   const boulderMat = makeMat(0x9a3412, { texType: 'redrock', repeatX: 2, repeatY: 2, roughness: 0.92 });
-  [
-    { x: 215, z: -45, w: 26, d: 22, h: 7.5 },
-    { x: 295, z: -85, w: 34, d: 28, h: 11.0 },
-    { x: 225, z: 125, w: 28, d: 24, h: 8.5 },
-    { x: 285, z: 178, w: 32, d: 26, h: 10.0 }
-  ].forEach((m) => {
-    const base = new THREE.Mesh(new THREE.BoxGeometry(m.w, m.h, m.d), mesaMat);
-    base.position.set(m.x, m.h / 2, m.z);
-    base.castShadow = true;
-    base.receiveShadow = true;
-    const tier2 = new THREE.Mesh(new THREE.BoxGeometry(m.w * 0.72, m.h * 0.55, m.d * 0.72), mesaCapMat);
-    tier2.position.set(m.x, m.h + (m.h * 0.55) / 2, m.z);
-    tier2.castShadow = true;
-    worldRoot.add(base, tier2);
-    addWorldBox(m.x - m.w / 2, m.x + m.w / 2, 0.02, m.h, m.z - m.d / 2, m.z + m.d / 2, 'mesa_low', true);
-    addWorldBox(m.x - (m.w * 0.72) / 2, m.x + (m.w * 0.72) / 2, m.h, m.h * 1.55, m.z - (m.d * 0.72) / 2, m.z + (m.d * 0.72) / 2, 'mesa_top', true);
-    mapShapes.push({ x: m.x, z: m.z, w: m.w, d: m.d, color: '#9a3412', border: '#7c2d12', enterable: false });
-  });
+  // [x, z, w, d, h]
+  for (const [x, z, w, d, h] of [
+    [215, -45, 26, 22, 7.5], [295, -85, 34, 28, 11.0],
+    [225, 125, 28, 24, 8.5], [285, 178, 32, 26, 10.0]
+  ]) {
+    makeBox(worldRoot, w, h, d, x, h / 2, z, mesaMat, { cast: true, recv: true });
+    makeBox(worldRoot, w * 0.72, h * 0.55, d * 0.72, x, h + (h * 0.55) / 2, z, mesaCapMat, { cast: true });
+    addWorldBox(x - w / 2, x + w / 2, 0.02, h, z - d / 2, z + d / 2, 'mesa_low', true);
+    addWorldBox(x - (w * 0.72) / 2, x + (w * 0.72) / 2, h, h * 1.55, z - (d * 0.72) / 2, z + (d * 0.72) / 2, 'mesa_top', true);
+    mapShapes.push({ x, z, w, d, color: '#9a3412', border: '#7c2d12', enterable: false });
+  }
   [
     [184, -18], [196, 18], [210, 62], [238, 16], [268, -28],
     [282, 64], [308, 12], [332, 68], [192, 92], [255, 148]
@@ -1242,25 +1084,21 @@ export function buildRedrockDesertBiome() {
     const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, h, 8), cactusMat);
     trunk.position.y = h / 2;
     trunk.castShadow = true;
-    const armL = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.22, 0.22), cactusMat);
-    armL.position.set(-0.35, h * 0.55, 0);
-    const tipL = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.75, 0.22), cactusMat);
-    tipL.position.set(-0.56, h * 0.55 + 0.35, 0);
-    const armR = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.22, 0.22), cactusMat);
-    armR.position.set(0.35, h * 0.68, 0);
-    const tipR = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.65, 0.22), cactusMat);
-    tipR.position.set(0.56, h * 0.68 + 0.30, 0);
-    cGroup.add(trunk, armL, tipL, armR, tipR);
+    cGroup.add(trunk);
+    makeBox(cGroup, 0.65, 0.22, 0.22, -0.35, h * 0.55, 0, cactusMat);
+    makeBox(cGroup, 0.22, 0.75, 0.22, -0.56, h * 0.55 + 0.35, 0, cactusMat);
+    makeBox(cGroup, 0.65, 0.22, 0.22, 0.35, h * 0.68, 0, cactusMat);
+    makeBox(cGroup, 0.22, 0.65, 0.22, 0.56, h * 0.68 + 0.30, 0, cactusMat);
     worldRoot.add(cGroup);
     addWorldBox(cx - 0.35, cx + 0.35, 0.02, h, cz - 0.35, cz + 0.35, 'cactus', false);
   });
-  [[188, 56], [244, -14], [274, 24], [322, -24], [265, 95]].forEach(([bx, bz]) => {
+  for (const [bx, bz] of [[188, 56], [244, -14], [274, 24], [322, -24], [265, 95]]) {
     const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(1.45, 0), boulderMat);
     rock.position.set(bx, 0.9, bz);
     rock.castShadow = true;
     worldRoot.add(rock);
     addWorldBox(bx - 1.2, bx + 1.2, 0.02, 2.0, bz - 1.2, bz + 1.2, 'boulder', true);
-  });
+  }
   buildWalkInHouse({ x: 254, z: 84, w: 10.4, d: 8.6, wallColor: 0xfde68a, roofColor: 0x9a3412, label: 'REDROCK DESERT OUTPOST' });
 }
 
@@ -1271,43 +1109,33 @@ export function buildSuburbanHouseBase({ x, z, w = 8.4, d = 7.4, h = 3.6, wallCo
   const group = new THREE.Group();
   group.position.set(x, 0.18, z);
   group.rotation.y = rotY;
-  const wallThick = 0.28;
+  const t = 0.28;
   const wallMat = makeMat(wallColor, { texType: 'siding', repeatX: 3, repeatY: 2, bumpScale: 0.015 });
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(w - 0.2, 0.08, d - 0.2), makeMat(0x92400e, { texType: 'wood' }));
-  floor.position.y = 0.04;
-  const backWall = new THREE.Mesh(new THREE.BoxGeometry(w, h, wallThick), wallMat);
-  backWall.position.set(0, h / 2, -d / 2 + wallThick / 2);
-  backWall.castShadow = true;
-
+  const floor = makeBox(group, w - 0.2, 0.08, d - 0.2, 0, 0.04, 0, makeMat(0x92400e, { texType: 'wood' }));
+  const backWall = makeBox(group, w, h, t, 0, h / 2, -d / 2 + t / 2, wallMat, { cast: true });
   const frontWall = new THREE.Group();
-  frontWall.position.set(0, 0, d / 2 - wallThick / 2);
+  frontWall.position.set(0, 0, d / 2 - t / 2);
   const fLeft = new THREE.Group();
   fLeft.position.x = -w * 0.28;
-  buildWallWithRealWindow(fLeft, w * 0.38, h, wallThick, 1.45, 1.25, 1.9, wallMat);
+  buildWallWithRealWindow(fLeft, w * 0.38, h, t, 1.45, 1.25, 1.9, wallMat);
   const fRight = new THREE.Group();
   fRight.position.x = w * 0.28;
-  buildWallWithRealWindow(fRight, w * 0.38, h, wallThick, 1.45, 1.25, 1.9, wallMat);
-  const centerCol = new THREE.Mesh(new THREE.BoxGeometry(w * 0.24, h, wallThick), wallMat);
-  centerCol.position.y = h / 2;
-  const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.2, 0.14), makeMat(0x78350f, { texType: 'wood' }));
-  door.position.set(0, 1.1, 0.1);
-  frontWall.add(fLeft, fRight, centerCol, door);
-
+  buildWallWithRealWindow(fRight, w * 0.38, h, t, 1.45, 1.25, 1.9, wallMat);
+  const centerCol = makeBox(frontWall, w * 0.24, h, t, 0, h / 2, 0, wallMat);
+  const door = makeBox(frontWall, 1.2, 2.2, 0.14, 0, 1.1, 0.1, makeMat(0x78350f, { texType: 'wood' }));
+  frontWall.add(fLeft, fRight);
   const leftWall = new THREE.Group();
-  leftWall.position.set(-w / 2 + wallThick / 2, 0, 0);
+  leftWall.position.set(-w / 2 + t / 2, 0, 0);
   leftWall.rotation.y = Math.PI / 2;
-  buildWallWithRealWindow(leftWall, d - wallThick * 2, h, wallThick, 1.5, 1.25, 1.9, wallMat);
+  buildWallWithRealWindow(leftWall, d - t * 2, h, t, 1.5, 1.25, 1.9, wallMat);
   const rightWall = new THREE.Group();
-  rightWall.position.set(w / 2 - wallThick / 2, 0, 0);
+  rightWall.position.set(w / 2 - t / 2, 0, 0);
   rightWall.rotation.y = -Math.PI / 2;
-  buildWallWithRealWindow(rightWall, d - wallThick * 2, h, wallThick, 1.5, 1.25, 1.9, wallMat);
-
-  const inTable = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.65, 1.0), makeMat(0x78350f, { texType: 'wood' }));
-  inTable.position.set(-1.6, 0.4, 1.2);
-  const inSofa = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.72, 0.9), makeMat(0x334155, { texType: 'fabric' }));
-  inSofa.position.set(1.6, 0.42, 0.8);
+  buildWallWithRealWindow(rightWall, d - t * 2, h, t, 1.5, 1.25, 1.9, wallMat);
+  const inTable = makeBox(group, 1.4, 0.65, 1.0, -1.6, 0.4, 1.2, makeMat(0x78350f, { texType: 'wood' }));
+  const inSofa = makeBox(group, 2.2, 0.72, 0.9, 1.6, 0.42, 0.8, makeMat(0x334155, { texType: 'fabric' }));
+  group.remove(floor, backWall, inTable, inSofa);
   group.add(floor, backWall, frontWall, leftWall, rightWall, inTable, inSofa);
-
   const roofH = 2.2, overhang = 0.55;
   const shape = new THREE.Shape();
   shape.moveTo(-(w / 2 + overhang), 0);
@@ -1320,29 +1148,20 @@ export function buildSuburbanHouseBase({ x, z, w = 8.4, d = 7.4, h = 3.6, wallCo
   roof.position.y = h;
   roof.castShadow = true;
   group.add(roof);
-
-  const awning = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.24, 1.8), makeMat(roofColor, { texType: 'shingles', repeatX: 2, repeatY: 1 }));
-  awning.position.set(0, 2.25, d / 2 + 0.85);
-  awning.castShadow = true;
-  group.add(awning);
-
+  makeBox(group, 3.4, 0.24, 1.8, 0, 2.25, d / 2 + 0.85,
+    makeMat(roofColor, { texType: 'shingles', repeatX: 2, repeatY: 1 }), { cast: true });
   const lodGroup = new THREE.Group();
-  const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.85, 2.2, 0.85), makeMat(0x9a3412, { texType: 'brick', repeatX: 1, repeatY: 2, bumpScale: 0.02 }));
-  chimney.position.set(w * 0.28, h + 1.4, -d * 0.15);
-  chimney.castShadow = true;
-  lodGroup.add(chimney);
+  makeBox(lodGroup, 0.85, 2.2, 0.85, w * 0.28, h + 1.4, -d * 0.15,
+    makeMat(0x9a3412, { texType: 'brick', repeatX: 1, repeatY: 2, bumpScale: 0.02 }), { cast: true });
   group.add(lodGroup);
   registerBuildingLod(x, z, lodGroup);
   worldRoot.add(group);
-
   const cos = Math.abs(Math.cos(rotY)), sin = Math.abs(Math.sin(rotY));
-  const worldW = w * cos + d * sin;
-  const worldD = w * sin + d * cos;
+  const worldW = w * cos + d * sin, worldD = w * sin + d * cos;
   addWorldBox(x - worldW / 2, x + worldW / 2, 0.18, 0.18 + h, z - worldD / 2, z + worldD / 2, 'house_wall', false);
-  const awWorldX = x + Math.sin(rotY) * (d / 2 + 0.85);
-  const awWorldZ = z + Math.cos(rotY) * (d / 2 + 0.85);
+  const awX = x + Math.sin(rotY) * (d / 2 + 0.85), awZ = z + Math.cos(rotY) * (d / 2 + 0.85);
   const awW = 3.4 * cos + 1.8 * sin, awD = 3.4 * sin + 1.8 * cos;
-  addWorldBox(awWorldX - awW / 2, awWorldX + awW / 2, 2.25, 2.48, awWorldZ - awD / 2, awWorldZ + awD / 2, 'porch_awning', true);
+  addWorldBox(awX - awW / 2, awX + awW / 2, 2.25, 2.48, awZ - awD / 2, awZ + awD / 2, 'porch_awning', true);
   mapShapes.push({ x, z, w: worldW, d: worldD, color: '#' + new THREE.Color(wallColor).getHexString(), border: '#1e293b', enterable: false });
 }
 
@@ -1353,45 +1172,37 @@ export function buildWalkInHouse({ x, z, w = 9.8, d = 8.6, h = 4.0, wallColor, r
   const group = new THREE.Group();
   group.position.set(x, baseY, z);
   group.userData.studioName = label || 'Walk-in house';
-  const wallThick = 0.36, doorW = 2.6, doorH = 2.85;
+  const t = 0.36, doorW = 2.6, doorH = 2.85;
   const wallMat = makeMat(wallColor, { texType: 'siding', repeatX: 4, repeatY: 2, bumpScale: 0.015 });
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(w - 0.2, 0.08, d - 0.2), makeMat(0xb45309, { texType: 'wood', repeatX: 4, repeatY: 4, roughness: 0.55 }));
-  floor.position.y = 0.04;
-  floor.receiveShadow = true;
-  group.add(floor);
-
+  makeBox(group, w - 0.2, 0.08, d - 0.2, 0, 0.04, 0,
+    makeMat(0xb45309, { texType: 'wood', repeatX: 4, repeatY: 4, roughness: 0.55 }), { recv: true });
   const backWallGroup = new THREE.Group();
-  backWallGroup.position.set(0, 0, -d / 2 + wallThick / 2);
-  buildWallWithRealWindow(backWallGroup, w, h, wallThick, 2.2, 1.35, 2.0, wallMat);
+  backWallGroup.position.set(0, 0, -d / 2 + t / 2);
+  buildWallWithRealWindow(backWallGroup, w, h, t, 2.2, 1.35, 2.0, wallMat);
   group.add(backWallGroup);
-
   const leftWallGroup = new THREE.Group();
-  leftWallGroup.position.set(-w / 2 + wallThick / 2, 0, 0);
+  leftWallGroup.position.set(-w / 2 + t / 2, 0, 0);
   leftWallGroup.rotation.y = Math.PI / 2;
-  buildWallWithRealWindow(leftWallGroup, d - wallThick * 2, h, wallThick, 1.8, 1.35, 2.0, wallMat);
+  buildWallWithRealWindow(leftWallGroup, d - t * 2, h, t, 1.8, 1.35, 2.0, wallMat);
   const rightWallGroup = new THREE.Group();
-  rightWallGroup.position.set(w / 2 - wallThick / 2, 0, 0);
+  rightWallGroup.position.set(w / 2 - t / 2, 0, 0);
   rightWallGroup.rotation.y = -Math.PI / 2;
-  buildWallWithRealWindow(rightWallGroup, d - wallThick * 2, h, wallThick, 1.8, 1.35, 2.0, wallMat);
+  buildWallWithRealWindow(rightWallGroup, d - t * 2, h, t, 1.8, 1.35, 2.0, wallMat);
   group.add(leftWallGroup, rightWallGroup);
-
   const segW = (w - doorW) / 2;
   const frontL = new THREE.Group();
-  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontL, segW, h, wallThick, 1.45, 1.3, 2.0, wallMat);
+  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - t / 2);
+  buildWallWithRealWindow(frontL, segW, h, t, 1.45, 1.3, 2.0, wallMat);
   const frontR = new THREE.Group();
-  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontR, segW, h, wallThick, 1.45, 1.3, 2.0, wallMat);
+  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - t / 2);
+  buildWallWithRealWindow(frontR, segW, h, t, 1.45, 1.3, 2.0, wallMat);
   const headerH = h - doorH;
-  const header = new THREE.Mesh(new THREE.BoxGeometry(doorW, headerH, wallThick), wallMat);
-  header.position.set(0, doorH + headerH / 2, d / 2 - wallThick / 2);
+  const header = makeBox(group, doorW, headerH, t, 0, doorH + headerH / 2, d / 2 - t / 2, wallMat);
   const trimMat = makeMat(0x78350f, { texType: 'wood' });
-  const trimL = new THREE.Mesh(new THREE.BoxGeometry(0.14, doorH, wallThick + 0.08), trimMat);
-  trimL.position.set(-doorW / 2, doorH / 2, d / 2 - wallThick / 2);
-  const trimR = trimL.clone();
-  trimR.position.x = doorW / 2;
+  const trimL = makeBox(group, 0.14, doorH, t + 0.08, -doorW / 2, doorH / 2, d / 2 - t / 2, trimMat);
+  const trimR = makeBox(group, 0.14, doorH, t + 0.08, doorW / 2, doorH / 2, d / 2 - t / 2, trimMat);
+  group.remove(header, trimL, trimR);
   group.add(frontL, frontR, header, trimL, trimR);
-
   const roofH = 2.3, overhang = 0.55;
   const shape = new THREE.Shape();
   shape.moveTo(-(w / 2 + overhang), 0);
@@ -1404,29 +1215,24 @@ export function buildWalkInHouse({ x, z, w = 9.8, d = 8.6, h = 4.0, wallColor, r
   roof.position.y = h;
   roof.castShadow = true;
   group.add(roof);
-
-  const sofa = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.72, 2.5), makeMat(0x334155, { texType: 'fabric', repeatX: 2, repeatY: 4, roughness: 0.95 }));
-  sofa.position.set(-w / 2 + 1.0, 0.42, -0.2);
+  const sofa = makeBox(group, 1.1, 0.72, 2.5, -w / 2 + 1.0, 0.42, -0.2,
+    makeMat(0x334155, { texType: 'fabric', repeatX: 2, repeatY: 4, roughness: 0.95 }));
   addWorldBox(x - w / 2 + 0.45, x - w / 2 + 1.55, baseY, baseY + 0.72, z - 1.45, z + 1.05, 'sofa', true);
-  const table = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.62, 1.6), makeMat(0x78350f, { texType: 'wood' }));
-  table.position.set(-1.5, 0.38, -0.2);
+  const table = makeBox(group, 1.1, 0.62, 1.6, -1.5, 0.38, -0.2, makeMat(0x78350f, { texType: 'wood' }));
   addWorldBox(x - 2.05, x - 0.95, baseY, baseY + 0.62, z - 1.0, z + 0.6, 'table', true);
-  const counter = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.94, 1.1), makeMat(0xe2e8f0, { texType: 'siding' }));
-  counter.position.set(w / 2 - 1.9, 0.54, -d / 2 + 1.0);
-  const graniteTop = new THREE.Mesh(new THREE.BoxGeometry(2.9, 0.09, 1.18), makeMat(0x334155, { texType: 'granite', repeatX: 3, repeatY: 1, roughness: 0.16, clearcoat: 0.9, flatShading: false }));
-  graniteTop.position.set(w / 2 - 1.9, 1.05, -d / 2 + 1.0);
-  const steelFridge = new THREE.Mesh(new THREE.BoxGeometry(0.95, 2.05, 0.95), makeMat(0xdbeafe, { texType: 'brushedsteel', repeatX: 1, repeatY: 2, metalness: 0.9, roughness: 0.22, flatShading: false }));
-  steelFridge.position.set(w / 2 - 0.9, 1.1, -d / 2 + 2.3);
+  const counter = makeBox(group, 2.8, 0.94, 1.1, w / 2 - 1.9, 0.54, -d / 2 + 1.0, makeMat(0xe2e8f0, { texType: 'siding' }));
+  const graniteTop = makeBox(group, 2.9, 0.09, 1.18, w / 2 - 1.9, 1.05, -d / 2 + 1.0,
+    makeMat(0x334155, { texType: 'granite', repeatX: 3, repeatY: 1, roughness: 0.16, clearcoat: 0.9, flatShading: false }));
+  const steelFridge = makeBox(group, 0.95, 2.05, 0.95, w / 2 - 0.9, 1.1, -d / 2 + 2.3,
+    makeMat(0xdbeafe, { texType: 'brushedsteel', repeatX: 1, repeatY: 2, metalness: 0.9, roughness: 0.22, flatShading: false }));
   addWorldBox(x + w / 2 - 3.3, x + w / 2 - 0.5, baseY, baseY + 1.02, z - d / 2 + 0.45, z - d / 2 + 1.55, 'counter', true);
   addWorldBox(x + w / 2 - 1.4, x + w / 2 - 0.4, baseY, baseY + 2.07, z - d / 2 + 1.8, z - d / 2 + 2.8, 'fridge', true);
-  const bedFrame = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.55, 1.4), makeMat(0x92400e, { texType: 'wood' }));
-  bedFrame.position.set(-w / 2 + 1.45, 0.35, -d / 2 + 1.15);
-  const mattress = new THREE.Mesh(new THREE.BoxGeometry(1.88, 0.22, 1.28), makeMat(0xf8fafc, { texType: 'fabric', repeatX: 2, repeatY: 2, roughness: 0.95 }));
-  mattress.position.set(-w / 2 + 1.45, 0.68, -d / 2 + 1.15);
+  const bedFrame = makeBox(group, 2.0, 0.55, 1.4, -w / 2 + 1.45, 0.35, -d / 2 + 1.15, makeMat(0x92400e, { texType: 'wood' }));
+  const mattress = makeBox(group, 1.88, 0.22, 1.28, -w / 2 + 1.45, 0.68, -d / 2 + 1.15,
+    makeMat(0xf8fafc, { texType: 'fabric', repeatX: 2, repeatY: 2, roughness: 0.95 }));
   addWorldBox(x - w / 2 + 0.45, x - w / 2 + 2.45, baseY, baseY + 0.77, z - d / 2 + 0.45, z - d / 2 + 1.85, 'bed', true);
-  const rug = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.03, 2.5), makeMat(0x0284c7, { texType: 'fabric', repeatX: 4, repeatY: 3, roughness: 0.96 }));
-  rug.position.set(-1.5, 0.09, -0.2);
-
+  const rug = makeBox(group, 3.4, 0.03, 2.5, -1.5, 0.09, -0.2,
+    makeMat(0x0284c7, { texType: 'fabric', repeatX: 4, repeatY: 3, roughness: 0.96 }));
   const indoorLod = new THREE.Group();
   const lampStand = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.14, 1.5, 8), makeMat(0xfbbf24, { metalness: 0.85 }));
   lampStand.position.set(-w / 2 + 0.9, 0.85, d / 2 - 1.2);
@@ -1435,15 +1241,15 @@ export function buildWalkInHouse({ x, z, w = 9.8, d = 8.6, h = 4.0, wallColor, r
   indoorLod.add(lampStand, lampShade);
   group.add(indoorLod);
   registerBuildingLod(x, z, indoorLod);
+  group.remove(sofa, table, counter, graniteTop, steelFridge, bedFrame, mattress, rug);
   group.add(sofa, table, counter, graniteTop, steelFridge, bedFrame, mattress, rug);
   worldRoot.add(group);
-
   const minX = x - w / 2, maxX = x + w / 2, minZ = z - d / 2, maxZ = z + d / 2;
-  addWorldBox(minX, maxX, baseY, baseY + h, minZ, minZ + wallThick, 'wall', false);
-  addWorldBox(minX, minX + wallThick, baseY, baseY + h, minZ, maxZ, 'wall', false);
-  addWorldBox(maxX - wallThick, maxX, baseY, baseY + h, minZ, maxZ, 'wall', false);
-  addWorldBox(minX, x - doorW / 2, baseY, baseY + h, maxZ - wallThick, maxZ, 'wall', false);
-  addWorldBox(x + doorW / 2, maxX, baseY, baseY + h, maxZ - wallThick, maxZ, 'wall', false);
+  addWorldBox(minX, maxX, baseY, baseY + h, minZ, minZ + t, 'wall', false);
+  addWorldBox(minX, minX + t, baseY, baseY + h, minZ, maxZ, 'wall', false);
+  addWorldBox(maxX - t, maxX, baseY, baseY + h, minZ, maxZ, 'wall', false);
+  addWorldBox(minX, x - doorW / 2, baseY, baseY + h, maxZ - t, maxZ, 'wall', false);
+  addWorldBox(x + doorW / 2, maxX, baseY, baseY + h, maxZ - t, maxZ, 'wall', false);
   addWorldBox(minX, maxX, baseY + h - 0.2, baseY + h, minZ, maxZ, 'roof', true);
   enterableZones.push({ minX: minX + 0.3, maxX: maxX - 0.3, minZ: minZ + 0.3, maxZ: maxZ - 0.2, name: label });
   mapShapes.push({ x, z, w, d, color: '#' + new THREE.Color(wallColor).getHexString(), border: '#f59e0b', enterable: true });
@@ -1453,39 +1259,32 @@ export function buildWalkInHouse({ x, z, w = 9.8, d = 8.6, h = 4.0, wallColor, r
 // Shops, dealership, bank
 // -----------------------------------------------------------------------------
 export function buildHotdogStore(x, z) {
-  const w = 11.4, d = 9.6, h = 4.2, wallThick = 0.36, doorW = 2.8, doorH = 2.9;
+  const w = 11.4, d = 9.6, h = 4.2, t = 0.36, doorW = 2.8, doorH = 2.9;
   const group = new THREE.Group();
   group.position.set(x, 0.18, z);
   group.userData.studioName = 'AURA HOTDOGS';
   const wallMat = makeMat(0xfef08a, { texType: 'siding', repeatX: 4, repeatY: 2 });
   const redTrimMat = makeMat(0xdc2626, { roughness: 0.45 });
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(w - 0.2, 0.08, d - 0.2), makeMat(0xf8fafc, { texType: 'cobblestone', repeatX: 6, repeatY: 6, roughness: 0.5 }));
-  floor.position.y = 0.04;
-  floor.receiveShadow = true;
-  const backW = new THREE.Mesh(new THREE.BoxGeometry(w, h, wallThick), wallMat);
-  backW.position.set(0, h / 2, -d / 2 + wallThick / 2);
-  backW.castShadow = true;
+  const floor = makeBox(group, w - 0.2, 0.08, d - 0.2, 0, 0.04, 0,
+    makeMat(0xf8fafc, { texType: 'cobblestone', repeatX: 6, repeatY: 6, roughness: 0.5 }), { recv: true });
+  const backW = makeBox(group, w, h, t, 0, h / 2, -d / 2 + t / 2, wallMat, { cast: true });
   const leftW = new THREE.Group();
-  leftW.position.set(-w / 2 + wallThick / 2, 0, 0);
+  leftW.position.set(-w / 2 + t / 2, 0, 0);
   leftW.rotation.y = Math.PI / 2;
-  buildWallWithRealWindow(leftW, d - wallThick * 2, h, wallThick, 2.2, 1.4, 2.0, wallMat);
+  buildWallWithRealWindow(leftW, d - t * 2, h, t, 2.2, 1.4, 2.0, wallMat);
   const rightW = new THREE.Group();
-  rightW.position.set(w / 2 - wallThick / 2, 0, 0);
+  rightW.position.set(w / 2 - t / 2, 0, 0);
   rightW.rotation.y = -Math.PI / 2;
-  buildWallWithRealWindow(rightW, d - wallThick * 2, h, wallThick, 2.2, 1.4, 2.0, wallMat);
+  buildWallWithRealWindow(rightW, d - t * 2, h, t, 2.2, 1.4, 2.0, wallMat);
   const segW = (w - doorW) / 2;
   const frontL = new THREE.Group();
-  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontL, segW, h, wallThick, segW - 0.9, 1.85, 1.65, wallMat);
+  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - t / 2);
+  buildWallWithRealWindow(frontL, segW, h, t, segW - 0.9, 1.85, 1.65, wallMat);
   const frontR = new THREE.Group();
-  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontR, segW, h, wallThick, segW - 0.9, 1.85, 1.65, wallMat);
-  const header = new THREE.Mesh(new THREE.BoxGeometry(doorW, h - doorH, wallThick), wallMat);
-  header.position.set(0, doorH + (h - doorH) / 2, d / 2 - wallThick / 2);
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 0.6, 0.36, d + 0.6), redTrimMat);
-  roof.position.y = h + 0.18;
-  roof.castShadow = true;
-
+  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - t / 2);
+  buildWallWithRealWindow(frontR, segW, h, t, segW - 0.9, 1.85, 1.65, wallMat);
+  const header = makeBox(group, doorW, h - doorH, t, 0, doorH + (h - doorH) / 2, d / 2 - t / 2, wallMat);
+  const roof = makeBox(group, w + 0.6, 0.36, d + 0.6, 0, h + 0.18, 0, redTrimMat, { cast: true });
   const mascotGroup = new THREE.Group();
   mascotGroup.position.set(0, h + 1.15, 0.5);
   const bunMat = makeMat(0xd97706, { roughness: 0.6 });
@@ -1497,17 +1296,13 @@ export function buildHotdogStore(x, z) {
   const wiener = new THREE.Mesh(new THREE.CapsuleGeometry(0.36, 3.1, 6, 10), makeMat(0xb91c1c, { roughness: 0.35 }));
   wiener.rotation.z = Math.PI / 2;
   wiener.position.y = 0.12;
-  const mustard = new THREE.Mesh(new THREE.BoxGeometry(2.9, 0.08, 0.12), makeMat(0xfacc15));
-  mustard.position.set(0, 0.48, 0);
-  mascotGroup.add(bunL, bunR, wiener, mustard);
+  const mustard = makeBox(mascotGroup, 2.9, 0.08, 0.12, 0, 0.48, 0, makeMat(0xfacc15));
+  mascotGroup.add(bunL, bunR, wiener);
   createNeonSign(group, 'AURA HOTDOGS', 0, 3.55, d / 2 + 0.08, '#991b1b', '#fef08a', 5.2, 1.05);
-
-  const frontCounter = new THREE.Mesh(new THREE.BoxGeometry(4.4, 1.0, 1.0), redTrimMat);
-  frontCounter.position.set(-2.4, 0.55, -0.5);
-  const frontTop = new THREE.Mesh(new THREE.BoxGeometry(4.5, 0.1, 1.1), makeMat(0xf8fafc, { metalness: 0.7 }));
-  frontTop.position.set(-2.4, 1.08, -0.5);
-  const backCounter = new THREE.Mesh(new THREE.BoxGeometry(6.8, 0.96, 1.1), makeMat(0x334155, { texType: 'brushedsteel', metalness: 0.85 }));
-  backCounter.position.set(0, 0.54, -d / 2 + 1.15);
+  const frontCounter = makeBox(group, 4.4, 1.0, 1.0, -2.4, 0.55, -0.5, redTrimMat);
+  const frontTop = makeBox(group, 4.5, 0.1, 1.1, -2.4, 1.08, -0.5, makeMat(0xf8fafc, { metalness: 0.7 }));
+  const backCounter = makeBox(group, 6.8, 0.96, 1.1, 0, 0.54, -d / 2 + 1.15,
+    makeMat(0x334155, { texType: 'brushedsteel', metalness: 0.85 }));
   const refillVat = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.44, 0.65, 14), makeMat(0xe2e8f0, { metalness: 0.92, roughness: 0.18 }));
   refillVat.position.set(2.4, 1.32, -d / 2 + 1.15);
   const vatWater = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.06, 14), makeMat(0xf97316, { emissive: 0xea580c, emissiveIntensity: 0.55 }));
@@ -1516,15 +1311,15 @@ export function buildHotdogStore(x, z) {
   const indoorPadRing = new THREE.Mesh(new THREE.RingGeometry(0.85, 1.15, 22), new THREE.MeshBasicMaterial({ color: 0xfacc15, side: THREE.DoubleSide }));
   indoorPadRing.rotation.x = -Math.PI / 2;
   indoorPadRing.position.set(2.4, 0.10, -2.2);
+  group.remove(floor, backW, header, roof, frontCounter, frontTop, backCounter);
   group.add(floor, backW, leftW, rightW, frontL, frontR, header, roof, mascotGroup, frontCounter, frontTop, backCounter, refillVat, vatWater, indoorPadRing);
   worldRoot.add(group);
-
   const minX = x - w / 2, maxX = x + w / 2, minZ = z - d / 2, maxZ = z + d / 2;
-  addWorldBox(minX, maxX, 0.18, 0.18 + h, minZ, minZ + wallThick, 'wall', false);
-  addWorldBox(minX, minX + wallThick, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
-  addWorldBox(maxX - wallThick, maxX, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
-  addWorldBox(minX, x - doorW / 2, 0.18, 0.18 + h, maxZ - wallThick, maxZ, 'wall', false);
-  addWorldBox(x + doorW / 2, maxX, 0.18, 0.18 + h, maxZ - wallThick, maxZ, 'wall', false);
+  addWorldBox(minX, maxX, 0.18, 0.18 + h, minZ, minZ + t, 'wall', false);
+  addWorldBox(minX, minX + t, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
+  addWorldBox(maxX - t, maxX, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
+  addWorldBox(minX, x - doorW / 2, 0.18, 0.18 + h, maxZ - t, maxZ, 'wall', false);
+  addWorldBox(x + doorW / 2, maxX, 0.18, 0.18 + h, maxZ - t, maxZ, 'wall', false);
   addWorldBox(minX, maxX, 0.18 + h - 0.1, 0.18 + h + 0.36, minZ, maxZ, 'roof', true);
   addWorldBox(x - 4.6, x - 0.2, 0.18, 1.25, z - 1.05, z + 0.05, 'hd_counter', true);
   addWorldBox(x - 3.4, x + 3.4, 0.18, 1.25, minZ + 0.6, minZ + 1.75, 'hd_back_counter', true);
@@ -1537,11 +1332,10 @@ export function buildPlazaHotdogCart(x, z) {
   const cart = new THREE.Group();
   cart.position.set(x, 0.18, z);
   cart.userData.studioName = 'Plaza hotdog cart';
-  const body = new THREE.Mesh(new THREE.BoxGeometry(2.1, 1.05, 1.15), makeMat(0xdc2626, { texType: 'corrugated', metalness: 0.65, roughness: 0.28 }));
-  body.position.y = 0.62;
-  body.castShadow = true;
-  const topCounter = new THREE.Mesh(new THREE.BoxGeometry(2.22, 0.10, 1.25), makeMat(0xf8fafc, { texType: 'brushedsteel', metalness: 0.9, roughness: 0.2, flatShading: false }));
-  topCounter.position.y = 1.18;
+  const body = makeBox(cart, 2.1, 1.05, 1.15, 0, 0.62, 0,
+    makeMat(0xdc2626, { texType: 'corrugated', metalness: 0.65, roughness: 0.28 }), { cast: true });
+  const topCounter = makeBox(cart, 2.22, 0.10, 1.25, 0, 1.18, 0,
+    makeMat(0xf8fafc, { texType: 'brushedsteel', metalness: 0.9, roughness: 0.2, flatShading: false }));
   const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.65, 8), makeMat(0xe2e8f0, { metalness: 0.9 }));
   pole.position.set(0, 1.95, 0);
   const umbrella = new THREE.Mesh(new THREE.ConeGeometry(1.55, 0.65, 8), makeMat(0xfacc15, { roughness: 0.5 }));
@@ -1554,6 +1348,7 @@ export function buildPlazaHotdogCart(x, z) {
   refillRing.rotation.x = -Math.PI / 2;
   refillRing.position.y = 0.05;
   createNeonSign(cart, 'SAUSAGE REFILL [E]', 0, 2.15, 0.65, '#7f1d1d', '#fef08a', 2.2, 0.44);
+  cart.remove(body, topCounter);
   cart.add(body, topCounter, pole, umbrella, miniDog, refillRing);
   worldRoot.add(cart);
   addWorldBox(x - 1.1, x + 1.1, 0.18, 1.42, z - 0.62, z + 0.62, 'hotdog_cart', true);
@@ -1561,65 +1356,57 @@ export function buildPlazaHotdogCart(x, z) {
 }
 
 export function buildCarDealership(x, z) {
-  const w = 15.6, d = 12.6, h = 4.8, wallThick = 0.38, doorW = 4.8, doorH = 3.5;
+  const w = 15.6, d = 12.6, h = 4.8, t = 0.38, doorW = 4.8, doorH = 3.5;
   const group = new THREE.Group();
   group.position.set(x, 0.18, z);
   group.userData.studioName = 'AURA EXOTIC MOTORS';
-  const marbleFloor = new THREE.Mesh(new THREE.BoxGeometry(w - 0.2, 0.08, d - 0.2), makeMat(0xf8fafc, { texType: 'marble', repeatX: 6, repeatY: 5, roughness: 0.16, clearcoat: 0.9, flatShading: false }));
-  marbleFloor.position.y = 0.04;
-  marbleFloor.receiveShadow = true;
+  const marbleFloor = makeBox(group, w - 0.2, 0.08, d - 0.2, 0, 0.04, 0,
+    makeMat(0xf8fafc, { texType: 'marble', repeatX: 6, repeatY: 5, roughness: 0.16, clearcoat: 0.9, flatShading: false }), { recv: true });
   const wallMat = makeMat(0x1e293b, { texType: 'concrete', repeatX: 5, repeatY: 2, roughness: 0.45 });
   const trimMat = makeMat(0xf59e0b, { metalness: 0.85, roughness: 0.2 });
-  const backW = new THREE.Mesh(new THREE.BoxGeometry(w, h, wallThick), wallMat);
-  backW.position.set(0, h / 2, -d / 2 + wallThick / 2);
-  backW.castShadow = true;
+  const backW = makeBox(group, w, h, t, 0, h / 2, -d / 2 + t / 2, wallMat, { cast: true });
   const leftW = new THREE.Group();
-  leftW.position.set(-w / 2 + wallThick / 2, 0, 0);
+  leftW.position.set(-w / 2 + t / 2, 0, 0);
   leftW.rotation.y = Math.PI / 2;
-  buildWallWithRealWindow(leftW, d - wallThick * 2, h, wallThick, d - 3.2, 2.75, 1.95, wallMat, false);
+  buildWallWithRealWindow(leftW, d - t * 2, h, t, d - 3.2, 2.75, 1.95, wallMat, false);
   const rightW = new THREE.Group();
-  rightW.position.set(w / 2 - wallThick / 2, 0, 0);
+  rightW.position.set(w / 2 - t / 2, 0, 0);
   rightW.rotation.y = -Math.PI / 2;
-  buildWallWithRealWindow(rightW, d - wallThick * 2, h, wallThick, d - 3.2, 2.75, 1.95, wallMat, false);
+  buildWallWithRealWindow(rightW, d - t * 2, h, t, d - 3.2, 2.75, 1.95, wallMat, false);
   const segW = (w - doorW) / 2;
   const frontL = new THREE.Group();
-  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontL, segW, h, wallThick, segW - 1.0, 2.75, 1.95, wallMat, false);
+  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - t / 2);
+  buildWallWithRealWindow(frontL, segW, h, t, segW - 1.0, 2.75, 1.95, wallMat, false);
   const frontR = new THREE.Group();
-  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontR, segW, h, wallThick, segW - 1.0, 2.75, 1.95, wallMat, false);
-  const header = new THREE.Mesh(new THREE.BoxGeometry(doorW, h - doorH, wallThick), wallMat);
-  header.position.set(0, doorH + (h - doorH) / 2, d / 2 - wallThick / 2);
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 0.8, 0.38, d + 0.8), wallMat);
-  roof.position.y = h + 0.19;
-  roof.castShadow = true;
-  const fascia = new THREE.Mesh(new THREE.BoxGeometry(w + 0.9, 0.28, d + 0.9), trimMat);
-  fascia.position.y = h + 0.04;
+  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - t / 2);
+  buildWallWithRealWindow(frontR, segW, h, t, segW - 1.0, 2.75, 1.95, wallMat, false);
+  const header = makeBox(group, doorW, h - doorH, t, 0, doorH + (h - doorH) / 2, d / 2 - t / 2, wallMat);
+  const roof = makeBox(group, w + 0.8, 0.38, d + 0.8, 0, h + 0.19, 0, wallMat, { cast: true });
+  const fascia = makeBox(group, w + 0.9, 0.28, d + 0.9, 0, h + 0.04, 0, trimMat);
   const turntableRing = new THREE.Mesh(new THREE.RingGeometry(2.5, 2.85, 32), new THREE.MeshBasicMaterial({ color: 0xf59e0b, side: THREE.DoubleSide }));
   turntableRing.rotation.x = -Math.PI / 2;
   turntableRing.position.set(0, 0.10, -0.4);
-  const desk = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.95, 0.95), makeMat(0x0f172a));
-  desk.position.set(-5.6, 0.52, -4.4);
-  const deskTop = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.08, 1.05), trimMat);
-  deskTop.position.set(-5.6, 1.02, -4.4);
+  const desk = makeBox(group, 2.4, 0.95, 0.95, -5.6, 0.52, -4.4, makeMat(0x0f172a));
+  const deskTop = makeBox(group, 2.5, 0.08, 1.05, -5.6, 1.02, -4.4, trimMat);
   createNeonSign(group, 'AURA EXOTIC MOTORS', 0, 4.15, d / 2 + 0.12, '#090d14', '#f59e0b', 8.2, 1.15);
+  group.remove(marbleFloor, backW, header, roof, fascia, desk, deskTop);
   group.add(marbleFloor, backW, leftW, rightW, frontL, frontR, header, roof, fascia, turntableRing, desk, deskTop);
   worldRoot.add(group);
   const minX = x - w / 2, maxX = x + w / 2, minZ = z - d / 2, maxZ = z + d / 2;
-  addWorldBox(minX, maxX, 0.18, 0.18 + h, minZ, minZ + wallThick, 'wall', false);
-  addWorldBox(minX, minX + wallThick, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
-  addWorldBox(maxX - wallThick, maxX, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
-  addWorldBox(minX, x - doorW / 2, 0.18, 0.18 + h, maxZ - wallThick, maxZ, 'wall', false);
-  addWorldBox(x + doorW / 2, maxX, 0.18, 0.18 + h, maxZ - wallThick, maxZ, 'wall', false);
+  addWorldBox(minX, maxX, 0.18, 0.18 + h, minZ, minZ + t, 'wall', false);
+  addWorldBox(minX, minX + t, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
+  addWorldBox(maxX - t, maxX, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
+  addWorldBox(minX, x - doorW / 2, 0.18, 0.18 + h, maxZ - t, maxZ, 'wall', false);
+  addWorldBox(x + doorW / 2, maxX, 0.18, 0.18 + h, maxZ - t, maxZ, 'wall', false);
   addWorldBox(minX, maxX, 0.18 + h - 0.1, 0.18 + h + 0.38, minZ, maxZ, 'roof', true);
   addWorldBox(x - 6.85, x - 4.35, 0.18, 1.18, z - 4.9, z - 3.9, 'dealer_desk', true);
-  addWorldBox(minX + wallThick, maxX - wallThick, 0.18, 0.26, minZ + wallThick, maxZ - wallThick, 'dealer_floor', true);
+  addWorldBox(minX + t, maxX - t, 0.18, 0.26, minZ + t, maxZ - t, 'dealer_floor', true);
   enterableZones.push({ minX: minX + 0.3, maxX: maxX - 0.3, minZ: minZ + 0.3, maxZ: maxZ - 0.2, name: 'AURA EXOTIC MOTORS' });
   mapShapes.push({ x, z, w, d, color: '#1e293b', border: '#f59e0b', enterable: true });
 }
 
 export function buildReserveBank(x, z) {
-  const w = 16.4, d = 13.6, h = 6.2, wallThick = 0.45, doorW = 3.2, doorH = 3.4;
+  const w = 16.4, d = 13.6, h = 6.2, t = 0.45, doorW = 3.2, doorH = 3.4;
   const group = new THREE.Group();
   group.position.set(x, 0.18, z);
   group.userData.studioName = 'SUNNYVALE RESERVE BANK';
@@ -1627,72 +1414,57 @@ export function buildReserveBank(x, z) {
   const graniteMat = makeMat(0x1e293b, { texType: 'granite', repeatX: 4, repeatY: 2, roughness: 0.25, flatShading: false });
   const goldMat = makeMat(0xfbbf24, { metalness: 0.94, roughness: 0.15, clearcoat: 0.9, flatShading: false });
   const vaultSteelMat = makeMat(0x94a3b8, { texType: 'brushedsteel', metalness: 0.94, roughness: 0.18, flatShading: false });
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(w - 0.2, 0.10, d - 0.2), marbleMat);
-  floor.position.y = 0.05;
-  floor.receiveShadow = true;
-  const backW = new THREE.Mesh(new THREE.BoxGeometry(w, h, wallThick), marbleMat);
-  backW.position.set(0, h / 2, -d / 2 + wallThick / 2);
-  backW.castShadow = true;
+  const floor = makeBox(group, w - 0.2, 0.10, d - 0.2, 0, 0.05, 0, marbleMat, { recv: true });
+  const backW = makeBox(group, w, h, t, 0, h / 2, -d / 2 + t / 2, marbleMat, { cast: true });
   const leftW = new THREE.Group();
-  leftW.position.set(-w / 2 + wallThick / 2, 0, 0);
+  leftW.position.set(-w / 2 + t / 2, 0, 0);
   leftW.rotation.y = Math.PI / 2;
-  buildWallWithRealWindow(leftW, d - wallThick * 2, h, wallThick, 3.4, 2.2, 2.6, marbleMat);
+  buildWallWithRealWindow(leftW, d - t * 2, h, t, 3.4, 2.2, 2.6, marbleMat);
   const rightW = new THREE.Group();
-  rightW.position.set(w / 2 - wallThick / 2, 0, 0);
+  rightW.position.set(w / 2 - t / 2, 0, 0);
   rightW.rotation.y = -Math.PI / 2;
-  buildWallWithRealWindow(rightW, d - wallThick * 2, h, wallThick, 3.4, 2.2, 2.6, marbleMat);
+  buildWallWithRealWindow(rightW, d - t * 2, h, t, 3.4, 2.2, 2.6, marbleMat);
   const segW = (w - doorW) / 2;
   const frontL = new THREE.Group();
-  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontL, segW, h, wallThick, 2.8, 2.2, 2.6, marbleMat);
+  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - t / 2);
+  buildWallWithRealWindow(frontL, segW, h, t, 2.8, 2.2, 2.6, marbleMat);
   const frontR = new THREE.Group();
-  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontR, segW, h, wallThick, 2.8, 2.2, 2.6, marbleMat);
-  const header = new THREE.Mesh(new THREE.BoxGeometry(doorW, h - doorH, wallThick), marbleMat);
-  header.position.set(0, doorH + (h - doorH) / 2, d / 2 - wallThick / 2);
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 1.2, 0.48, d + 1.6), marbleMat);
-  roof.position.y = h + 0.24;
-  roof.castShadow = true;
-  const cornice = new THREE.Mesh(new THREE.BoxGeometry(w + 1.5, 0.35, d + 1.9), goldMat);
-  cornice.position.y = h + 0.62;
-  [-6.6, -2.6, 2.6, 6.6].forEach((cx) => {
+  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - t / 2);
+  buildWallWithRealWindow(frontR, segW, h, t, 2.8, 2.2, 2.6, marbleMat);
+  const header = makeBox(group, doorW, h - doorH, t, 0, doorH + (h - doorH) / 2, d / 2 - t / 2, marbleMat);
+  const roof = makeBox(group, w + 1.2, 0.48, d + 1.6, 0, h + 0.24, 0, marbleMat, { cast: true });
+  const cornice = makeBox(group, w + 1.5, 0.35, d + 1.9, 0, h + 0.62, 0, goldMat);
+  group.remove(floor, backW, header, roof, cornice);
+  for (const cx of [-6.6, -2.6, 2.6, 6.6]) {
     const col = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.48, h, 14), marbleMat);
     col.position.set(cx, h / 2, d / 2 + 0.65);
     col.castShadow = true;
     group.add(col);
-  });
+  }
   createNeonSign(group, 'SUNNYVALE RESERVE BANK', 0, 5.1, d / 2 + 0.92, '#0f172a', '#fbbf24', 8.4, 1.15);
-  const tellerBase = new THREE.Mesh(new THREE.BoxGeometry(7.2, 1.05, 1.1), marbleMat);
-  tellerBase.position.set(-3.2, 0.58, -1.2);
-  const tellerTop = new THREE.Mesh(new THREE.BoxGeometry(7.4, 0.12, 1.25), graniteMat);
-  tellerTop.position.set(-3.2, 1.15, -1.2);
-  const tellerGlass = new THREE.Mesh(new THREE.BoxGeometry(6.8, 1.1, 0.08), realWindowGlassMat);
-  tellerGlass.position.set(-3.2, 1.75, -1.2);
-  const vaultBack = new THREE.Mesh(new THREE.BoxGeometry(5.6, 3.6, 0.4), vaultSteelMat);
-  vaultBack.position.set(4.8, 1.85, -d / 2 + 0.6);
-  const vaultLeft = new THREE.Mesh(new THREE.BoxGeometry(0.4, 3.6, 4.4), vaultSteelMat);
-  vaultLeft.position.set(2.2, 1.85, -d / 2 + 2.6);
+  const tellerBase = makeBox(group, 7.2, 1.05, 1.1, -3.2, 0.58, -1.2, marbleMat);
+  const tellerTop = makeBox(group, 7.4, 0.12, 1.25, -3.2, 1.15, -1.2, graniteMat);
+  const tellerGlass = makeBox(group, 6.8, 1.1, 0.08, -3.2, 1.75, -1.2, realWindowGlassMat);
+  const vaultBack = makeBox(group, 5.6, 3.6, 0.4, 4.8, 1.85, -d / 2 + 0.6, vaultSteelMat);
+  const vaultLeft = makeBox(group, 0.4, 3.6, 4.4, 2.2, 1.85, -d / 2 + 2.6, vaultSteelMat);
   const vaultDoor = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.35, 0.35, 20), vaultSteelMat);
   vaultDoor.rotation.x = Math.PI / 2;
   vaultDoor.rotation.z = 0.7;
   vaultDoor.position.set(1.35, 1.75, -d / 2 + 4.8);
   const vaultWheel = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.05, 8, 16), goldMat);
   vaultWheel.position.set(1.35, 1.75, -d / 2 + 5.0);
-  for (let row = 0; row < 3; row++) {
-    for (let col = 0; col < 3; col++) {
-      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.18, 0.22), goldMat);
-      bar.position.set(4.2 + col * 0.52, 0.24 + row * 0.19, -d / 2 + 1.5);
-      group.add(bar);
-    }
+  group.remove(tellerBase, tellerTop, tellerGlass, vaultBack, vaultLeft);
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
+    makeBox(group, 0.42, 0.18, 0.22, 4.2 + col * 0.52, 0.24 + row * 0.19, -d / 2 + 1.5, goldMat);
   }
   group.add(floor, backW, leftW, rightW, frontL, frontR, header, roof, cornice, tellerBase, tellerTop, tellerGlass, vaultBack, vaultLeft, vaultDoor, vaultWheel);
   worldRoot.add(group);
   const minX = x - w / 2, maxX = x + w / 2, minZ = z - d / 2, maxZ = z + d / 2;
-  addWorldBox(minX, maxX, 0.18, 0.18 + h, minZ, minZ + wallThick, 'wall', false);
-  addWorldBox(minX, minX + wallThick, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
-  addWorldBox(maxX - wallThick, maxX, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
-  addWorldBox(minX, x - doorW / 2, 0.18, 0.18 + h, maxZ - wallThick, maxZ, 'wall', false);
-  addWorldBox(x + doorW / 2, maxX, 0.18, 0.18 + h, maxZ - wallThick, maxZ, 'wall', false);
+  addWorldBox(minX, maxX, 0.18, 0.18 + h, minZ, minZ + t, 'wall', false);
+  addWorldBox(minX, minX + t, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
+  addWorldBox(maxX - t, maxX, 0.18, 0.18 + h, minZ, maxZ, 'wall', false);
+  addWorldBox(minX, x - doorW / 2, 0.18, 0.18 + h, maxZ - t, maxZ, 'wall', false);
+  addWorldBox(x + doorW / 2, maxX, 0.18, 0.18 + h, maxZ - t, maxZ, 'wall', false);
   addWorldBox(minX, maxX, 0.18 + h - 0.2, 0.18 + h + 0.48, minZ, maxZ, 'roof', true);
   addWorldBox(x - 6.8, x + 0.4, 0.18, 1.4, z - 1.8, z - 0.6, 'bank_counter', true);
   addWorldBox(x + 2.0, x + 2.4, 0.18, 3.8, minZ + 0.4, minZ + 4.8, 'vault_wall', false);
@@ -1702,36 +1474,18 @@ export function buildReserveBank(x, z) {
 
 // =============================================================================
 // SKYSCRAPER SYSTEM — four exterior archetypes, three interior archetypes,
-// one shared unit box, one material cache, one validated placement table.
+// the shared UNIT_BOX, one material cache, one validated placement table.
 // =============================================================================
-const TOWER_BASE_Y = 0.18;
-const TOWER_LOBBY_H = 4.6;
-const TOWER_WALL_T = 0.48;
-const TOWER_DOOR_W = 3.2;
-
-const towerGeos = [];
-const towerMats = [];
-const towerMatCache = new Map();
-const towerFacadeCache = new Map();
-let TOWER_UNIT = null;
-
-function towerUnit() {
-  if (!TOWER_UNIT) {
-    TOWER_UNIT = new THREE.BoxGeometry(1, 1, 1);
-    TOWER_UNIT.userData.shared = true;
-    towerGeos.push(TOWER_UNIT);
-  }
-  return TOWER_UNIT;
-}
+const TOWER_BASE_Y = 0.18, TOWER_LOBBY_H = 4.6, TOWER_WALL_T = 0.48, TOWER_DOOR_W = 3.2;
+const towerGeos = [], towerMats = [];
+const towerMatCache = new Map(), towerFacadeCache = new Map();
 function tGeo(g) { g.userData.shared = true; towerGeos.push(g); return g; }
 function tMat(m) { m.userData.shared = true; towerMats.push(m); return m; }
-
 function towerFrameMat(hex) {
   const k = 'f' + hex;
   if (!towerMatCache.has(k)) {
     towerMatCache.set(k, tMat(makeMat(hex, {
-      texType: 'brushedsteel', repeatX: 4, repeatY: 12,
-      metalness: 0.88, roughness: 0.24, flatShading: false
+      texType: 'brushedsteel', repeatX: 4, repeatY: 12, metalness: 0.88, roughness: 0.24, flatShading: false
     })));
   }
   return towerMatCache.get(k);
@@ -1752,10 +1506,7 @@ function towerPlainMat(hex, opts) {
   return towerMatCache.get(k);
 }
 function towerMarbleMat() {
-  return towerPlainMat(0xf8fafc, {
-    texType: 'marble', repeatX: 5, repeatY: 5,
-    roughness: 0.18, clearcoat: 0.85, flatShading: false
-  });
+  return towerPlainMat(0xf8fafc, { texType: 'marble', repeatX: 5, repeatY: 5, roughness: 0.18, clearcoat: 0.85, flatShading: false });
 }
 function towerFacadeMat(hex, cols, rows) {
   const k = hex + ':' + cols + 'x' + rows;
@@ -1765,54 +1516,31 @@ function towerFacadeMat(hex, cols, rows) {
   const c = cv.getContext('2d');
   c.fillStyle = '#' + new THREE.Color(hex).getHexString();
   c.fillRect(0, 0, 64, 128);
-  for (let r = 0; r < 16; r++) {
-    for (let col = 0; col < 8; col++) {
-      const lit = Math.sin((r * 9 + col * 3 + hex) * 12.9898) * 43758.5453;
-      c.fillStyle = (lit - Math.floor(lit)) < 0.34 ? '#ffe9a8' : '#2f4a63';
-      c.fillRect(col * 8 + 1, r * 8 + 1, 6, 6);
-    }
+  for (let r = 0; r < 16; r++) for (let col = 0; col < 8; col++) {
+    const lit = Math.sin((r * 9 + col * 3 + hex) * 12.9898) * 43758.5453;
+    c.fillStyle = (lit - Math.floor(lit)) < 0.34 ? '#ffe9a8' : '#2f4a63';
+    c.fillRect(col * 8 + 1, r * 8 + 1, 6, 6);
   }
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.repeat.set(cols, rows);
   const m = tMat(new THREE.MeshStandardMaterial({
-    map: t, emissiveMap: t, emissive: 0xffffff, emissiveIntensity: 0.22,
-    roughness: 0.34, metalness: 0.38
+    map: t, emissiveMap: t, emissive: 0xffffff, emissiveIntensity: 0.22, roughness: 0.34, metalness: 0.38
   }));
   towerFacadeCache.set(k, m);
   return m;
 }
-
-/** Scaled unit-box mesh — the whole tower system draws from one geometry. */
-function tbx(parent, m, x, y, z, sx, sy, sz, cast = true) {
-  const o = new THREE.Mesh(towerUnit(), m);
-  o.position.set(x, y, z);
-  o.scale.set(sx, sy, sz);
-  o.castShadow = cast;
-  o.receiveShadow = true;
-  parent.add(o);
-  return o;
-}
-
+/** Tower box — same shared unit geometry as the rest of the world. */
+const tbx = (p, m, x, y, z, sx, sy, sz, cast = true) => makeBox(p, sx, sy, sz, x, y, z, m, { cast, recv: true });
 /** Repeated horizontal bands as a single instanced draw call. */
 function towerBands(parent, m, w, d, y0, y1, step, thick = 0.26, grow = 0.16) {
   const n = Math.max(0, Math.floor((y1 - y0) / step));
   if (!n) return null;
-  const im = new THREE.InstancedMesh(towerUnit(), m, n);
-  const dm = new THREE.Object3D();
-  for (let i = 0; i < n; i++) {
-    dm.position.set(0, y0 + i * step, 0);
-    dm.scale.set(w + grow, thick, d + grow);
-    dm.updateMatrix();
-    im.setMatrixAt(i, dm.matrix);
-  }
-  im.instanceMatrix.needsUpdate = true;
-  im.castShadow = true;
-  parent.add(im);
-  return im;
+  const t = [];
+  for (let i = 0; i < n; i++) xform(t, 0, y0 + i * step, 0, w + grow, thick, d + grow);
+  return flushInstances(parent, UNIT_BOX, m, t, { cast: true });
 }
-
 const TOWER_ARCHETYPES = {
   glass: {
     lobby: 'corporate',
@@ -1820,17 +1548,14 @@ const TOWER_ARCHETYPES = {
       const upper = p.h - TOWER_LOBBY_H;
       tbx(g, gm, 0, TOWER_LOBBY_H + upper / 2, 0, p.w, upper, p.d);
       towerBands(lod, fm, p.w, p.d, TOWER_LOBBY_H + 6, p.h, 6);
-      for (const cx of [-p.w / 2, p.w / 2]) {
-        for (const cz of [-p.d / 2, p.d / 2]) tbx(lod, fm, cx, p.h / 2, cz, 0.32, p.h, 0.32);
-      }
+      for (const cx of [-p.w / 2, p.w / 2]) for (const cz of [-p.d / 2, p.d / 2]) tbx(lod, fm, cx, p.h / 2, cz, 0.32, p.h, 0.32);
     }
   },
   deco: {
     lobby: 'finance',
     shaft(g, p, fm, gm, lod) {
-      const tiers = [[1.00, 0.50], [0.78, 0.30], [0.56, 0.20]];
       let y = TOWER_LOBBY_H;
-      for (const [scale, frac] of tiers) {
+      for (const [scale, frac] of [[1.00, 0.50], [0.78, 0.30], [0.56, 0.20]]) {
         const th = (p.h - TOWER_LOBBY_H) * frac;
         tbx(g, gm, 0, y + th / 2, 0, p.w * scale, th, p.d * scale);
         tbx(g, fm, 0, y + th, 0, p.w * scale + 0.7, 0.4, p.d * scale + 0.7);
@@ -1860,33 +1585,21 @@ const TOWER_ARCHETYPES = {
       const upper = p.h - TOWER_LOBBY_H;
       const concrete = towerPlainMat(p.frameHex, { texType: 'concrete', repeatX: 4, repeatY: 10, roughness: 0.9 });
       tbx(g, concrete, 0, TOWER_LOBBY_H + upper / 2, 0, p.w, upper, p.d);
-      const strip = towerGlassMat(p.glassHex);
       const rows = Math.max(2, Math.floor(upper / 4));
-      const im = new THREE.InstancedMesh(towerUnit(), strip, rows * 2);
-      const dm = new THREE.Object3D();
-      let i = 0;
-      for (let r = 0; r < rows; r++) {
-        for (const s of [-1, 1]) {
-          dm.position.set(0, TOWER_LOBBY_H + 2.4 + r * 4, s * (p.d / 2 + 0.04));
-          dm.scale.set(p.w * 0.86, 1.5, 0.12);
-          dm.updateMatrix();
-          im.setMatrixAt(i++, dm.matrix);
-        }
+      const t = [];
+      for (let r = 0; r < rows; r++) for (const s of [-1, 1]) {
+        xform(t, 0, TOWER_LOBBY_H + 2.4 + r * 4, s * (p.d / 2 + 0.04), p.w * 0.86, 1.5, 0.12);
       }
-      im.instanceMatrix.needsUpdate = true;
-      lod.add(im);
+      flushInstances(lod, UNIT_BOX, towerGlassMat(p.glassHex), t);
       for (const cx of [-p.w / 2, p.w / 2]) tbx(lod, concrete, cx, TOWER_LOBBY_H + upper / 2, 0, 0.6, upper, p.d + 0.3);
       tbx(lod, concrete, 0, p.h + 1.1, 0, p.w + 0.8, 2.2, p.d + 0.8);
     }
   }
 };
-
 function towerElevatorKit(g, sk, steel) {
   tbx(g, steel, 0, 1.74, -sk.d / 2 + 1.25, 2.8, 3.4, 1.6);
-  const ring = new THREE.Mesh(
-    tGeo(new THREE.RingGeometry(0.85, 1.15, 20)),
-    tMat(new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide }))
-  );
+  const ring = new THREE.Mesh(tGeo(new THREE.RingGeometry(0.85, 1.15, 20)),
+    tMat(new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide })));
   ring.rotation.x = -Math.PI / 2;
   ring.position.set(0, 0.10, -sk.d / 2 + 2.4);
   g.add(ring);
@@ -1895,7 +1608,6 @@ function towerElevatorKit(g, sk, steel) {
     minZ: sk.z - sk.d / 2 + 0.45, maxZ: sk.z - sk.d / 2 + 2.05, tag: 'elev_shaft', climbable: false
   };
 }
-
 const TOWER_INTERIORS = {
   corporate(sk, g) {
     const dark = towerPlainMat(0x0f172a);
@@ -1907,9 +1619,10 @@ const TOWER_INTERIORS = {
     tbx(g, couch, -sk.w / 2 + 1.3, 0.42, -1.2, 1.1, 0.72, 2.8);
     tbx(g, couch, sk.w / 2 - 1.3, 0.42, -1.2, 1.1, 0.72, 2.8);
     const planter = new THREE.Mesh(tGeo(new THREE.CylinderGeometry(0.55, 0.45, 0.75, 10)), towerPlainMat(0x78350f));
-    planter.position.set(3.2, 0.42, 1.4); g.add(planter);
+    planter.position.set(3.2, 0.42, 1.4);
     const plant = new THREE.Mesh(tGeo(new THREE.DodecahedronGeometry(0.75, 0)), towerPlainMat(0x16a34a));
-    plant.position.set(3.2, 1.15, 1.4); g.add(plant);
+    plant.position.set(3.2, 1.15, 1.4);
+    g.add(planter, plant);
     return [
       { minX: sk.x - 4.3, maxX: sk.x - 0.1, minY: TOWER_BASE_Y, maxY: 1.32, minZ: sk.z - 0.2, maxZ: sk.z + 1.0, tag: 'lobby_desk', climbable: true },
       towerElevatorKit(g, sk, steel)
@@ -1923,8 +1636,7 @@ const TOWER_INTERIORS = {
     const rope = towerPlainMat(0x7f1d1d, { roughness: 0.8 });
     tbx(g, marble, -1.8, 0.58, -0.6, 6.4, 1.05, 1.1);
     tbx(g, granite, -1.8, 1.15, -0.6, 6.6, 0.12, 1.25);
-    const glass = new THREE.Mesh(towerUnit(), realWindowGlassMat);
-    glass.position.set(-1.8, 1.75, -0.6); glass.scale.set(6.0, 1.1, 0.08); g.add(glass);
+    tbx(g, realWindowGlassMat, -1.8, 1.75, -0.6, 6.0, 1.1, 0.08, false);
     for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) {
       tbx(g, gold, sk.w / 2 - 2.4 + c * 0.5, 0.24 + r * 0.19, -sk.d / 2 + 1.6, 0.42, 0.18, 0.22);
     }
@@ -1955,18 +1667,14 @@ const TOWER_INTERIORS = {
     ];
   }
 };
-
 function buildTower(p) {
   const A = TOWER_ARCHETYPES[p.a] || TOWER_ARCHETYPES.glass;
   const w = p.w, d = p.d, h = p.h, x = p.x, z = p.z;
   const baseY = p.baseY == null ? TOWER_BASE_Y : p.baseY;
-  const fm = towerFrameMat(p.frameHex);
-  const gm = towerGlassMat(p.glassHex);
-
+  const fm = towerFrameMat(p.frameHex), gm = towerGlassMat(p.glassHex);
   const g = new THREE.Group();
   g.position.set(x, baseY, z);
   g.userData.studioName = p.name;
-
   tbx(g, towerMarbleMat(), 0, 0.04, 0, w - 0.2, 0.08, d - 0.2, false);
   tbx(g, fm, 0, TOWER_LOBBY_H / 2, -d / 2 + TOWER_WALL_T / 2, w, TOWER_LOBBY_H, TOWER_WALL_T);
   tbx(g, fm, -w / 2 + TOWER_WALL_T / 2, TOWER_LOBBY_H / 2, 0, TOWER_WALL_T, TOWER_LOBBY_H, d);
@@ -1975,18 +1683,15 @@ function buildTower(p) {
   tbx(g, fm, -(TOWER_DOOR_W / 2 + segW / 2), TOWER_LOBBY_H / 2, d / 2 - TOWER_WALL_T / 2, segW, TOWER_LOBBY_H, TOWER_WALL_T);
   tbx(g, fm, TOWER_DOOR_W / 2 + segW / 2, TOWER_LOBBY_H / 2, d / 2 - TOWER_WALL_T / 2, segW, TOWER_LOBBY_H, TOWER_WALL_T);
   tbx(g, fm, 0, TOWER_LOBBY_H - 0.65, d / 2 - TOWER_WALL_T / 2, TOWER_DOOR_W, 1.3, TOWER_WALL_T);
-
   const lod = new THREE.Group();
   A.shaft(g, p, fm, gm, lod);
   tbx(g, fm, 0, h + 0.275, 0, w + 0.5, 0.55, d + 0.5);
-
   const glazing = towerGlassMat(p.glassHex);
   tbx(lod, glazing, -w / 2 - 0.02, 2.0, 0, 0.1, 2.7, d - 3.0, false);
   tbx(lod, glazing, w / 2 + 0.02, 2.0, 0, 0.1, 2.7, d - 3.0, false);
   tbx(lod, glazing, 0, 2.0, -d / 2 - 0.02, w - 3.0, 2.7, 0.1, false);
   for (const s of [-1, 1]) tbx(lod, glazing, s * (TOWER_DOOR_W / 2 + segW / 2), 2.0, d / 2 + 0.02, segW - 0.9, 2.7, 0.1, false);
   createNeonSign(lod, p.name, 0, 3.9, d / 2 + 0.1, '#090d14', '#38bdf8', Math.min(w - 2, 7.6), 0.95);
-
   const dark = towerPlainMat(0x0f172a, { metalness: 0.8, roughness: 0.3 });
   tbx(lod, dark, 0, h + 0.5, d / 2 - 0.15, w, 1.0, 0.3);
   tbx(lod, dark, 0, h + 0.5, -d / 2 + 0.15, w, 1.0, 0.3);
@@ -2000,12 +1705,14 @@ function buildTower(p) {
   beacon.position.set(w / 2 - 1.2, h + 10.2, -d / 2 + 1.2);
   aviationBeacons.push(beacon);
   lod.add(beacon);
-
   if (p.heli) {
     const pad = new THREE.Mesh(tGeo(new THREE.CylinderGeometry(4.2, 4.2, 0.12, 20)), towerPlainMat(0x334155));
-    pad.position.y = h + 0.60; g.add(pad);
+    pad.position.y = h + 0.60;
+    g.add(pad);
     const ring = new THREE.Mesh(tGeo(new THREE.RingGeometry(3.5, 3.95, 24)), tMat(new THREE.MeshBasicMaterial({ color: 0xfacc15, side: THREE.DoubleSide })));
-    ring.rotation.x = -Math.PI / 2; ring.position.y = h + 0.67; lod.add(ring);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = h + 0.67;
+    lod.add(ring);
     const white = towerPlainMat(0xf8fafc);
     tbx(lod, white, -0.9, h + 0.68, 0, 0.45, 0.08, 2.6, false);
     tbx(lod, white, 0.9, h + 0.68, 0, 0.45, 0.08, 2.6, false);
@@ -2014,16 +1721,13 @@ function buildTower(p) {
     tbx(lod, dark, 0, h + 1.2, 0, w * 0.7, 2.2, d * 0.7);
     tbx(lod, tMat(new THREE.MeshBasicMaterial({ color: p.glassHex })), 0, h + 3.4, 0, w * 0.4, 2.2, d * 0.4);
   }
-
   const liftRing = new THREE.Mesh(tGeo(new THREE.RingGeometry(0.85, 1.15, 20)), tMat(new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide })));
   liftRing.rotation.x = -Math.PI / 2;
   liftRing.position.set(0, h + 0.58, d / 2 - 1.8);
   lod.add(liftRing);
-
   g.add(lod);
   registerBuildingLod(x, z, lod);
   worldRoot.add(g);
-
   const minX = x - w / 2, maxX = x + w / 2, minZ = z - d / 2, maxZ = z + d / 2;
   addWorldBox(minX, maxX, baseY, baseY + TOWER_LOBBY_H, minZ, minZ + TOWER_WALL_T, 'wall', false);
   addWorldBox(minX, minX + TOWER_WALL_T, baseY, baseY + TOWER_LOBBY_H, minZ, maxZ, 'wall', false);
@@ -2031,7 +1735,6 @@ function buildTower(p) {
   addWorldBox(minX, x - TOWER_DOOR_W / 2, baseY, baseY + TOWER_LOBBY_H, maxZ - TOWER_WALL_T, maxZ, 'wall', false);
   addWorldBox(x + TOWER_DOOR_W / 2, maxX, baseY, baseY + TOWER_LOBBY_H, maxZ - TOWER_WALL_T, maxZ, 'wall', false);
   addWorldBox(minX, maxX, baseY + TOWER_LOBBY_H, baseY + h + 0.55, minZ, maxZ, 'skyscraper_roof', true);
-
   const roofY = baseY + h + 0.55;
   const rec = {
     x, z, w, d, h, roofY, name: p.name, minX, maxX, minZ, maxZ,
@@ -2045,8 +1748,8 @@ function buildTower(p) {
   mapShapes.push({ x, z, w, d, color: '#0284c7', border: '#38bdf8', enterable: true });
   return rec;
 }
-
-/** One line per tower. `pad` builds a sidewalk plinth under an out-of-grid lot. */
+/** One line per tower. `pad` builds a sidewalk plinth under an out-of-grid lot.
+ *  EXTENSION POINT: append rows here — every lot is validated before it builds. */
 const TOWER_PLACEMENTS = [
   // Sunnyvale financial district
   { a: 'glass', x: -48, z: -96, w: 14.5, d: 14.5, h: 48, glassHex: 0x0284c7, frameHex: 0x0f172a, name: 'AURA CORP HQ', heli: true },
@@ -2058,7 +1761,7 @@ const TOWER_PLACEMENTS = [
   { a: 'glass', x: 48, z: -144, w: 14.5, d: 14.5, h: 56, glassHex: 0x0f766e, frameHex: 0x0f172a, name: 'PACIFIC TOWERS', heli: true },
   { a: 'glass', x: -96, z: -144, w: 14.0, d: 14.0, h: 44, glassHex: 0x4f46e5, frameHex: 0x1e293b, name: 'NORTHERN STAR', heli: false },
   { a: 'glass', x: 96, z: -144, w: 14.0, d: 14.0, h: 50, glassHex: 0x0284c7, frameHex: 0x0f172a, name: 'HARBOR VIEW HQ', heli: true },
-  // Sunnyvale west terrace (replaces the old illegal random infill)
+  // Sunnyvale west terrace
   { a: 'slab', x: -162, z: -96, w: 14, d: 14, h: 38, glassHex: 0x7dd3fc, frameHex: 0x8c8172, name: 'TERRACE COURT', heli: false, pad: true },
   { a: 'brutalist', x: -162, z: -48, w: 14, d: 14, h: 44, glassHex: 0x93c5fd, frameHex: 0x6b7280, name: 'WESTBANK HOUSE', heli: false, pad: true },
   { a: 'slab', x: -162, z: 0, w: 14, d: 14, h: 34, glassHex: 0xfcd34d, frameHex: 0x9a8478, name: 'MERIDIAN FLATS', heli: false, pad: true },
@@ -2080,7 +1783,7 @@ const TOWER_PLACEMENTS = [
   { a: 'brutalist', x: -36, z: 588, w: 16, d: 16, h: 60, glassHex: 0x93c5fd, frameHex: 0x6b7280, name: 'HARBOR COMMERCE', heli: true },
   { a: 'slab', x: -84, z: 636, w: 16, d: 16, h: 48, glassHex: 0xfcd34d, frameHex: 0x9a8478, name: 'CIVIC GARDENS', heli: false },
   { a: 'glass', x: 104, z: 636, w: 14, d: 14, h: 52, glassHex: 0x22d3ee, frameHex: 0x0f172a, name: 'EASTLAKE TOWER', heli: false },
-  // Los Aura west bank — new district with its own access spine
+  // Los Aura west bank
   { a: 'glass', x: -175, z: 480, w: 16, d: 16, h: 64, glassHex: 0x0ea5e9, frameHex: 0x0f172a, name: 'WEST BANK ONE', heli: true, pad: true },
   { a: 'slab', x: -215, z: 480, w: 16, d: 16, h: 44, glassHex: 0xfcd34d, frameHex: 0x8c8172, name: 'SHORELINE FLATS', heli: false, pad: true },
   { a: 'deco', x: -175, z: 540, w: 16, d: 16, h: 70, glassHex: 0x38bdf8, frameHex: 0xe2e8f0, name: 'PACIFIC CROWN', heli: true, pad: true },
@@ -2090,7 +1793,6 @@ const TOWER_PLACEMENTS = [
   { a: 'brutalist', x: -175, z: 660, w: 16, d: 16, h: 54, glassHex: 0x67e8f9, frameHex: 0x6b7280, name: 'NORTHSHORE ANNEX', heli: false, pad: true },
   { a: 'glass', x: -215, z: 660, w: 16, d: 16, h: 46, glassHex: 0x2563eb, frameHex: 0x0f172a, name: 'NORTHSHORE TOWER', heli: false, pad: true }
 ];
-
 function buildWestBankRoads() {
   const asphalt = towerPlainMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 30, roughness: 0.86 });
   const kerb = towerPlainMat(0xcbd5e1, { texType: 'sidewalk', repeatX: 8, repeatY: 8, roughness: 0.85 });
@@ -2106,7 +1808,6 @@ function buildWestBankRoads() {
     tbx(worldRoot, kerb, -195, 0.21, z, 60, 0.10, 44, false);
   }
 }
-
 /** Build every tower in the table. Rejected lots are logged, never forced. */
 export function buildTowerDistricts() {
   buildWestBankRoads();
@@ -2117,21 +1818,18 @@ export function buildTowerDistricts() {
       console.warn('[towers] lot rejected (blocked):', p.name, p.x, p.z);
       continue;
     }
-    if (p.pad) {
-      tbx(worldRoot, kerb, p.x, (p.baseY == null ? TOWER_BASE_Y : p.baseY) + 0.03, p.z, p.w + 9, 0.12, p.d + 9, false);
-    }
+    if (p.pad) tbx(worldRoot, kerb, p.x, (p.baseY == null ? TOWER_BASE_Y : p.baseY) + 0.03, p.z, p.w + 9, 0.12, p.d + 9, false);
     buildTower(p);
     built++;
   }
   console.log(`[towers] ${built}/${TOWER_PLACEMENTS.length} towers placed`);
 }
-
 export function updateSkyscraperInteriors() {
-  const LOAD_DIST = 56, UNLOAD_DIST = 70;
+  const LOAD2 = 56 * 56, UNLOAD2 = 70 * 70;
   for (let i = 0; i < skyscrapers.length; i++) {
     const sk = skyscrapers[i];
-    const dist = Math.hypot(sk.x - player.x, sk.z - player.z);
-    if (!sk.interiorLoaded && dist < LOAD_DIST) {
+    const d2 = dist2(sk.x, sk.z, player.x, player.z);
+    if (!sk.interiorLoaded && d2 < LOAD2) {
       let ig = sk.interiorCache;
       if (!ig) {
         ig = new THREE.Group();
@@ -2145,7 +1843,7 @@ export function updateSkyscraperInteriors() {
       sk.interiorBoxes = (sk.interiorSpecs || []).map((b) =>
         addWorldBox(b.minX, b.maxX, b.minY, b.maxY, b.minZ, b.maxZ, b.tag, b.climbable));
       sk.interiorLoaded = true;
-    } else if (sk.interiorLoaded && dist > UNLOAD_DIST) {
+    } else if (sk.interiorLoaded && d2 > UNLOAD2) {
       if (sk.interiorGroup) { worldRoot.remove(sk.interiorGroup); sk.interiorGroup = null; }
       for (const b of sk.interiorBoxes) {
         const idx = worldBoxes.indexOf(b);
@@ -2156,7 +1854,6 @@ export function updateSkyscraperInteriors() {
     }
   }
 }
-
 function disposeTowerInteriors() {
   for (const sk of skyscrapers) {
     const ig = sk.interiorCache;
@@ -2168,11 +1865,11 @@ function disposeTowerInteriors() {
     sk.interiorLoaded = false;
   }
 }
-
 function resetTowerSystem() {
   reservedFootprints.length = 0;
   towerMatCache.clear();
   towerFacadeCache.clear();
+  // UNIT_BOX is module-permanent and shared with the whole world — never disposed here.
   for (const g of towerGeos) g.dispose();
   for (const m of towerMats) {
     if (m.map && m.map.isCanvasTexture) m.map.dispose();
@@ -2180,9 +1877,7 @@ function resetTowerSystem() {
   }
   towerGeos.length = 0;
   towerMats.length = 0;
-  TOWER_UNIT = null;
 }
-
 /** Back-compatible entry points for Studio and any external caller. */
 export function buildSkyscraperBase(o) {
   const heli = o.hasHelipad !== undefined ? o.hasHelipad : (o.heli !== undefined ? o.heli : true);
@@ -2191,7 +1886,6 @@ export function buildSkyscraperBase(o) {
   }, o, { heli }));
 }
 export function buildSkyscraper(o) { return buildSkyscraperBase(o); }
-
 /** Roof kit is built by every archetype; kept so external calls still work. */
 export function embellishTower({ x, z, w = 13.5, d = 13.5, h = 44, glassHex = 0x0ea5e9, hasHelipad = true }) {
   const g = new THREE.Group();
@@ -2199,13 +1893,7 @@ export function embellishTower({ x, z, w = 13.5, d = 13.5, h = 44, glassHex = 0x
   g.userData.studioName = 'Tower roof kit';
   worldRoot.add(g);
   const dark = makeMat(0x0f172a, { metalness: 0.8, roughness: 0.3 });
-  const add = (sx, sy, sz, m, px, py, pz) => {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m);
-    b.position.set(px, py, pz);
-    b.castShadow = true;
-    g.add(b);
-    return b;
-  };
+  const add = (sx, sy, sz, m, px, py, pz) => makeBox(g, sx, sy, sz, px, py, pz, m, { cast: true });
   add(w, 1.0, 0.3, dark, 0, h + 0.5, d / 2 - 0.15);
   add(w, 1.0, 0.3, dark, 0, h + 0.5, -d / 2 + 0.15);
   add(0.3, 1.0, d, dark, w / 2 - 0.15, h + 0.5, 0);
@@ -2231,10 +1919,9 @@ export function buildKnockableLamppost(x, z) {
   const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 4.4, 8), poleMat);
   pole.position.y = 2.2;
   pole.castShadow = true;
-  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.10, 0.75), poleMat);
-  arm.position.set(0, 4.35, 0.32);
-  const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.22, 0.46), bulbMat);
-  lamp.position.set(0, 4.24, 0.62);
+  const arm = makeBox(pivot, 0.10, 0.10, 0.75, 0, 4.35, 0.32, poleMat);
+  const lamp = makeBox(pivot, 0.38, 0.22, 0.46, 0, 4.24, 0.62, bulbMat);
+  pivot.remove(arm, lamp);
   pivot.add(baseFlange, pole, arm, lamp);
   worldRoot.add(pivot);
   const boxRef = addWorldBox(x - 0.18, x + 0.18, 0.18, 4.6, z - 0.18, z + 0.18, 'lamppost', false);
@@ -2242,7 +1929,6 @@ export function buildKnockableLamppost(x, z) {
   lampPosts.push(lp);
   return lp;
 }
-
 export function knockOverLamppostBase(lp, impactYaw, impactSpeed = 6) {
   if (lp.state !== 'standing') return;
   lp.state = 'falling';
@@ -2255,7 +1941,6 @@ export function knockOverLamppostBase(lp, impactYaw, impactSpeed = 6) {
   sfx.metalClang();
   spawnParticles(lp.x, 1.4, lp.z, 0xfacc15, 10, 6.0);
 }
-
 export function updateLampposts(dt, elapsed) {
   const guest = hooks.mpIsGuest();
   for (let i = 0; i < lampPosts.length; i++) {
@@ -2281,8 +1966,8 @@ export function updateLampposts(dt, elapsed) {
       if (guest) continue;
       lp.respawnTimer -= dt;
       if (lp.respawnTimer <= 0) {
-        const clearOfPlayer = Math.hypot(player.x - lp.x, player.z - lp.z) > 2.2;
-        const clearOfCars = vehicles.every((v) => Math.hypot(v.x - lp.x, v.z - lp.z) > 3.2);
+        const clearOfPlayer = dist2(player.x, player.z, lp.x, lp.z) > 4.84;
+        const clearOfCars = vehicles.every((v) => dist2(v.x, v.z, lp.x, lp.z) > 10.24);
         if (clearOfPlayer && clearOfCars) {
           lp.state = 'standing';
           lp.fallAngle = 0;
@@ -2299,7 +1984,6 @@ export function updateLampposts(dt, elapsed) {
     }
   }
 }
-
 export function createTree(x, z, scale = 1, baseY = 0.18) {
   const g = new THREE.Group();
   g.position.set(x, baseY, z);
@@ -2320,7 +2004,6 @@ export function createTree(x, z, scale = 1, baseY = 0.18) {
   worldRoot.add(g);
   addWorldBox(x - 0.38 * scale, x + 0.38 * scale, baseY, baseY + 2.2 * scale, z - 0.38 * scale, z + 0.38 * scale, 'tree', false);
 }
-
 export function createHydrant(x, z) {
   const h = new THREE.Group();
   h.position.set(x, 0.18, z);
@@ -2337,24 +2020,20 @@ export function createHydrant(x, z) {
   worldRoot.add(h);
   addWorldBox(x - 0.2, x + 0.2, 0.18, 0.88, z - 0.2, z + 0.2, 'hydrant', true);
 }
-
 export function createBusShelter(x, z, rotY = 0) {
   const g = new THREE.Group();
   g.position.set(x, 0.18, z);
   g.rotation.y = rotY;
   const chromeMat = makeMat(0xe2e8f0, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.18, flatShading: false });
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.12, 1.5), chromeMat);
-  roof.position.y = 2.45;
-  roof.castShadow = true;
-  const backGlass = new THREE.Mesh(new THREE.BoxGeometry(3.5, 2.2, 0.06), realWindowGlassMat);
-  backGlass.position.set(0, 1.25, -0.62);
-  const bench = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.10, 0.48), makeMat(0xb45309, { texType: 'wood' }));
-  bench.position.set(0, 0.55, -0.32);
-  [[-1.75, -0.62], [1.75, -0.62], [-1.75, 0.62], [1.75, 0.62]].forEach(([px, pz]) => {
+  const roof = makeBox(g, 3.8, 0.12, 1.5, 0, 2.45, 0, chromeMat, { cast: true });
+  const backGlass = makeBox(g, 3.5, 2.2, 0.06, 0, 1.25, -0.62, realWindowGlassMat);
+  const bench = makeBox(g, 3.0, 0.10, 0.48, 0, 0.55, -0.32, makeMat(0xb45309, { texType: 'wood' }));
+  g.remove(roof, backGlass, bench);
+  for (const [px, pz] of [[-1.75, -0.62], [1.75, -0.62], [-1.75, 0.62], [1.75, 0.62]]) {
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.45, 8), chromeMat);
     post.position.set(px, 1.225, pz);
     g.add(post);
-  });
+  }
   g.add(roof, backGlass, bench);
   worldRoot.add(g);
   const cos = Math.abs(Math.cos(rotY)), sin = Math.abs(Math.sin(rotY));
@@ -2367,22 +2046,20 @@ export function createBusShelter(x, z, rotY = 0) {
 // -----------------------------------------------------------------------------
 export function buildCityLandmarks() {
   const cobbleMat = makeMat(0xa8a29e, { texType: 'cobblestone', repeatX: 3, repeatY: 18, roughness: 0.78, bumpScale: 0.025 });
-  const pNS = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.05, 36), cobbleMat);
-  pNS.position.set(0, 0.21, 0);
-  pNS.receiveShadow = true;
-  const pEW = new THREE.Mesh(new THREE.BoxGeometry(36, 0.05, 4.6), cobbleMat);
-  pEW.position.set(0, 0.21, 0);
-  pEW.receiveShadow = true;
+  makeBox(worldRoot, 4.6, 0.05, 36, 0, 0.21, 0, cobbleMat, { recv: true });
+  makeBox(worldRoot, 36, 0.05, 4.6, 0, 0.21, 0, cobbleMat, { recv: true });
   const courtyard = new THREE.Mesh(new THREE.CylinderGeometry(6.8, 7.0, 0.06, 20), cobbleMat);
   courtyard.position.set(0, 0.215, 0);
   courtyard.receiveShadow = true;
-  worldRoot.add(pNS, pEW, courtyard);
-
+  worldRoot.add(courtyard);
   const marbleMat = makeMat(0xf8fafc, { texType: 'marble', repeatX: 3, repeatY: 2, roughness: 0.20, clearcoat: 0.85, flatShading: false });
   const rim = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.6, 0.78, 18), marbleMat);
   rim.position.set(0, 0.57, 0);
   rim.castShadow = true;
-  const water = new THREE.Mesh(new THREE.CylinderGeometry(3.05, 3.05, 0.72, 18), makeMat(0x0ea5e9, { texType: 'water', repeatX: 3, repeatY: 3, roughness: 0.07, metalness: 0.28, clearcoat: 1.0, emissive: 0x0284c7, emissiveIntensity: 0.25, flatShading: false }));
+  const water = new THREE.Mesh(new THREE.CylinderGeometry(3.05, 3.05, 0.72, 18), makeMat(0x0ea5e9, {
+    texType: 'water', repeatX: 3, repeatY: 3, roughness: 0.07, metalness: 0.28, clearcoat: 1.0,
+    emissive: 0x0284c7, emissiveIntensity: 0.25, flatShading: false
+  }));
   water.position.set(0, 0.58, 0);
   const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.85, 1.7, 14), marbleMat);
   pillar.position.set(0, 1.4, 0);
@@ -2392,151 +2069,113 @@ export function buildCityLandmarks() {
   addWorldBox(-3.2, 3.2, 0.18, 0.96, -3.2, 3.2, 'fountain_rim', true);
   addWorldBox(-1.35, 1.35, 0.96, 2.42, -1.35, 1.35, 'fountain_top', true);
   mapShapes.push({ x: 0, z: 0, w: 30, d: 30, color: '#22c55e', border: '#15803d', enterable: false });
-
   const benchSteel = makeMat(0xcbd5e1, { metalness: 0.9, roughness: 0.2, flatShading: false });
-  [[0, 5.8, Math.PI], [0, -5.8, 0], [5.8, 0, -Math.PI / 2], [-5.8, 0, Math.PI / 2]].forEach(([bx, bz, rot]) => {
+  for (const [bx, bz, rot] of [[0, 5.8, Math.PI], [0, -5.8, 0], [5.8, 0, -Math.PI / 2], [-5.8, 0, Math.PI / 2]]) {
     const bGroup = new THREE.Group();
     bGroup.position.set(bx, 0.18, bz);
     bGroup.rotation.y = rot;
-    const seat = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.12, 0.72), makeMat(0xb45309, { texType: 'wood' }));
-    seat.position.y = 0.44;
-    seat.castShadow = true;
-    const legL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.46, 0.74), benchSteel);
-    legL.position.set(-0.95, 0.23, 0);
-    const legR = legL.clone();
-    legR.position.x = 0.95;
+    const seat = makeBox(bGroup, 2.2, 0.12, 0.72, 0, 0.44, 0, makeMat(0xb45309, { texType: 'wood' }), { cast: true });
+    const legL = makeBox(bGroup, 0.12, 0.46, 0.74, -0.95, 0.23, 0, benchSteel);
+    const legR = makeBox(bGroup, 0.12, 0.46, 0.74, 0.95, 0.23, 0, benchSteel);
+    bGroup.remove(seat, legL, legR);
     bGroup.add(seat, legL, legR);
     worldRoot.add(bGroup);
     const bw = Math.abs(Math.cos(rot)) > 0.5 ? 2.2 : 0.75;
     const bd = Math.abs(Math.cos(rot)) > 0.5 ? 0.75 : 2.2;
     addWorldBox(bx - bw / 2, bx + bw / 2, 0.18, 0.70, bz - bd / 2, bz + bd / 2, 'bench', true);
-  });
-
-  [[-10.5, -10.5], [10.5, -10.5], [-10.5, 10.5], [10.5, 10.5]].forEach(([tx, tz]) => createTree(tx, tz, 1.1));
+  }
+  placeProps('tree', [[-10.5, -10.5, 1.1], [10.5, -10.5, 1.1], [-10.5, 10.5, 1.1], [10.5, 10.5, 1.1]]);
   buildPlazaHotdogCart(11.8, 12.2);
   buildHotdogStore(-39.5, -39.5);
   buildCarDealership(0, -48);
-
-  const nwPlaza = new THREE.Mesh(new THREE.BoxGeometry(30.6, 0.21, 30.6), makeMat(0x94a3b8, { texType: 'cobblestone', repeatX: 12, repeatY: 12, bumpScale: 0.02 }));
-  nwPlaza.position.set(-48, 0.105, -48);
-  worldRoot.add(nwPlaza);
-
+  makeBox(worldRoot, 30.6, 0.21, 30.6, -48, 0.105, -48,
+    makeMat(0x94a3b8, { texType: 'cobblestone', repeatX: 12, repeatY: 12, bumpScale: 0.02 }));
   const cafeGroup = new THREE.Group();
   cafeGroup.userData.studioName = 'SUNNYVALE DINER';
-  const cafe = new THREE.Mesh(new THREE.BoxGeometry(9.6, 4.4, 9.2), makeMat(0xfde68a, { texType: 'brick', repeatX: 4, repeatY: 2, bumpScale: 0.02 }));
-  cafe.position.set(-54.5, 2.38, -53.5);
-  cafe.castShadow = true;
-  const cafeGlass = new THREE.Mesh(new THREE.BoxGeometry(7.0, 1.8, 0.08), realWindowGlassMat);
-  cafeGlass.position.set(-54.5, 1.5, -48.88);
+  const cafe = makeBox(cafeGroup, 9.6, 4.4, 9.2, -54.5, 2.38, -53.5,
+    makeMat(0xfde68a, { texType: 'brick', repeatX: 4, repeatY: 2, bumpScale: 0.02 }), { cast: true });
+  const cafeGlass = makeBox(cafeGroup, 7.0, 1.8, 0.08, -54.5, 1.5, -48.88, realWindowGlassMat);
+  cafeGroup.remove(cafe, cafeGlass);
   cafeGroup.add(cafe, cafeGlass);
   createNeonSign(cafeGroup, 'SUNNYVALE DINER', -54.5, 3.65, -48.82, '#7f1d1d', '#fef08a');
   worldRoot.add(cafeGroup);
   addWorldBox(-59.3, -49.7, 0.18, 4.58, -58.1, -48.9, 'diner_roof', true);
   mapShapes.push({ x: -54.5, z: -53.5, w: 9.6, d: 9.2, color: '#fde68a', border: '#b45309', enterable: false });
-
   buildReserveBank(0, -96);
-
-  const nePlaza = new THREE.Mesh(new THREE.BoxGeometry(30.6, 0.21, 30.6), makeMat(0x94a3b8, { texType: 'concrete', repeatX: 10, repeatY: 10 }));
-  nePlaza.position.set(48, 0.105, -48);
-  worldRoot.add(nePlaza);
-
+  makeBox(worldRoot, 30.6, 0.21, 30.6, 48, 0.105, -48,
+    makeMat(0x94a3b8, { texType: 'concrete', repeatX: 10, repeatY: 10 }));
   const aptH = 8.4;
-  const apt = new THREE.Mesh(new THREE.BoxGeometry(11, aptH, 16), makeMat(0xb45309, { texType: 'brick', repeatX: 5, repeatY: 4, bumpScale: 0.025 }));
-  apt.position.set(43, 0.18 + aptH / 2, -48);
-  apt.castShadow = true;
-  apt.receiveShadow = true;
-  worldRoot.add(apt);
+  makeBox(worldRoot, 11, aptH, 16, 43, 0.18 + aptH / 2, -48,
+    makeMat(0xb45309, { texType: 'brick', repeatX: 5, repeatY: 4, bumpScale: 0.025 }), { cast: true, recv: true });
   addWorldBox(37.5, 48.5, 0.18, 0.18 + aptH, -56, -40, 'apartment_roof', true);
   mapShapes.push({ x: 43, z: -48, w: 11, d: 16, color: '#b45309', border: '#78350f', enterable: false });
-
   const steelMat = makeMat(0x94a3b8, { texType: 'diamondplate', repeatX: 2, repeatY: 3, metalness: 0.88, roughness: 0.28, bumpScale: 0.02 });
-  [{ y: 1.85, z: -54.0 }, { y: 3.70, z: -50.2 }, { y: 5.55, z: -46.4 }, { y: 7.40, z: -42.6 }].forEach((st) => {
-    const plat = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.25, 3.4), steelMat);
-    plat.position.set(49.6, st.y, st.z);
-    plat.castShadow = true;
-    worldRoot.add(plat);
+  for (const st of [{ y: 1.85, z: -54.0 }, { y: 3.70, z: -50.2 }, { y: 5.55, z: -46.4 }, { y: 7.40, z: -42.6 }]) {
+    makeBox(worldRoot, 2.2, 0.25, 3.4, 49.6, st.y, st.z, steelMat, { cast: true });
     addWorldBox(48.5, 50.7, st.y - 0.15, st.y + 0.13, st.z - 1.7, st.z + 1.7, 'fire_escape', true);
+  }
+  const contMat = (hex) => makeMat(hex, { texType: 'corrugated', repeatX: 3, repeatY: 2, metalness: 0.82, roughness: 0.34, bumpScale: 0.03 });
+  // [w,h,d, x,y,z, colour, collider]
+  const containers = [
+    [3.2, 2.3, 6.8, 44, 0.18 + 1.15, 45, 0xdc2626, [42.4, 45.6, 0.18, 2.48, 41.6, 48.4, 'container_low', true]],
+    [3.2, 2.3, 6.8, 47.4, 0.18 + 1.15, 47, 0x2563eb, [45.8, 49.0, 0.18, 2.48, 43.6, 50.4, 'container_low2', true]],
+    [3.2, 2.2, 6.4, 47.4, 2.48 + 1.1, 47, 0xd97706, [45.8, 49.0, 2.48, 4.68, 43.8, 50.2, 'container_high', true]],
+    [3.2, 2.3, 6.4, 37.5, 0.18 + 1.15, 45, 0x0d9488, [35.9, 39.1, 0.18, 2.48, 41.8, 48.2, 'container_west', true]]
+  ];
+  const contMeshes = containers.map(([w, h, d, x, y, z, hex, box]) =>
+    makeBox(worldRoot, w, h, d, x, y, z, contMat(hex), { cast: true, box }));
+  const catwalk = makeBox(worldRoot, 5.2, 0.22, 1.8, 40.8, 2.48, 45, steelMat, {
+    cast: true, box: [38.2, 43.4, 2.36, 2.59, 44.1, 45.9, 'gantry_catwalk', true]
   });
-
-  const contRed = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.3, 6.8), makeMat(0xdc2626, { texType: 'corrugated', repeatX: 3, repeatY: 2, metalness: 0.82, roughness: 0.34, bumpScale: 0.03 }));
-  contRed.position.set(44, 0.18 + 1.15, 45);
-  contRed.castShadow = true;
-  addWorldBox(42.4, 45.6, 0.18, 2.48, 41.6, 48.4, 'container_low', true);
-  const contBlue = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.3, 6.8), makeMat(0x2563eb, { texType: 'corrugated', repeatX: 3, repeatY: 2, metalness: 0.82, roughness: 0.34, bumpScale: 0.03 }));
-  contBlue.position.set(47.4, 0.18 + 1.15, 47);
-  contBlue.castShadow = true;
-  addWorldBox(45.8, 49.0, 0.18, 2.48, 43.6, 50.4, 'container_low2', true);
-  const contTop = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.2, 6.4), makeMat(0xd97706, { texType: 'corrugated', repeatX: 3, repeatY: 2, metalness: 0.82, roughness: 0.34, bumpScale: 0.03 }));
-  contTop.position.set(47.4, 2.48 + 1.1, 47);
-  contTop.castShadow = true;
-  addWorldBox(45.8, 49.0, 2.48, 4.68, 43.8, 50.2, 'container_high', true);
-  const contWest = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.3, 6.4), makeMat(0x0d9488, { texType: 'corrugated', repeatX: 3, repeatY: 2, metalness: 0.82, roughness: 0.34, bumpScale: 0.03 }));
-  contWest.position.set(37.5, 0.18 + 1.15, 45);
-  contWest.castShadow = true;
-  addWorldBox(35.9, 39.1, 0.18, 2.48, 41.8, 48.2, 'container_west', true);
-  const catwalk = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.22, 1.8), steelMat);
-  catwalk.position.set(40.8, 2.48, 45);
-  catwalk.castShadow = true;
-  addWorldBox(38.2, 43.4, 2.36, 2.59, 44.1, 45.9, 'gantry_catwalk', true);
-  worldRoot.add(contRed, contBlue, contTop, contWest, catwalk);
+  for (const m of contMeshes) worldRoot.remove(m);
+  worldRoot.remove(catwalk);
+  worldRoot.add(...contMeshes, catwalk);
   mapShapes.push({ x: 45.8, z: 46, w: 7, d: 8, color: '#dc2626', border: '#991b1b', enterable: false });
-
   buildWalkInHouse({ x: -7.5, z: 42.0, w: 9.8, d: 8.6, wallColor: 0xfef3c7, roofColor: 0xb91c1c, label: 'OAKWOOD RESIDENCE' });
   buildWalkInHouse({ x: -41.5, z: -5.5, w: 9.8, d: 8.6, wallColor: 0xdbeafe, roofColor: 0x1e40af, label: 'CEDAR COTTAGE' });
   buildWalkInHouse({ x: 42.5, z: -5.5, w: 9.8, d: 8.6, wallColor: 0xdcfce7, roofColor: 0x166534, label: 'SAGE VILLA' });
-  buildSuburbanHouse({ x: 7.5, z: 53.0, wallColor: 0xfed7aa, roofColor: 0x9a3412, rotY: Math.PI });
-  buildSuburbanHouse({ x: -54.0, z: 8.0, wallColor: 0xfce7f3, roofColor: 0x831843, rotY: Math.PI / 2 });
-  buildSuburbanHouse({ x: 54.0, z: 8.0, wallColor: 0xfef08a, roofColor: 0x854d0e, rotY: -Math.PI / 2 });
-  buildSuburbanHouse({ x: -54.5, z: 42.5, wallColor: 0xe0e7ff, roofColor: 0x3730a3, rotY: 0 });
-  buildSuburbanHouse({ x: -41.5, z: 54.5, wallColor: 0xffedd5, roofColor: 0xc2410c, rotY: Math.PI });
-  buildSuburbanHouse({ x: 55.5, z: 54.5, wallColor: 0xd1fae5, roofColor: 0x065f46, rotY: Math.PI });
-  buildSuburbanHouse({ x: -96.0, z: -48.0, wallColor: 0xfde68a, roofColor: 0x92400e, rotY: 0 });
-  buildSuburbanHouse({ x: -96.0, z: 0.0, wallColor: 0xdbeafe, roofColor: 0x1e3a8a, rotY: Math.PI / 2 });
-  buildSuburbanHouse({ x: -96.0, z: 48.0, wallColor: 0xfce7f3, roofColor: 0x9d174d, rotY: Math.PI });
-  buildSuburbanHouse({ x: 96.0, z: -48.0, wallColor: 0xdcfce7, roofColor: 0x14532d, rotY: 0 });
-  buildSuburbanHouse({ x: 96.0, z: 0.0, wallColor: 0xffedd5, roofColor: 0x9a3412, rotY: -Math.PI / 2 });
-  buildSuburbanHouse({ x: 96.0, z: 48.0, wallColor: 0xe0e7ff, roofColor: 0x312e81, rotY: Math.PI });
-
-  const f1 = new THREE.Mesh(new THREE.BoxGeometry(8.5, 1.15, 0.25), makeMat(0xf8fafc, { texType: 'siding' }));
-  f1.position.set(7.5, 0.75, 43.5);
-  f1.castShadow = true;
-  worldRoot.add(f1);
-  addWorldBox(3.25, 11.75, 0.18, 1.33, 43.35, 43.65, 'yard_fence', true);
-  createBusShelter(-16.2, -6.5, Math.PI / 2);
-  createBusShelter(16.2, 6.5, -Math.PI / 2);
-
-  [-96, -48, 0, 48, 96].forEach((bx) => {
-    [-144, -96, -48, 0, 48].forEach((bz) => {
-      [[-16.8, -16.8], [16.8, 16.8]].forEach(([ox, oz]) => buildKnockableLamppost(bx + ox, bz + oz));
-    });
+  // [x, z, wall, roof, rotY]
+  for (const [hx, hz, wc, rc, ry] of [
+    [7.5, 53.0, 0xfed7aa, 0x9a3412, Math.PI], [-54.0, 8.0, 0xfce7f3, 0x831843, Math.PI / 2],
+    [54.0, 8.0, 0xfef08a, 0x854d0e, -Math.PI / 2], [-54.5, 42.5, 0xe0e7ff, 0x3730a3, 0],
+    [-41.5, 54.5, 0xffedd5, 0xc2410c, Math.PI], [55.5, 54.5, 0xd1fae5, 0x065f46, Math.PI],
+    [-96.0, -48.0, 0xfde68a, 0x92400e, 0], [-96.0, 0.0, 0xdbeafe, 0x1e3a8a, Math.PI / 2],
+    [-96.0, 48.0, 0xfce7f3, 0x9d174d, Math.PI], [96.0, -48.0, 0xdcfce7, 0x14532d, 0],
+    [96.0, 0.0, 0xffedd5, 0x9a3412, -Math.PI / 2], [96.0, 48.0, 0xe0e7ff, 0x312e81, Math.PI]
+  ]) buildSuburbanHouse({ x: hx, z: hz, wallColor: wc, roofColor: rc, rotY: ry });
+  makeBox(worldRoot, 8.5, 1.15, 0.25, 7.5, 0.75, 43.5, makeMat(0xf8fafc, { texType: 'siding' }), {
+    cast: true, box: [3.25, 11.75, 0.18, 1.33, 43.35, 43.65, 'yard_fence', true]
   });
-
+  placeProps('shelter', [[-16.2, -6.5, Math.PI / 2], [16.2, 6.5, -Math.PI / 2]]);
+  const lampCoords = [];
+  for (const bx of [-96, -48, 0, 48, 96]) for (const bz of [-144, -96, -48, 0, 48]) {
+    lampCoords.push([bx - 16.8, bz - 16.8], [bx + 16.8, bz + 16.8]);
+  }
+  placeProps('lamppost', lampCoords);
   const poleMat = makeMat(0xcbd5e1, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.20, flatShading: false });
   const mailboxMat = makeMat(0x1d4ed8, { metalness: 0.85, roughness: 0.22, clearcoat: 0.7, flatShading: false });
-  [[-16.5, 16.2], [16.5, -16.2], [-31.5, 16.5], [-16.5, -64.5]].forEach(([mx, mz]) => {
-    const mb = new THREE.Mesh(new THREE.BoxGeometry(0.52, 1.05, 0.52), mailboxMat);
-    mb.position.set(mx, 0.70, mz);
-    mb.castShadow = true;
+  for (const [mx, mz] of [[-16.5, 16.2], [16.5, -16.2], [-31.5, 16.5], [-16.5, -64.5]]) {
+    makeBox(worldRoot, 0.52, 1.05, 0.52, mx, 0.70, mz, mailboxMat, {
+      cast: true, box: [mx - 0.28, mx + 0.28, 0.18, 1.25, mz - 0.28, mz + 0.28, 'mailbox', true]
+    });
     const bin = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.22, 0.82, 10), poleMat);
     bin.position.set(mx + 0.9, 0.59, mz);
-    worldRoot.add(mb, bin);
-    addWorldBox(mx - 0.28, mx + 0.28, 0.18, 1.25, mz - 0.28, mz + 0.28, 'mailbox', true);
-  });
-  [[-16.8, 13.0], [16.8, 32.0], [-32.0, -16.8], [32.0, -32.0], [-16.8, -80.0]].forEach(([hx, hz]) => createHydrant(hx, hz));
-  [
-    [-13.5, 55.5], [13.5, 38.5], [-58.5, -11.5], [-36.5, 11.5],
-    [58.5, -11.5], [36.5, 11.5], [-36.5, 38.5], [58.5, 38.5],
-    [-82.0, -82.0], [82.0, -82.0], [-82.0, -130.0], [82.0, -130.0]
-  ].forEach(([tx, tz]) => createTree(tx, tz, 0.95));
+    worldRoot.add(bin);
+  }
+  placeProps('hydrant', [[-16.8, 13.0], [16.8, 32.0], [-32.0, -16.8], [32.0, -32.0], [-16.8, -80.0]]);
+  placeProps('tree', [
+    [-13.5, 55.5, 0.95], [13.5, 38.5, 0.95], [-58.5, -11.5, 0.95], [-36.5, 11.5, 0.95],
+    [58.5, -11.5, 0.95], [36.5, 11.5, 0.95], [-36.5, 38.5, 0.95], [58.5, 38.5, 0.95],
+    [-82.0, -82.0, 0.95], [82.0, -82.0, 0.95], [-82.0, -130.0, 0.95], [82.0, -130.0, 0.95]
+  ]);
 }
-
 export function updateBuildingLods() {
-  const LOD_ON_DIST = 54, LOD_OFF_DIST = 66;
+  const ON2 = 54 * 54, OFF2 = 66 * 66;
   for (let i = 0; i < buildingLods.length; i++) {
     const entry = buildingLods[i];
-    const d = Math.hypot(entry.x - player.x, entry.z - player.z);
-    if (!entry.active && d < LOD_ON_DIST) { entry.group.visible = true; entry.active = true; }
-    else if (entry.active && d > LOD_OFF_DIST) { entry.group.visible = false; entry.active = false; }
+    const d2 = dist2(entry.x, entry.z, player.x, player.z);
+    if (!entry.active && d2 < ON2) { entry.group.visible = true; entry.active = true; }
+    else if (entry.active && d2 > OFF2) { entry.group.visible = false; entry.active = false; }
   }
 }
 
@@ -2550,15 +2189,9 @@ export function embellishHouse({ x, z, w = 8.4, d = 7.4, h = 3.6, wallColor, roo
   worldRoot.add(g);
   const wood = makeMat(0xf1f5f9, { roughness: 0.7 });
   const green = makeMat(0x14532d, { roughness: 0.8 });
-  const add = (sx, sy, sz, m, px, py, pz) => {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), m);
-    b.position.set(px, py, pz);
-    b.castShadow = true;
-    g.add(b);
-    return b;
-  };
+  const add = (sx, sy, sz, m, px, py, pz) => makeBox(g, sx, sy, sz, px, py, pz, m, { cast: true });
   add(w * 0.36, 0.14, 1.4, makeMat(0xa8a29e, { texType: 'concrete' }), 0, 0.07, d / 2 + 0.7);
-  [-1, 1].forEach((s) => {
+  for (const s of [-1, 1]) {
     const wx = s * w * 0.28;
     add(0.34, 1.25, 0.06, green, wx - 0.98, 1.9, d / 2 + 0.05);
     add(0.34, 1.25, 0.06, green, wx + 0.98, 1.9, d / 2 + 0.05);
@@ -2568,7 +2201,7 @@ export function embellishHouse({ x, z, w = 8.4, d = 7.4, h = 3.6, wallColor, roo
     bush.position.set(s * w * 0.44, 0.4, d / 2 + 0.55);
     bush.castShadow = true;
     g.add(bush);
-  });
+  }
   add(0.08, 1.0, 0.08, wood, w * 0.6, 0.5, d / 2 + 3);
   add(0.4, 0.28, 0.25, makeMat(0x1d4ed8), w * 0.6, 1.1, d / 2 + 3);
   add(w + 2, 0.07, 0.07, wood, 0, 0.7, d / 2 + 4.2);
@@ -2577,9 +2210,7 @@ export function embellishHouse({ x, z, w = 8.4, d = 7.4, h = 3.6, wallColor, roo
     if (Math.abs(fx) > 1.0) add(0.08, 0.95, 0.08, wood, fx, 0.48, d / 2 + 4.2);
   }
 }
-
 export function buildSuburbanHouse(o) { buildSuburbanHouseBase(o); embellishHouse(o); }
-
 // -----------------------------------------------------------------------------
 // FROSTPINE ALPINE / EMERALD WOODS / SUNSET COVE
 // -----------------------------------------------------------------------------
@@ -2587,7 +2218,6 @@ export function buildNewBiomes() {
   const grp = new THREE.Group();
   grp.userData.studioName = 'Southern biomes';
   worldRoot.add(grp);
-
   const mesh = (geo, mat, x, y, z, cast = true) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
@@ -2609,42 +2239,28 @@ export function buildNewBiomes() {
     grp.add(m);
     return m;
   };
-
-  /**
-   * Roads are real slabs (never a single-sided plane you can see through from
-   * below). `gap` opens the carriageway over a carved stream so the water and
-   * the footbridge read correctly.
-   */
+  /** Roads are real slabs; `gap` opens the carriageway over a carved stream. */
   const road = (rx, name, gap = null) => {
     const asphalt = makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 26, roughness: 0.86 });
-    const spans = gap ? [[74, gap[0]], [gap[1], 208]] : [[74, 208]];
-    for (const [z0, z1] of spans) {
+    for (const [z0, z1] of (gap ? [[74, gap[0]], [gap[1], 208]] : [[74, 208]])) {
       if (z1 - z0 < 0.5) continue;
-      const slab = new THREE.Mesh(new THREE.BoxGeometry(12, 0.12, z1 - z0), asphalt);
-      slab.position.set(rx, 0.12, (z0 + z1) / 2);
-      slab.receiveShadow = true;
-      slab.userData.studioName = name;
-      grp.add(slab);
-      addWorldBox(rx - 6, rx + 6, 0.06, 0.18, z0, z1, 'biome_road', true);
+      makeBox(grp, 12, 0.12, z1 - z0, rx, 0.12, (z0 + z1) / 2, asphalt, {
+        recv: true, name, box: [rx - 6, rx + 6, 0.06, 0.18, z0, z1, 'biome_road', true]
+      });
     }
     const dashT = [];
     for (let zz = 80; zz < 206; zz += 6) {
       if (gap && zz > gap[0] - 2 && zz < gap[1] + 2) continue;
-      dashT.push([rx, 0.19, zz]);
+      xform(dashT, rx, 0.19, zz);
     }
-    const dm = new THREE.Object3D();
-    const dashes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.26, 0.02, 2.5), makeMat(0xfacc15), dashT.length);
-    dashT.forEach(([x, y, z], i) => { dm.position.set(x, y, z); dm.updateMatrix(); dashes.setMatrixAt(i, dm.matrix); });
-    dashes.instanceMatrix.needsUpdate = true;
-    grp.add(dashes);
+    flushInstances(grp, new THREE.BoxGeometry(0.26, 0.02, 2.5), makeMat(0xfacc15), dashT);
     mapShapes.push({ x: rx, z: 141, w: 12, d: 134, color: '#334155', border: '#475569', enterable: false });
     reserveFootprint(rx - 7, rx + 7, 74, 208, 'road');
   };
-
   const keep = [];
   const free = (x, z, roadX, r = 2) => {
     if (roadX !== null && Math.abs(x - roadX) < 8) return false;
-    for (const k of keep) if (Math.hypot(x - k.x, z - k.z) < k.r + r) return false;
+    for (const k of keep) if (dist2(x, z, k.x, k.z) < (k.r + r) * (k.r + r)) return false;
     return true;
   };
 
@@ -2657,8 +2273,7 @@ export function buildNewBiomes() {
   const cLow = new THREE.Color(0x8a9a6b), cMid = new THREE.Color(0xb3b380), cSnow = new THREE.Color(0xffffff);
   const cCreekBed = new THREE.Color(0x4b5563);
   for (let i = 0; i < mg.attributes.position.count; i++) {
-    const x = mg.attributes.position.getX(i) - 375;
-    const z = mg.attributes.position.getZ(i) + 214;
+    const x = mg.attributes.position.getX(i) - 375, z = mg.attributes.position.getZ(i) + 214;
     const height = terrainBaseH(x, z);
     const snowLine = 6.5 + fbm(x * 0.05, z * 0.05, 2) * 2;
     mc.set(0x6b7a5c);
@@ -2670,97 +2285,79 @@ export function buildNewBiomes() {
       if (cd < 7) mc.lerp(cCreekBed, (1 - cd / 7) * 0.8);
     }
     mg.attributes.position.setY(i, height);
-    mountainColors[i * 3] = mc.r;
-    mountainColors[i * 3 + 1] = mc.g;
-    mountainColors[i * 3 + 2] = mc.b;
+    mountainColors[i * 3] = mc.r; mountainColors[i * 3 + 1] = mc.g; mountainColors[i * 3 + 2] = mc.b;
   }
   mg.attributes.position.needsUpdate = true;
   mg.setAttribute('color', new THREE.BufferAttribute(mountainColors, 3));
   mg.computeVertexNormals();
   const mountainMesh = new THREE.Mesh(mg, makeTerrainBlendMaterial({ roughness: 0.9 }));
-mountainMesh.receiveShadow = true;
-mountainMesh.castShadow = true;
-mountainMesh.position.set(-375, 0, 214);
-paintMeshTerrainSplat(mountainMesh, 'alpine');
+  mountainMesh.receiveShadow = true;
+  mountainMesh.castShadow = true;
+  mountainMesh.position.set(-375, 0, 214);
+  paintMeshTerrainSplat(mountainMesh, 'alpine');
   mountainMesh.userData.studioName = 'Frostpine mountains';
   worldRoot.add(mountainMesh);
   registerSculptableTerrain(mountainMesh);
-
   for (let sz = 128; sz <= 308; sz += 60) {
     for (let sx = -660; sx <= -90; sx += 95) iceZones.push({ x: sx, z: sz, r: 26 });
   }
-
   const pineG = [new THREE.ConeGeometry(1.7, 2.2, 7), new THREE.ConeGeometry(1.3, 1.9, 7), new THREE.ConeGeometry(0.9, 1.6, 7)];
   const trunkG = new THREE.CylinderGeometry(0.2, 0.3, 1.6, 6);
   const snowM = makeMat(0xffffff, { roughness: 0.9 });
   const pineInstances = { trunk: [], snowCap: [], layers: [[], [], []], snowLayers: [[], [], []] };
-  const pineDummy = new THREE.Object3D();
-  const pushPine = (list, x, y, z, s) => {
-    pineDummy.position.set(x, y, z);
-    pineDummy.scale.setScalar(s);
-    pineDummy.rotation.set(0, 0, 0);
-    pineDummy.updateMatrix();
-    list.push(pineDummy.matrix.clone());
-  };
   const placePineTree = (x, z, size = 1) => {
     const gy = terrainH(x, z);
-    pushPine(pineInstances.trunk, x, gy + 0.8 * size, z, size);
-    pushPine(pineInstances.snowCap, x, gy + 8 * size * 0.72, z, size);
-    [[0, 2.2], [1, 3.4], [2, 4.5]].forEach(([i, y]) => {
-      pushPine(pineInstances.layers[i], x, gy + y * size, z, size);
-      if (rnd() > 0.5) pushPine(pineInstances.snowLayers[i], x, gy + (y + 0.22) * size, z, size * 0.86);
-    });
+    xform(pineInstances.trunk, x, gy + 0.8 * size, z, size, size, size);
+    xform(pineInstances.snowCap, x, gy + 8 * size * 0.72, z, size, size, size);
+    for (const [i, y] of [[0, 2.2], [1, 3.4], [2, 4.5]]) {
+      xform(pineInstances.layers[i], x, gy + y * size, z, size, size, size);
+      if (rnd() > 0.5) {
+        const s = size * 0.86;
+        xform(pineInstances.snowLayers[i], x, gy + (y + 0.22) * size, z, s, s, s);
+      }
+    }
     addWorldBox(x - 0.6 * size, x + 0.6 * size, gy, gy + 8 * size * 0.6, z - 0.6 * size, z + 0.6 * size, 'pine_tree', false);
   };
   const flushInstancedPines = () => {
-    const add = (geo, mat, list) => {
-      if (!list.length) return;
-      const im = new THREE.InstancedMesh(geo, mat, list.length);
-      list.forEach((m, i) => im.setMatrixAt(i, m));
-      im.instanceMatrix.needsUpdate = true;
-      im.castShadow = true;
-      im.receiveShadow = true;
-      grp.add(im);
-    };
+    const add = (geo, mat, list) => flushInstances(grp, geo, mat, list, { cast: true, recv: true });
     add(trunkG, treeBarkMaterial, pineInstances.trunk);
     add(new THREE.SphereGeometry(0.5, 12, 12), snowM, pineInstances.snowCap);
-    pineG.forEach((g, i) => { add(g, treeLeafMaterial, pineInstances.layers[i]); add(g, snowM, pineInstances.snowLayers[i]); });
+    pineG.forEach((g, i) => {
+      add(g, treeLeafMaterial, pineInstances.layers[i]);
+      add(g, snowM, pineInstances.snowLayers[i]);
+    });
   };
-
   const lodgeX = -70, lodgeZ = 139, lodgeW = 11, lodgeD = 9;
   const lodgeY = maxTerrainOver(lodgeX - lodgeW / 2, lodgeX + lodgeW / 2, lodgeZ - lodgeD / 2, lodgeZ + lodgeD / 2) + 0.12;
-  const plinth = mesh(new THREE.BoxGeometry(lodgeW + 1.6, 2.4, lodgeD + 1.6), makeMat(0x57534e, { texType: 'redrock', repeatX: 3, repeatY: 1 }), lodgeX, lodgeY - 1.2, lodgeZ);
-  plinth.userData.studioName = 'Ski lodge foundation';
-  addWorldBox(lodgeX - lodgeW / 2 - 0.8, lodgeX + lodgeW / 2 + 0.8, lodgeY - 2.4, lodgeY, lodgeZ - lodgeD / 2 - 0.8, lodgeZ + lodgeD / 2 + 0.8, 'lodge_foundation', true);
+  makeBox(grp, lodgeW + 1.6, 2.4, lodgeD + 1.6, lodgeX, lodgeY - 1.2, lodgeZ,
+    makeMat(0x57534e, { texType: 'redrock', repeatX: 3, repeatY: 1 }), {
+      cast: true, recv: true, name: 'Ski lodge foundation',
+      box: [lodgeX - lodgeW / 2 - 0.8, lodgeX + lodgeW / 2 + 0.8, lodgeY - 2.4, lodgeY,
+        lodgeZ - lodgeD / 2 - 0.8, lodgeZ + lodgeD / 2 + 0.8, 'lodge_foundation', true]
+    });
   keep.push({ x: lodgeX, z: lodgeZ, r: 11 });
-
   const creek = buildRiverSystem({
     id: 'frostpine_creek', parent: grp, centerX: frostCreekX, z0: 136, z1: 312,
     halfWidth: 3.2, lift: 0.24, waveScale: 0.12, currentZ: 0.7, flowSpeed: 0.55,
     shallowColor: 0x7dd3fc, deepColor: 0x0369a1, foamColor: 0xe0f2fe
   });
   for (let z = 140; z <= 310; z += 12) keep.push({ x: frostCreekX(z), z, r: 7 });
-
   [176, 214, 252, 288].forEach((bz, i) => {
-    const bx = frostCreekX(bz) + (i % 2 ? 1.4 : -1.4);
-    const by = terrainH(bx, bz);
-    const rock = mesh(new THREE.DodecahedronGeometry(0.85 + (i % 2) * 0.3, 0), rockMat, bx, by + 0.35, bz);
-    rock.castShadow = true;
+    const bx = frostCreekX(bz) + (i % 2 ? 1.4 : -1.4), by = terrainH(bx, bz);
+    mesh(new THREE.DodecahedronGeometry(0.85 + (i % 2) * 0.3, 0), rockMat, bx, by + 0.35, bz);
     addWorldBox(bx - 0.8, bx + 0.8, by, by + 1.0, bz - 0.8, bz + 0.8, 'creek_boulder', true);
   });
   spawnRiverLog(grp, frostCreekX(240) + 0.6, 240);
-
   {
     const sx = frostCreekX(311), sy = terrainH(sx, 311);
     for (let i = 0; i < 3; i++) mesh(new THREE.DodecahedronGeometry(1.1, 0), rockMat, sx + (i - 1) * 1.6, sy + 0.5, 313.5);
-    const foam = new THREE.Mesh(new THREE.RingGeometry(1.4, 2.6, 18), new THREE.MeshBasicMaterial({ color: 0xe0f2fe, transparent: true, opacity: 0.5, side: THREE.DoubleSide }));
+    const foam = new THREE.Mesh(new THREE.RingGeometry(1.4, 2.6, 18),
+      new THREE.MeshBasicMaterial({ color: 0xe0f2fe, transparent: true, opacity: 0.5, side: THREE.DoubleSide }));
     foam.rotation.x = -Math.PI / 2;
     foam.position.set(sx, creek.surfAt(310) + 0.03, 310);
     grp.add(foam);
   }
-
   const loopRoad = buildFrostpineLoopRoad(grp, keep);
-
   {
     let crossI = -1, crossD = Infinity;
     for (let i = 0; i < loopRoad.pts.length - 1; i++) {
@@ -2770,8 +2367,7 @@ paintMeshTerrainSplat(mountainMesh, 'alpine');
       if (d < crossD) { crossD = d; crossI = i; }
     }
     if (crossI >= 0) {
-      const p = loopRoad.pts[crossI];
-      const bz = p.z, bx = frostCreekX(bz);
+      const p = loopRoad.pts[crossI], bz = p.z, bx = frostCreekX(bz);
       const span = 12.4, deckW = 5.2;
       const deckY = Math.max(creek.surfAt(bz), p.y + loopRoad.ROAD_DY) + 0.3;
       buildRiverBridge(grp, bx, bz, deckY, span, { stone: true, deckW });
@@ -2779,11 +2375,9 @@ paintMeshTerrainSplat(mountainMesh, 'alpine');
         const rx = bx + s * (span / 2 + 1.6);
         const gy = terrainH(rx, bz) + loopRoad.ROAD_DY;
         const rise = deckY - gy, run = 3.2;
-        const wedge = new THREE.Mesh(new THREE.BoxGeometry(run, 0.24, deckW), makeMat(0x8a8f94, { texType: 'cobblestone', repeatX: 1, repeatY: 2, roughness: 0.9 }));
-        wedge.position.set(bx + s * (span / 2 + run / 2), (deckY + gy) / 2 - 0.12, bz);
-        wedge.rotation.z = s * Math.atan2(rise, run);
-        wedge.receiveShadow = true;
-        grp.add(wedge);
+        makeBox(grp, run, 0.24, deckW, bx + s * (span / 2 + run / 2), (deckY + gy) / 2 - 0.12, bz,
+          makeMat(0x8a8f94, { texType: 'cobblestone', repeatX: 1, repeatY: 2, roughness: 0.9 }),
+          { recv: true, rz: s * Math.atan2(rise, run) });
         addDriveableRamp({
           minX: s < 0 ? bx - span / 2 - run : bx + span / 2,
           maxX: s < 0 ? bx - span / 2 : bx + span / 2 + run,
@@ -2794,12 +2388,10 @@ paintMeshTerrainSplat(mountainMesh, 'alpine');
       mapShapes.push({ x: bx, z: bz, w: span, d: deckW, color: '#9aa0a6', border: '#fcd34d', enterable: false });
     }
   }
-
   {
     let nearI = 0, nearD = Infinity;
     for (let i = 0; i < loopRoad.pts.length - 1; i++) {
-      const p = loopRoad.pts[i];
-      const d = Math.hypot(p.x - lodgeX, p.z - lodgeZ);
+      const p = loopRoad.pts[i], d = dist2(p.x, p.z, lodgeX, lodgeZ);
       if (d < nearD) { nearD = d; nearI = i; }
     }
     const a = loopRoad.pts[nearI];
@@ -2808,23 +2400,18 @@ paintMeshTerrainSplat(mountainMesh, 'alpine');
       new THREE.Vector3(-80, terrainH(-80, 152), 152),
       new THREE.Vector3(-71, terrainH(-71, 148), 148)
     ];
-    const drive = new THREE.Mesh(
-      ribbonGeometry(drivePts, 2.4, (p) => p.y + 0.11, { uvScale: 6 }),
+    const drive = new THREE.Mesh(ribbonGeometry(drivePts, 2.4, (p) => p.y + 0.11, { uvScale: 6 }),
       makeMat(0x3a4048, { texType: 'asphalt', repeatX: 1, repeatY: 1, roughness: 0.88 }));
     drive.receiveShadow = true;
     drive.userData.studioName = 'Ski lodge driveway';
     grp.add(drive);
     const rampGround = terrainH(lodgeX, 150.3) + 0.1;
     const rise = lodgeY - rampGround, run = 6.0;
-    const rampMesh = new THREE.Mesh(new THREE.BoxGeometry(4, 0.3, Math.hypot(run, rise)), makeMat(0x57534e, { texType: 'redrock', repeatX: 1, repeatY: 2 }));
-    rampMesh.position.set(lodgeX, (lodgeY + rampGround) / 2 - 0.15, 147.3);
-    rampMesh.rotation.x = -Math.atan2(rise, run);
-    rampMesh.receiveShadow = true;
-    grp.add(rampMesh);
+    makeBox(grp, 4, 0.3, Math.hypot(run, rise), lodgeX, (lodgeY + rampGround) / 2 - 0.15, 147.3,
+      makeMat(0x57534e, { texType: 'redrock', repeatX: 1, repeatY: 2 }), { recv: true, rx: -Math.atan2(rise, run) });
     addDriveableRamp({ minX: lodgeX - 2, maxX: lodgeX + 2, minZ: 144.3, maxZ: 150.3, startY: lodgeY, endY: rampGround, axis: 'z', dir: 1 });
     keep.push({ x: -78, z: 150, r: 6 });
   }
-
   {
     const spurCurve = new THREE.CatmullRomCurve3([
       new THREE.Vector3(-76, 0, 184), new THREE.Vector3(-58, 0, 190),
@@ -2832,28 +2419,22 @@ paintMeshTerrainSplat(mountainMesh, 'alpine');
     ]);
     const spurPts = spurCurve.getSpacedPoints(24);
     for (const p of spurPts) { p.y = terrainH(p.x, p.z); keep.push({ x: p.x, z: p.z, r: 7 }); }
-    const spur = new THREE.Mesh(
-      ribbonGeometry(spurPts, 4.0, (p) => p.y + 0.12, { uvScale: 8 }),
+    const spur = new THREE.Mesh(ribbonGeometry(spurPts, 4.0, (p) => p.y + 0.12, { uvScale: 8 }),
       makeMat(0x2b3138, { texType: 'asphalt', repeatX: 1, repeatY: 1, roughness: 0.86 }));
     spur.receiveShadow = true;
     spur.userData.studioName = 'Frostpine park spur';
     grp.add(spur);
     const archMat = makeMat(0x57534e, { texType: 'wood', repeatX: 1, repeatY: 3 });
     for (const s of [-1, 1]) {
-      const post = new THREE.Mesh(new THREE.BoxGeometry(0.45, 5.2, 0.45), archMat);
-      post.position.set(-24 + s * 6.4, terrainH(-24 + s * 6.4, 203) + 2.6, 203);
-      post.castShadow = true;
-      grp.add(post);
-      addWorldBox(-24 + s * 6.4 - 0.3, -24 + s * 6.4 + 0.3, 0.1, 5.4, 202.7, 203.3, 'park_arch_post', false);
+      const px = -24 + s * 6.4;
+      makeBox(grp, 0.45, 5.2, 0.45, px, terrainH(px, 203) + 2.6, 203, archMat, {
+        cast: true, box: [px - 0.3, px + 0.3, 0.1, 5.4, 202.7, 203.3, 'park_arch_post', false]
+      });
     }
-    const beam = new THREE.Mesh(new THREE.BoxGeometry(13.6, 0.5, 0.5), archMat);
-    beam.position.set(-24, terrainH(-24, 203) + 5.1, 203);
-    beam.castShadow = true;
-    grp.add(beam);
+    makeBox(grp, 13.6, 0.5, 0.5, -24, terrainH(-24, 203) + 5.1, 203, archMat, { cast: true });
     createNeonSign(grp, 'FROSTPINE NATIONAL PARK', -24, terrainH(-24, 203) + 4.3, 203, '#1c1917', '#fcd34d', 10.5, 1.2);
     createNeonSign(grp, 'LOOP ROAD  •  VISTAS  •  SKI LODGE', -24, terrainH(-24, 203) + 3.2, 203, '#14532d', '#bbf7d0', 8.5, 0.7);
   }
-
   for (let i = 0; i < loopRoad.pts.length - 1; i += 30) {
     let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
     for (let j = i; j <= Math.min(i + 30, loopRoad.pts.length - 1); j++) {
@@ -2864,7 +2445,6 @@ paintMeshTerrainSplat(mountainMesh, 'alpine');
     mapShapes.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, w: x1 - x0 + 9, d: z1 - z0 + 9, color: '#334155', border: '#facc15', enterable: false });
   }
   mapShapes.push({ x: -420, z: 224, w: 110, d: 180, color: '#38bdf8', border: '#0ea5e9', enterable: false });
-
   // Densified Frostpine forest — clustered groves, every keep-out respected.
   for (let i = 0, placed = 0; i < 1400 && placed < 340; i++) {
     const x = -700 + rnd() * 650, z = 108 + rnd() * 212;
@@ -2874,25 +2454,21 @@ paintMeshTerrainSplat(mountainMesh, 'alpine');
     keep.push({ x, z, r: 1.2 });
     placed++;
   }
-
   const snowRockMat = new THREE.MeshStandardMaterial({ color: 0x5a554d, roughness: 1, flatShading: true });
   for (let i = 0; i < 45; i++) {
     const rx = -640 + rnd() * 520, rz = 116 + rnd() * 196;
     if (!free(rx, rz, null, 4)) continue;
-    const gy = terrainH(rx, rz);
-    const rh = 2.5 + rnd() * 4;
+    const gy = terrainH(rx, rz), rh = 2.5 + rnd() * 4;
     const rock = mesh(new THREE.DodecahedronGeometry(rh, 0), snowRockMat, rx, gy + rh * 0.35, rz);
     rock.scale.set(1 + rnd() * 0.6, 0.5 + rnd() * 0.5, 1 + rnd() * 0.6);
     addWorldBox(rx - rh * 0.8, rx + rh * 0.8, gy, gy + rh * 1.1, rz - rh * 0.8, rz + rh * 0.8, 'rock_outcrop', true);
     keep.push({ x: rx, z: rz, r: rh });
   }
-
   const frozenLakeMat = new THREE.MeshStandardMaterial({ color: 0x9bdcf5, metalness: 0.5, roughness: 0.08, transparent: true, opacity: 0.7 });
   for (let i = 0; i < 12; i++) {
     const lx = -650 + rnd() * 120, lz = 150 + rnd() * 80, lw = 7 + rnd() * 5;
     const topY = maxTerrainOver(lx - lw / 2, lx + lw / 2, lz - lw * 0.3, lz + lw * 0.3) + 0.06;
-    const lake = mesh(new THREE.BoxGeometry(lw, 0.5, lw * 0.6), frozenLakeMat, lx, topY - 0.25, lz, false);
-    lake.userData.studioName = 'Frozen lake';
+    makeBox(grp, lw, 0.5, lw * 0.6, lx, topY - 0.25, lz, frozenLakeMat, { recv: true, name: 'Frozen lake' });
     addWorldBox(lx - lw / 2, lx + lw / 2, topY - 0.5, topY, lz - lw * 0.3, lz + lw * 0.3, 'frozen_lake', true);
     iceZones.push({ x: lx, z: lz, r: lw * 0.5 });
     keep.push({ x: lx, z: lz, r: lw });
@@ -2900,7 +2476,7 @@ paintMeshTerrainSplat(mountainMesh, 'alpine');
   buildWalkInHouse({ x: lodgeX, z: lodgeZ, w: lodgeW, d: lodgeD, wallColor: 0x92400e, roofColor: 0xf8fafc, label: 'FROSTPINE SKI LODGE', baseY: lodgeY });
 
   // === EMERALD WOODS ===
-const woodsGrass = makeGroundMat('grass', { color: 0x4f8f46, repeatX: 12, repeatY: 16, roughness: 0.95 });
+  const woodsGrass = makeGroundMat('grass', { color: 0x4f8f46, repeatX: 12, repeatY: 16, roughness: 0.95 });
   ground(-52, 28, 108, 146.9, 0.17, woodsGrass);
   ground(-52, 28, 153.1, 208, 0.17, woodsGrass);
   {
@@ -2908,8 +2484,7 @@ const woodsGrass = makeGroundMat('grass', { color: 0x4f8f46, repeatX: 12, repeat
     bedGeo.rotateX(-Math.PI / 2);
     const bp = bedGeo.attributes.position;
     for (let i = 0; i < bp.count; i++) {
-      const lz = bp.getZ(i);
-      const t = Math.max(0, 1 - (Math.abs(lz) / 3.1) ** 2);
+      const lz = bp.getZ(i), t = Math.max(0, 1 - (Math.abs(lz) / 3.1) ** 2);
       bp.setY(i, 0.17 - 0.58 * t);
     }
     bedGeo.computeVertexNormals();
@@ -2925,10 +2500,8 @@ const woodsGrass = makeGroundMat('grass', { color: 0x4f8f46, repeatX: 12, repeat
   }
   road(-24, 'Forest Road', [146.9, 153.1]);
   mapShapes.unshift({ x: -12, z: 158, w: 80, d: 100, color: '#166534', border: '#14532d', enterable: false });
-
   const camp = { x: 8, z: 176 };
   keep.push({ x: camp.x, z: camp.z, r: 8 }, { x: 4, z: 128, r: 10 });
-
   const streamBed = (x, z) => 0.17 - 0.58 * Math.max(0, 1 - ((z - 150) / 3.1) ** 2);
   createWaterSurface({
     id: 'emerald_stream_w', parent: grp, minX: -52, maxX: -31, minZ: 147.5, maxZ: 152.5,
@@ -2941,14 +2514,14 @@ const woodsGrass = makeGroundMat('grass', { color: 0x4f8f46, repeatX: 12, repeat
     shallowColor: 0x67e8f9, deepColor: 0x0e7490, foamColor: 0xe0f2fe, segmentSize: 3
   });
   mapShapes.push({ x: -12, z: 150, w: 80, d: 5, color: '#38bdf8', border: '#0ea5e9', enterable: false });
-
   const oakG = new THREE.IcosahedronGeometry(1.9, 0);
   const birchBark = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, map: treeBarkTexture, roughness: 0.92, flatShading: true });
   const oak = (x, z, s, birch) => {
-    mesh(new THREE.CylinderGeometry(birch ? 0.16 : 0.28, birch ? 0.22 : 0.4, 3.2 * s, 7), birch ? birchBark : treeBarkMaterial, x, 0.17 + 1.6 * s, z);
-    [[0, 3.8, 0, 1], [0.9, 3.3, 0.4, 0.75], [-0.8, 3.4, -0.5, 0.8]].forEach(([ox, oy, oz, sc]) => {
+    mesh(new THREE.CylinderGeometry(birch ? 0.16 : 0.28, birch ? 0.22 : 0.4, 3.2 * s, 7),
+      birch ? birchBark : treeBarkMaterial, x, 0.17 + 1.6 * s, z);
+    for (const [ox, oy, oz, sc] of [[0, 3.8, 0, 1], [0.9, 3.3, 0.4, 0.75], [-0.8, 3.4, -0.5, 0.8]]) {
       mesh(oakG, treeLeafMaterial, x + ox * s, 0.17 + oy * s, z + oz * s).scale.setScalar(sc * s * (birch ? 0.72 : 1));
-    });
+    }
     addWorldBox(x - 0.4 * s, x + 0.4 * s, 0.18, 0.18 + 3 * s, z - 0.4 * s, z + 0.4 * s, 'tree', false);
   };
   for (let i = 0, n = 0; i < 130 && n < 34; i++) {
@@ -2964,19 +2537,19 @@ const woodsGrass = makeGroundMat('grass', { color: 0x4f8f46, repeatX: 12, repeat
   for (let i = 0; i < 10; i++) {
     const x = -50 + rnd() * 76, z = 114 + rnd() * 88;
     if (!free(x, z, -24, 1) || Math.abs(z - 150) < 4) continue;
-    const bsh = mesh(new THREE.IcosahedronGeometry(0.7, 0), makeMat(0x166534), x, 0.55, z);
-    bsh.scale.y = 0.75;
+    mesh(new THREE.IcosahedronGeometry(0.7, 0), makeMat(0x166534), x, 0.55, z).scale.y = 0.75;
     mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.22, 5), makeMat(0xf5f5f4), x + 1.4, 0.3, z + 0.4, false);
     mesh(new THREE.SphereGeometry(0.2, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2), makeMat(0xdc2626), x + 1.4, 0.4, z + 0.4, false);
   }
-  [[-40, 128, 0.3], [-8, 190, 1.2], [14, 138, 0.8]].forEach(([lx, lz, ry]) => {
+  for (const [lx, lz, ry] of [[-40, 128, 0.3], [-8, 190, 1.2], [14, 138, 0.8]]) {
     const lg = mesh(new THREE.CylinderGeometry(0.42, 0.42, 4, 8), treeBarkMaterial, lx, 0.5, lz);
     lg.rotation.z = Math.PI / 2;
     lg.rotation.y = ry;
     addWorldBox(lx - 2, lx + 2, 0.17, 0.9, lz - 0.6, lz + 0.6, 'log', true);
-  });
+  }
   for (let a = 0; a < 8; a++) {
-    mesh(new THREE.DodecahedronGeometry(0.22, 0), makeMat(0x78716c), camp.x + Math.cos(a * 0.785) * 0.7, 0.3, camp.z + Math.sin(a * 0.785) * 0.7, false);
+    mesh(new THREE.DodecahedronGeometry(0.22, 0), makeMat(0x78716c),
+      camp.x + Math.cos(a * 0.785) * 0.7, 0.3, camp.z + Math.sin(a * 0.785) * 0.7, false);
   }
   const fire = mesh(new THREE.ConeGeometry(0.4, 1.1, 6), new THREE.MeshBasicMaterial({ color: 0xfb923c }), camp.x, 0.8, camp.z, false);
   mesh(new THREE.ConeGeometry(0.22, 0.8, 6), new THREE.MeshBasicMaterial({ color: 0xfde047 }), camp.x, 0.75, camp.z, false);
@@ -2984,15 +2557,17 @@ const woodsGrass = makeGroundMat('grass', { color: 0x4f8f46, repeatX: 12, repeat
   fl.position.set(camp.x, 1.4, camp.z);
   grp.add(fl);
   buildNewBiomes.fire = { fire, fl };
-  [[-3, 3, 0.4, 0x2563eb], [3, 4, -0.5, 0xdc2626]].forEach(([ox, oz, ry, hx]) => {
+  for (const [ox, oz, ry, hx] of [[-3, 3, 0.4, 0x2563eb], [3, 4, -0.5, 0xdc2626]]) {
     const t = mesh(new THREE.ConeGeometry(1.7, 1.9, 4), makeMat(hx), camp.x + ox, 1.1, camp.z + oz);
     t.rotation.y = ry + Math.PI / 4;
     addWorldBox(camp.x + ox - 1.1, camp.x + ox + 1.1, 0.18, 1.68, camp.z + oz - 1.1, camp.z + oz + 1.1, 'tent', false);
-  });
+  }
   buildWalkInHouse({ x: 4, z: 128, w: 10.4, d: 8.6, wallColor: 0x854d0e, roofColor: 0x166534, label: 'EMERALD RANGER STATION' });
-  mesh(new THREE.BoxGeometry(14, 0.12, 6), makeMat(0x78350f, { texType: 'wood' }), -24, 0.23, 150, false);
-  addWorldBox(-31, -17, 0.17, 0.29, 147, 153, 'footbridge', true);
-  [-1, 1].forEach((s) => mesh(new THREE.BoxGeometry(14, 0.9, 0.12), makeMat(0x78350f, { texType: 'wood' }), -24, 0.7, 150 + s * 2.95, false));
+  const bridgeWood = makeMat(0x78350f, { texType: 'wood' });
+  makeBox(grp, 14, 0.12, 6, -24, 0.23, 150, bridgeWood, {
+    recv: true, box: [-31, -17, 0.17, 0.29, 147, 153, 'footbridge', true]
+  });
+  for (const s of [-1, 1]) makeBox(grp, 14, 0.9, 0.12, -24, 0.7, 150 + s * 2.95, bridgeWood, { recv: true });
 
   // === SUNSET COVE ===
   ground(28, 138, 108, 168, 0.17, makeGroundMat('sand', { repeatX: 14, repeatY: 14, roughness: 0.96 }));
@@ -3006,18 +2581,20 @@ const woodsGrass = makeGroundMat('grass', { color: 0x4f8f46, repeatX: 12, repeat
   mapShapes.push({ x: 83, z: 188, w: 110, d: 40, color: '#38bdf8', border: '#0ea5e9', enterable: false });
   plane(28, 138, 166.6, 168, 0.21, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 }));
   keep.push({ x: 50, z: 150, r: 5 }, { x: 118, z: 138, r: 9 }, { x: 100, z: 160, r: 6 });
-  mesh(new THREE.BoxGeometry(4, 0.2, 40), makeMat(0x92704a, { texType: 'wood', repeatX: 1, repeatY: 10 }), 100, 0.45, 172, false);
-  for (let pz = 154; pz <= 190; pz += 6) [-1.7, 1.7].forEach((s) => mesh(new THREE.CylinderGeometry(0.18, 0.2, 1.4, 6), makeMat(0x57534e), 100 + s, 0.0, pz, false));
+  makeBox(grp, 4, 0.2, 40, 100, 0.45, 172,
+    makeMat(0x92704a, { texType: 'wood', repeatX: 1, repeatY: 10 }), { recv: true });
+  for (let pz = 154; pz <= 190; pz += 6) {
+    for (const s of [-1.7, 1.7]) mesh(new THREE.CylinderGeometry(0.18, 0.2, 1.4, 6), makeMat(0x57534e), 100 + s, 0.0, pz, false);
+  }
   addWorldBox(98, 102, 0.2, 0.55, 152, 192, 'pier', true);
-  mesh(new THREE.BoxGeometry(1.4, 0.12, 0.5), makeMat(0x78350f), 100, 0.9, 186, false);
-
+  makeBox(grp, 1.4, 0.12, 0.5, 100, 0.9, 186, makeMat(0x78350f), { recv: true });
   const palm = (x, z, s) => {
     const lean = (rnd() - 0.5) * 0.4;
     const tr = mesh(new THREE.CylinderGeometry(0.16 * s, 0.24 * s, 5 * s, 7), treeBarkMaterial, x, 0.17 + 2.5 * s, z);
     tr.rotation.z = lean;
     const tx = x - Math.sin(lean) * 2.5 * s, ty = 0.17 + 5 * s;
     for (let f = 0; f < 6; f++) {
-      const fr = mesh(new THREE.BoxGeometry(3 * s, 0.05, 0.7 * s), treeLeafMaterial, tx, ty, z, false);
+      const fr = makeBox(grp, 3 * s, 0.05, 0.7 * s, tx, ty, z, treeLeafMaterial, { recv: true });
       fr.rotation.y = f * 1.047;
       fr.rotation.z = -0.35;
       fr.translateX(1.3 * s);
@@ -3031,33 +2608,36 @@ const woodsGrass = makeGroundMat('grass', { color: 0x4f8f46, repeatX: 12, repeat
     keep.push({ x, z, r: 2 });
     n++;
   }
-  [[52, 160, 0xef4444], [60, 158, 0x3b82f6], [88, 162, 0xfacc15], [96, 150, 0x22c55e], [112, 158, 0xec4899]].forEach(([ux, uz, uc], i) => {
-    mesh(new THREE.CylinderGeometry(0.04, 0.04, 2.4, 5), makeMat(0xf8fafc), ux, 1.3, uz, false);
-    mesh(new THREE.ConeGeometry(1.5, 0.55, 8), makeMat(uc), ux, 2.6, uz);
-    mesh(new THREE.BoxGeometry(1.1, 0.03, 2.0), makeMat(i % 2 ? 0xfef3c7 : 0xbfdbfe), ux + 0.9, 0.19, uz + 0.8, false);
-  });
-  [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => mesh(new THREE.BoxGeometry(0.2, 2.6, 0.2), makeMat(0xf8fafc), 50 + sx, 1.5, 150 + sz));
-  mesh(new THREE.BoxGeometry(2.6, 1.6, 2.6), makeMat(0xdc2626, { texType: 'wood' }), 50, 3.3, 150);
-  mesh(new THREE.BoxGeometry(3.2, 0.2, 3.2), makeMat(0xf8fafc), 50, 4.25, 150);
-  mesh(new THREE.BoxGeometry(0.06, 1.3, 0.06), makeMat(0x57534e), 51.4, 5.0, 151.4);
-  mesh(new THREE.BoxGeometry(0.7, 0.4, 0.04), makeMat(0xfacc15), 51.75, 5.4, 151.4, false);
+  [[52, 160, 0xef4444], [60, 158, 0x3b82f6], [88, 162, 0xfacc15], [96, 150, 0x22c55e], [112, 158, 0xec4899]]
+    .forEach(([ux, uz, uc], i) => {
+      mesh(new THREE.CylinderGeometry(0.04, 0.04, 2.4, 5), makeMat(0xf8fafc), ux, 1.3, uz, false);
+      mesh(new THREE.ConeGeometry(1.5, 0.55, 8), makeMat(uc), ux, 2.6, uz);
+      makeBox(grp, 1.1, 0.03, 2.0, ux + 0.9, 0.19, uz + 0.8, makeMat(i % 2 ? 0xfef3c7 : 0xbfdbfe), { recv: true });
+    });
+  const lifeguardWhite = makeMat(0xf8fafc);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    makeBox(grp, 0.2, 2.6, 0.2, 50 + sx, 1.5, 150 + sz, lifeguardWhite, { cast: true, recv: true });
+  }
+  makeBox(grp, 2.6, 1.6, 2.6, 50, 3.3, 150, makeMat(0xdc2626, { texType: 'wood' }), { cast: true, recv: true });
+  makeBox(grp, 3.2, 0.2, 3.2, 50, 4.25, 150, lifeguardWhite, { cast: true, recv: true });
+  makeBox(grp, 0.06, 1.3, 0.06, 51.4, 5.0, 151.4, makeMat(0x57534e), { cast: true, recv: true });
+  makeBox(grp, 0.7, 0.4, 0.04, 51.75, 5.4, 151.4, makeMat(0xfacc15), { recv: true });
   addWorldBox(48.8, 51.2, 2.5, 4.35, 148.8, 151.2, 'lifeguard_deck', true);
-
-  [[60, 190, 0.3], [126, 180, -0.4]].forEach(([bx, bz, ry]) => {
+  for (const [bx, bz, ry] of [[60, 190, 0.3], [126, 180, -0.4]]) {
     const bt = new THREE.Group();
     bt.position.set(bx, 0.3, bz);
     bt.rotation.y = ry;
     bt.userData.studioName = 'Cove sailboat';
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.7, 4.8), makeMat(0xf8fafc));
+    makeBox(bt, 1.6, 0.7, 4.8, 0, 0, 0, makeMat(0xf8fafc));
     const mastM = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 5, 5), makeMat(0x57534e));
     mastM.position.y = 2.8;
     const sail = new THREE.Mesh(new THREE.ConeGeometry(1.3, 4.2, 3), makeMat(0xfef3c7));
     sail.position.set(0, 2.9, 0.3);
     sail.scale.z = 0.12;
-    bt.add(hull, mastM, sail);
+    bt.add(mastM, sail);
     grp.add(bt);
     registerFloatingProp(bt, bx, bz, 0.15, 0.9);
-  });
+  }
   buildRowboat(grp, 107, 184, 0xb45309);
   buildChannelBuoy(grp, 36, 198, 0xdc2626);
   buildChannelBuoy(grp, 124, 198, 0x22c55e);
@@ -3073,7 +2653,6 @@ export function buildJungleBiome() {
   grp.userData.studioName = 'Verdant jungle';
   worldRoot.add(grp);
   const JX0 = 368, JX1 = 533, JZ0 = -180, JZ1 = 240, JY = 1.5;
-
   const mesh = (geo, mat, x, y, z, cast = true) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
@@ -3090,7 +2669,6 @@ export function buildJungleBiome() {
     grp.add(m);
     return m;
   };
-
   {
     const westGeo = new THREE.PlaneGeometry(44, JZ1 - JZ0, 22, Math.ceil((JZ1 - JZ0) / 2));
     westGeo.rotateX(-Math.PI / 2);
@@ -3100,7 +2678,6 @@ export function buildJungleBiome() {
     west.receiveShadow = true;
     registerSculptableTerrain(west);
     grp.add(west);
-
     const eastGeo = new THREE.PlaneGeometry(109, JZ1 - JZ0, 54, Math.ceil((JZ1 - JZ0) / 2));
     eastGeo.rotateX(-Math.PI / 2);
     const east = new THREE.Mesh(eastGeo, makeTerrainBlendMaterial({ roughness: 0.96 }));
@@ -3109,7 +2686,6 @@ export function buildJungleBiome() {
     east.receiveShadow = true;
     registerSculptableTerrain(east);
     grp.add(east);
-
     const bedGeo = new THREE.PlaneGeometry(12, JZ1 - JZ0, 8, 140);
     bedGeo.rotateX(-Math.PI / 2);
     const bp = bedGeo.attributes.position;
@@ -3124,40 +2700,26 @@ export function buildJungleBiome() {
     bed.userData.studioName = 'Jungle river bed';
     grp.add(bed);
   }
-
-  // Earth skirts: the jungle floor sits 1.48 above the desert, so every edge
-  // gets a real retaining face — you can never see under the elevated plane.
+  // Earth skirts: real retaining faces so you can never see under the floor.
   {
     const skirtMat = makeMat(0x4a3f2c, { texType: 'redrock', repeatX: 20, repeatY: 1, roughness: 0.95 });
-    const skirt = (w, d, x, z) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, JY + 0.6, d), skirtMat);
-      m.position.set(x, (JY - 0.6) / 2, z);
-      m.receiveShadow = true;
-      m.castShadow = true;
-      grp.add(m);
-    };
+    const skirt = (w, d, x, z) => makeBox(grp, w, JY + 0.6, d, x, (JY - 0.6) / 2, z, skirtMat, { cast: true, recv: true });
     skirt(0.5, 214, JX0, (JZ0 + 34) / 2);
     skirt(0.5, JZ1 - 46, JX0, (46 + JZ1) / 2);
     skirt(0.5, JZ1 - JZ0, JX1, (JZ0 + JZ1) / 2);
     skirt(JX1 - JX0, 0.5, (JX0 + JX1) / 2, JZ0);
     skirt(JX1 - JX0, 0.5, (JX0 + JX1) / 2, JZ1);
   }
-
   mapShapes.unshift({ x: (JX0 + JX1) / 2, z: 30, w: JX1 - JX0, d: JZ1 - JZ0, color: '#14532d', border: '#166534', enterable: false });
-
   const rise = JY - 0.05;
-  const entryRamp = new THREE.Mesh(new THREE.BoxGeometry(8.2, 0.14, 12), makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 2, roughness: 0.86 }));
-  entryRamp.position.set(364, (0.05 + JY) / 2 - 0.07, 40);
-  entryRamp.rotation.z = Math.atan2(rise, 8);
-  entryRamp.receiveShadow = true;
-  grp.add(entryRamp);
+  makeBox(grp, 8.2, 0.14, 12, 364, (0.05 + JY) / 2 - 0.07, 40,
+    makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 2, roughness: 0.86 }),
+    { recv: true, rz: Math.atan2(rise, 8) });
   addDriveableRamp({ minX: 360, maxX: 368, minZ: 34, maxZ: 46, startY: 0.05, endY: JY, axis: 'x', dir: 1 });
-
   const trailMat = makeMat(0x5c4033, { texType: 'sand', repeatX: 10, repeatY: 2, roughness: 0.95 });
   plane(368, 412, 35, 45, JY + 0.02, trailMat);
   plane(424, 474, 35, 45, JY + 0.02, trailMat);
   mapShapes.push({ x: 421, z: 40, w: 106, d: 10, color: '#78350f', border: '#451a03', enterable: false });
-
   createWaterSurface({
     id: 'verdant_river', parent: grp, minX: 412, maxX: 424, minZ: -180, maxZ: 200,
     surfaceY: JY + 0.03,
@@ -3166,7 +2728,6 @@ export function buildJungleBiome() {
     shallowColor: 0x2dd4bf, deepColor: 0x0f766e, foamColor: 0xccfbf1, segmentSize: 4
   });
   mapShapes.push({ x: 418, z: 10, w: 12, d: 380, color: '#14b8a6', border: '#0f766e', enterable: false });
-
   createWaterSurface({
     id: 'north_ocean_w', parent: grp, minX: -50, maxX: 164, minZ: 208, maxZ: 320,
     surfaceY: 0.20, bedFn: getOceanBedY, waveScale: 1.0, currentX: 0.2, currentZ: 0.3,
@@ -3177,60 +2738,48 @@ export function buildJungleBiome() {
     surfaceY: 0.20, bedFn: getOceanBedY, waveScale: 1.0, currentX: 0.25, currentZ: 0.2,
     isOcean: true, segmentSize: 4
   });
-
   const woodBridgeMat = makeMat(0x78350f, { texType: 'wood', repeatX: 4, repeatY: 2 });
-  mesh(new THREE.BoxGeometry(14, 0.22, 11.5), woodBridgeMat, 418, JY + 0.1, 40);
-  [-5.5, 5.5].forEach((rz) => mesh(new THREE.BoxGeometry(14, 0.85, 0.24), woodBridgeMat, 418, JY + 0.54, 40 + rz));
+  makeBox(grp, 14, 0.22, 11.5, 418, JY + 0.1, 40, woodBridgeMat, { cast: true, recv: true });
+  for (const rz of [-5.5, 5.5]) makeBox(grp, 14, 0.85, 0.24, 418, JY + 0.54, 40 + rz, woodBridgeMat, { cast: true, recv: true });
   addWorldBox(411, 425, JY, JY + 0.21, 34.2, 45.8, 'jungle_bridge', true);
-
   const cliffMat = makeMat(0x475569, { texType: 'redrock', repeatX: 4, repeatY: 3, roughness: 0.92 });
-  mesh(new THREE.BoxGeometry(22, 14, 7), cliffMat, 418, JY + 6.5, -137);
+  makeBox(grp, 22, 14, 7, 418, JY + 6.5, -137, cliffMat, { cast: true, recv: true });
   addWorldBox(407, 429, JY, JY + 13.5, -140.5, -133.5, 'jungle_cliff', false);
-  const fallSheet = mesh(new THREE.BoxGeometry(8.5, 11.5, 0.35), new THREE.MeshBasicMaterial({ color: 0x5eead4, transparent: true, opacity: 0.72 }), 418, JY + 5.75, -133.3, false);
-  const mistPool = mesh(new THREE.CylinderGeometry(7.5, 7.5, 0.08, 20), new THREE.MeshBasicMaterial({ color: 0xccfbf1, transparent: true, opacity: 0.55 }), 418, JY + 0.06, -129, false);
+  const fallSheet = makeBox(grp, 8.5, 11.5, 0.35, 418, JY + 5.75, -133.3,
+    new THREE.MeshBasicMaterial({ color: 0x5eead4, transparent: true, opacity: 0.72 }), { recv: true });
+  const mistPool = mesh(new THREE.CylinderGeometry(7.5, 7.5, 0.08, 20),
+    new THREE.MeshBasicMaterial({ color: 0xccfbf1, transparent: true, opacity: 0.55 }), 418, JY + 0.06, -129, false);
   buildJungleBiome.waterfall = { fallSheet, mistPool };
-
-  [[-60, 1.6], [10, -1.8], [80, 1.2], [150, -1.5]].forEach(([rz, ox]) => {
+  const riverRockMat = makeMat(0x4b5563, { texType: 'cobblestone', repeatX: 2, repeatY: 2, roughness: 0.95 });
+  for (const [rz, ox] of [[-60, 1.6], [10, -1.8], [80, 1.2], [150, -1.5]]) {
     const bx = 418 + ox;
-    mesh(new THREE.DodecahedronGeometry(0.9, 0), makeMat(0x4b5563, { texType: 'cobblestone', repeatX: 2, repeatY: 2, roughness: 0.95 }), bx, JY - 0.15, rz);
+    mesh(new THREE.DodecahedronGeometry(0.9, 0), riverRockMat, bx, JY - 0.15, rz);
     addWorldBox(bx - 0.8, bx + 0.8, JY - 0.9, JY + 0.55, rz - 0.8, rz + 0.8, 'river_boulder', true);
-  });
+  }
   spawnRiverLog(grp, 419.5, 120);
-
   const teX = 456, teZ = -70, platW = 60, platD = 60, platH = 3;
-  const tePlatform = new THREE.Mesh(new THREE.BoxGeometry(platW, platH, platD), makeMat(0x57534e, { texType: 'cobblestone', repeatX: 8, repeatY: 8, roughness: 0.92 }));
-  tePlatform.position.set(teX, JY + platH / 2, teZ);
-  tePlatform.castShadow = true;
-  tePlatform.receiveShadow = true;
-  tePlatform.userData.studioName = 'Sun Temple platform';
-  worldRoot.add(tePlatform);
-  addWorldBox(teX - platW / 2, teX + platW / 2, JY, JY + platH, teZ - platD / 2, teZ + platD / 2, 'temple_platform', true);
-  const tRun = 12;
-  const tRamp = new THREE.Mesh(new THREE.BoxGeometry(12, 0.3, Math.hypot(tRun, platH)), makeMat(0x57534e, { texType: 'cobblestone', repeatX: 2, repeatY: 3 }));
-  tRamp.position.set(teX, JY + platH / 2 - 0.1, teZ + platD / 2 + tRun / 2);
-  tRamp.rotation.x = Math.atan2(platH, tRun);
-  tRamp.receiveShadow = true;
-  worldRoot.add(tRamp);
-  addDriveableRamp({ minX: teX - 6, maxX: teX + 6, minZ: teZ + platD / 2, maxZ: teZ + platD / 2 + tRun, startY: JY + platH, endY: JY, axis: 'z', dir: 1 });
-
   const teStoneMat = makeMat(0x57534e, { texType: 'cobblestone', repeatX: 8, repeatY: 8, roughness: 0.92 });
   const teMossStoneMat = makeMat(0x3f6212, { texType: 'cobblestone', repeatX: 6, repeatY: 6, roughness: 0.95 });
+  makeBox(worldRoot, platW, platH, platD, teX, JY + platH / 2, teZ, teStoneMat, {
+    cast: true, recv: true, name: 'Sun Temple platform',
+    box: [teX - platW / 2, teX + platW / 2, JY, JY + platH, teZ - platD / 2, teZ + platD / 2, 'temple_platform', true]
+  });
+  const tRun = 12;
+  makeBox(worldRoot, 12, 0.3, Math.hypot(tRun, platH), teX, JY + platH / 2 - 0.1, teZ + platD / 2 + tRun / 2,
+    makeMat(0x57534e, { texType: 'cobblestone', repeatX: 2, repeatY: 3 }), { recv: true, rx: Math.atan2(platH, tRun) });
+  addDriveableRamp({ minX: teX - 6, maxX: teX + 6, minZ: teZ + platD / 2, maxZ: teZ + platD / 2 + tRun, startY: JY + platH, endY: JY, axis: 'z', dir: 1 });
   let tierY = JY + platH;
-  [{ w: 40, d: 40 }, { w: 32, d: 32 }, { w: 24, d: 24 }, { w: 16, d: 16 }, { w: 8, d: 8 }].forEach((t, idx) => {
+  [[40, 40], [32, 32], [24, 24], [16, 16], [8, 8]].forEach(([w, d], idx) => {
     const h = 1.2;
-    const tm = new THREE.Mesh(new THREE.BoxGeometry(t.w, h, t.d), idx % 2 === 0 ? teStoneMat : teMossStoneMat);
-    tm.position.set(teX, tierY + h / 2, teZ);
-    tm.castShadow = true;
-    tm.receiveShadow = true;
-    worldRoot.add(tm);
-    addWorldBox(teX - t.w / 2, teX + t.w / 2, tierY, tierY + h, teZ - t.d / 2, teZ + t.d / 2, 'temple_tier', true);
+    makeBox(worldRoot, w, h, d, teX, tierY + h / 2, teZ, idx % 2 === 0 ? teStoneMat : teMossStoneMat, {
+      cast: true, recv: true,
+      box: [teX - w / 2, teX + w / 2, tierY, tierY + h, teZ - d / 2, teZ + d / 2, 'temple_tier', true]
+    });
     tierY += h;
   });
-  const teSummit = new THREE.Mesh(new THREE.BoxGeometry(3, 1.6, 3), teStoneMat);
-  teSummit.position.set(teX, tierY + 0.8, teZ);
-  teSummit.castShadow = true;
-  worldRoot.add(teSummit);
-  addWorldBox(teX - 1.5, teX + 1.5, tierY, tierY + 1.6, teZ - 1.5, teZ + 1.5, 'temple_summit', true);
+  makeBox(worldRoot, 3, 1.6, 3, teX, tierY + 0.8, teZ, teStoneMat, {
+    cast: true, box: [teX - 1.5, teX + 1.5, tierY, tierY + 1.6, teZ - 1.5, teZ + 1.5, 'temple_summit', true]
+  });
   const teRelic = new THREE.Mesh(new THREE.OctahedronGeometry(1.2, 0), makeMat(0xfacc15, { metalness: 0.9, roughness: 0.2 }));
   teRelic.position.set(teX, tierY + 2.8, teZ);
   teRelic.castShadow = true;
@@ -3238,60 +2787,41 @@ export function buildJungleBiome() {
   createNeonSign(worldRoot, 'ANCIENT SUN TEMPLE', teX, tierY + 4.4, teZ + 4, '#14532d', '#fde047', 6.5, 1.0);
   mapShapes.push({ x: teX, z: teZ, w: platW, d: platD, color: '#65a30d', border: '#facc15', enterable: false });
   buildWalkInHouse({ x: 454, z: 96, w: 10.6, d: 8.8, wallColor: 0x4d7c0f, roofColor: 0x78350f, label: 'JUNGLE RESEARCH STATION', baseY: JY });
-
   const vineMat = makeMat(0x4d7c0f, { roughness: 0.9 });
   const kapokParts = { trunk: [], root: [], c1: [], c2: [], c3: [], vine: [] };
-  const kd = new THREE.Object3D();
-  const pushKapok = (list, x, y, z, sx, sy, sz, ry = 0) => {
-    kd.position.set(x, y, z);
-    kd.scale.set(sx, sy, sz);
-    kd.rotation.set(0, ry, 0);
-    kd.updateMatrix();
-    list.push(kd.matrix.clone());
-  };
   const jungleClear = (x, z, r = 3) => {
     if (x < JX0 + 4 || x > JX1 - 4 || z < JZ0 + 4 || z > JZ1 - 4) return false;
     if (x > 408 - r && x < 428 + r) return false;
     if (Math.abs(z - 40) < 8 + r && x < 478) return false;
     if (x > teX - platW / 2 - r && x < teX + platW / 2 + r && z > teZ - platD / 2 - r && z < teZ + platD / 2 + tRun + r) return false;
-    if (Math.hypot(x - 454, z - 96) < 9 + r) return false;
-    if (Math.hypot(x - 418, z + 137) < 14 + r) return false;
+    if (dist2(x, z, 454, 96) < (9 + r) * (9 + r)) return false;
+    if (dist2(x, z, 418, -137) < (14 + r) * (14 + r)) return false;
     return true;
   };
   const spawnKapok = (x, z, s = 1) => {
     const h = 14 * s;
-    pushKapok(kapokParts.trunk, x, JY + h / 2, z, s, s, s);
+    xform(kapokParts.trunk, x, JY + h / 2, z, s, s, s);
     for (let r = 0; r < 4; r++) {
       const ang = (r * Math.PI) / 2 + 0.4;
-      pushKapok(kapokParts.root, x + Math.cos(ang) * 0.8 * s, JY + 1.5 * s, z + Math.sin(ang) * 0.8 * s, s, s, s, -ang);
+      xform(kapokParts.root, x + Math.cos(ang) * 0.8 * s, JY + 1.5 * s, z + Math.sin(ang) * 0.8 * s, s, s, s, 0, -ang, 0);
     }
-    pushKapok(kapokParts.c1, x, JY + h, z, 1.3 * s, 0.5 * s, 1.3 * s);
-    pushKapok(kapokParts.c2, x + 1.8 * s, JY + h + 1.5 * s, z - 1.2 * s, 1.3 * s, 0.48 * s, 1.3 * s);
-    pushKapok(kapokParts.c3, x - 1.5 * s, JY + h + 0.8 * s, z + 1.4 * s, 1.3 * s, 0.48 * s, 1.3 * s);
+    xform(kapokParts.c1, x, JY + h, z, 1.3 * s, 0.5 * s, 1.3 * s);
+    xform(kapokParts.c2, x + 1.8 * s, JY + h + 1.5 * s, z - 1.2 * s, 1.3 * s, 0.48 * s, 1.3 * s);
+    xform(kapokParts.c3, x - 1.5 * s, JY + h + 0.8 * s, z + 1.4 * s, 1.3 * s, 0.48 * s, 1.3 * s);
     for (let v = 0; v < 4; v++) {
-      const va = v * 1.8 + x;
-      const vLen = (3.2 + (v % 2) * 1.6) * s;
-      pushKapok(kapokParts.vine, x + Math.cos(va) * 2.8 * s, JY + h - vLen / 2 - 0.4, z + Math.sin(va) * 2.8 * s, 1, vLen, 1);
+      const va = v * 1.8 + x, vLen = (3.2 + (v % 2) * 1.6) * s;
+      xform(kapokParts.vine, x + Math.cos(va) * 2.8 * s, JY + h - vLen / 2 - 0.4, z + Math.sin(va) * 2.8 * s, 1, vLen, 1);
     }
     addWorldBox(x - 1.5 * s, x + 1.5 * s, JY, JY + h * 0.7, z - 1.5 * s, z + 1.5 * s, 'jungle_tree', false);
   };
   for (let i = 0, placed = 0; i < 400 && placed < 80; i++) {
-    const x = JX0 + 6 + rnd() * (JX1 - JX0 - 12);
-    const z = JZ0 + 6 + rnd() * (JZ1 - JZ0 - 12);
+    const x = JX0 + 6 + rnd() * (JX1 - JX0 - 12), z = JZ0 + 6 + rnd() * (JZ1 - JZ0 - 12);
     if (!jungleClear(x, z)) continue;
     spawnKapok(x, z, 0.9 + rnd() * 0.7);
     placed++;
   }
   {
-    const addKapok = (geo, mat, list, cast = true) => {
-      if (!list.length) return;
-      const im = new THREE.InstancedMesh(geo, mat, list.length);
-      list.forEach((m, i) => im.setMatrixAt(i, m));
-      im.instanceMatrix.needsUpdate = true;
-      im.castShadow = cast;
-      im.receiveShadow = true;
-      grp.add(im);
-    };
+    const addKapok = (geo, mat, list, cast = true) => flushInstances(grp, geo, mat, list, { cast, recv: true });
     addKapok(new THREE.CylinderGeometry(0.5, 0.8, 14, 8), treeBarkMaterial, kapokParts.trunk);
     addKapok(new THREE.BoxGeometry(0.4, 3, 2), treeBarkMaterial, kapokParts.root);
     addKapok(new THREE.DodecahedronGeometry(4.5, 1), treeLeafMaterial, kapokParts.c1);
@@ -3299,35 +2829,23 @@ export function buildJungleBiome() {
     addKapok(new THREE.DodecahedronGeometry(3.0, 1), treeLeafMaterial, kapokParts.c3);
     addKapok(new THREE.CylinderGeometry(0.05, 0.05, 1, 5), vineMat, kapokParts.vine, false);
   }
-
   const fernMat = makeMat(0x16a34a, { roughness: 0.85 });
   const boulderMat = makeMat(0x4b5563, { texType: 'cobblestone', repeatX: 2, repeatY: 2, roughness: 0.95 });
   const bloomColors = [0xf43f5e, 0xf59e0b, 0xa855f7, 0x38bdf8];
   const fernT = [];
-  const fd = new THREE.Object3D();
   for (let i = 0; i < 120; i++) {
-    const x = JX0 + 6 + rnd() * (JX1 - JX0 - 12);
-    const z = JZ0 + 6 + rnd() * (JZ1 - JZ0 - 12);
+    const x = JX0 + 6 + rnd() * (JX1 - JX0 - 12), z = JZ0 + 6 + rnd() * (JZ1 - JZ0 - 12);
     if (!jungleClear(x, z, 1)) continue;
-    fd.position.set(x, JY + 0.55, z);
-    fd.scale.set(1.4, 0.8, 1.4);
-    fd.rotation.set(0, rnd() * 6.28, 0);
-    fd.updateMatrix();
-    fernT.push(fd.matrix.clone());
+    xform(fernT, x, JY + 0.55, z, 1.4, 0.8, 1.4, 0, rnd() * 6.28, 0);
     if (i % 4 === 0) {
       mesh(new THREE.DodecahedronGeometry(1.5, 0), boulderMat, x + 1.5, JY + 0.8, z + 0.8);
       addWorldBox(x + 0.5, x + 2.5, JY, JY + 1.5, z - 0.3, z + 1.3, 'jungle_boulder', true);
     } else if (i % 3 === 0) {
-      mesh(new THREE.DodecahedronGeometry(0.35, 0), makeMat(pick(bloomColors), { emissive: pick(bloomColors), emissiveIntensity: 0.35 }), x, JY + 1.2, z, false);
+      mesh(new THREE.DodecahedronGeometry(0.35, 0),
+        makeMat(pick(bloomColors), { emissive: pick(bloomColors), emissiveIntensity: 0.35 }), x, JY + 1.2, z, false);
     }
   }
-  if (fernT.length) {
-    const ferns = new THREE.InstancedMesh(new THREE.ConeGeometry(1.4, 1.1, 8), fernMat, fernT.length);
-    fernT.forEach((m, i) => ferns.setMatrixAt(i, m));
-    ferns.instanceMatrix.needsUpdate = true;
-    ferns.receiveShadow = true;
-    grp.add(ferns);
-  }
+  flushInstances(grp, new THREE.ConeGeometry(1.4, 1.1, 8), fernMat, fernT, { recv: true });
 }
 
 // =============================================================================
@@ -3337,54 +2855,39 @@ export function buildJungleBiome() {
 const ARMORY = { x: 104, z: 494, w: 20, d: 22, h: 5.2, baseY: 0.24 };
 const ARMORY_DUMPSTER = { x: 99, z: 478 };
 const ARMORY_AMMO = { x: 97.2, z: 485.6, price: 60 };
-
 const armory = {
-  built: false,
-  cases: [],
-  dumpster: null,
-  dumpsterSearched: false,
-  hasHammer: false,
-  hammerMesh: null,
-  hammerInDumpster: null,
-  alarm: 0,
-  alarmLight: null,
-  alarmBeacon: null,
-  swing: 0,
-  ammoBox: null
+  built: false, cases: [], dumpster: null, dumpsterSearched: false, hasHammer: false,
+  hammerMesh: null, hammerInDumpster: null, alarm: 0, alarmLight: null, alarmBeacon: null,
+  swing: 0, ammoBox: null
 };
-
 const ARMORY_STOCK = [
   { id: 'hotdog_shooter', label: 'HOTDOG SHOOTER', price: 450, x: 99.5, z: 489.0 },
   { id: 'crowbar', label: 'STEEL CROWBAR', price: 220, x: 108.5, z: 489.0 },
   { id: 'pipe', label: 'TACTICAL PIPE', price: 180, x: 99.5, z: 498.0 },
   { id: 'bat', label: 'WOODEN BAT', price: 120, x: 108.5, z: 498.0 }
 ];
-
 function makeSledgehammer() {
   const g = new THREE.Group();
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.86, 8), makeMat(0xb45309, { texType: 'wood', repeatX: 1, repeatY: 3 }));
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.86, 8),
+    makeMat(0xb45309, { texType: 'wood', repeatX: 1, repeatY: 3 }));
   shaft.position.y = 0.30;
   shaft.castShadow = true;
   const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.22, 8), makeMat(0x1c1917, { roughness: 0.95 }));
   grip.position.y = -0.02;
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.13, 0.13), makeMat(0x94a3b8, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.28, flatShading: false }));
-  head.position.y = 0.74;
-  head.castShadow = true;
+  const head = makeBox(g, 0.30, 0.13, 0.13, 0, 0.74, 0,
+    makeMat(0x94a3b8, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.28, flatShading: false }), { cast: true });
   const face = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.07, 10), makeMat(0xcbd5e1, { metalness: 0.95, roughness: 0.2 }));
   face.rotation.z = Math.PI / 2;
   face.position.set(0.18, 0.74, 0);
-  const claw = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.10, 0.05), makeMat(0x64748b, { metalness: 0.9, roughness: 0.3 }));
-  claw.position.set(-0.19, 0.74, 0);
-  claw.rotation.z = 0.35;
+  const claw = makeBox(g, 0.14, 0.10, 0.05, -0.19, 0.74, 0, makeMat(0x64748b, { metalness: 0.9, roughness: 0.3 }), { rz: 0.35 });
+  g.remove(head, claw);
   g.add(shaft, grip, head, face, claw);
   return g;
 }
-
 function buildArmoryCase(stock) {
   const g = new THREE.Group();
   g.position.set(stock.x, ARMORY.baseY, stock.z);
   g.userData.studioName = `Display case: ${stock.label}`;
-
   const cabinet = makeMat(0x1c1917, { texType: 'wood', repeatX: 2, repeatY: 1, roughness: 0.6 });
   const steel = makeMat(0xcbd5e1, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.2, flatShading: false });
   const glassMat = new THREE.MeshStandardMaterial({
@@ -3392,44 +2895,29 @@ function buildArmoryCase(stock) {
     metalness: 0.12, side: THREE.DoubleSide, depthWrite: false,
     emissive: 0x1e3a5f, emissiveIntensity: 0.25
   });
-
-  const base = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.9, 1.5), cabinet);
-  base.position.y = 0.45;
-  base.castShadow = true; base.receiveShadow = true;
-  const top = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.08, 1.6), steel);
-  top.position.y = 0.94;
-  const glass = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.5, 1.3), glassMat);
-  glass.position.y = 1.73;
-  glass.renderOrder = 3;
-
+  const base = makeBox(g, 2.6, 0.9, 1.5, 0, 0.45, 0, cabinet, { cast: true, recv: true });
+  const top = makeBox(g, 2.7, 0.08, 1.6, 0, 0.94, 0, steel);
+  const glass = makeBox(g, 2.4, 1.5, 1.3, 0, 1.73, 0, glassMat, { order: 3 });
   const frameParts = [];
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.07, 1.5, 0.07), steel);
-    post.position.set(sx * 1.2, 1.73, sz * 0.65);
-    frameParts.push(post);
+    frameParts.push(makeBox(g, 0.07, 1.5, 0.07, sx * 1.2, 1.73, sz * 0.65, steel));
   }
-  const rim = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.08, 1.4), steel);
-  rim.position.y = 2.50;
+  const rim = makeBox(g, 2.5, 0.08, 1.4, 0, 2.50, 0, steel);
   frameParts.push(rim);
-
   const prop = buildPickupMesh('right', stock.id);
   if (prop.children.length > 1) prop.remove(prop.children[prop.children.length - 1]);
   prop.scale.setScalar(1.7);
   prop.position.set(0, 1.62, 0);
   prop.rotation.set(0.2, 0, 0.35);
-
   const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 0.16, 10), steel);
   stand.position.y = 1.06;
-
   createNeonSign(g, `$${stock.price}`, 0, 0.62, 0.78, '#0b1220', '#facc15', 1.5, 0.42);
   createNeonSign(g, stock.label, 0, 2.78, 0, '#0b1220', '#38bdf8', 2.5, 0.36);
-
+  g.remove(base, top, glass, rim, ...frameParts);
   g.add(base, top, glass, rim, stand, prop, ...frameParts);
   worldRoot.add(g);
-
   const baseBox = addWorldBox(stock.x - 1.3, stock.x + 1.3, ARMORY.baseY, ARMORY.baseY + 0.98, stock.z - 0.75, stock.z + 0.75, 'armory_case', true);
   const glassBox = addWorldBox(stock.x - 1.2, stock.x + 1.2, ARMORY.baseY + 0.98, ARMORY.baseY + 2.5, stock.z - 0.65, stock.z + 0.65, 'armory_glass', false);
-
   const rec = {
     id: stock.id, label: stock.label, price: stock.price,
     x: stock.x, z: stock.z, group: g, glass, prop, glassBox, baseBox,
@@ -3438,25 +2926,18 @@ function buildArmoryCase(stock) {
   armory.cases.push(rec);
   return rec;
 }
-
 function buildArmoryDumpster() {
   const g = new THREE.Group();
   g.position.set(ARMORY_DUMPSTER.x, 0.24, ARMORY_DUMPSTER.z);
   g.userData.studioName = 'Armory dumpster';
   const body = makeMat(0x15803d, { texType: 'corrugated', repeatX: 4, repeatY: 2, metalness: 0.6, roughness: 0.55 });
   const dark = makeMat(0x14532d, { roughness: 0.7 });
-
-  const shell = new THREE.Mesh(new THREE.BoxGeometry(3.6, 1.5, 2.2), body);
-  shell.position.y = 0.85;
-  shell.castShadow = true; shell.receiveShadow = true;
-  const inner = new THREE.Mesh(new THREE.BoxGeometry(3.3, 1.2, 1.9), makeMat(0x0a0f0a, { roughness: 1 }));
-  inner.position.y = 1.05;
-  const lid = new THREE.Mesh(new THREE.BoxGeometry(3.7, 0.12, 2.3), dark);
-  lid.position.set(0, 1.68, -0.75);
-  lid.rotation.x = -0.85;
-  lid.castShadow = true;
+  const shell = makeBox(g, 3.6, 1.5, 2.2, 0, 0.85, 0, body, { cast: true, recv: true });
+  const inner = makeBox(g, 3.3, 1.2, 1.9, 0, 1.05, 0, makeMat(0x0a0f0a, { roughness: 1 }));
+  const lid = makeBox(g, 3.7, 0.12, 2.3, 0, 1.68, -0.75, dark, { cast: true, rx: -0.85 });
+  const wheelMat = makeMat(0x1c1917);
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.12, 8), makeMat(0x1c1917));
+    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.12, 8), wheelMat);
     wheel.rotation.z = Math.PI / 2;
     wheel.position.set(sx * 1.5, 0.16, sz * 0.85);
     g.add(wheel);
@@ -3469,40 +2950,30 @@ function buildArmoryDumpster() {
     g.add(bag);
   }
   createNeonSign(g, 'AURA DISPOSAL', 0, 0.95, 1.13, '#14532d', '#bbf7d0', 2.6, 0.5);
-
   const hammer = makeSledgehammer();
   hammer.position.set(0.75, 1.30, 0.35);
   hammer.rotation.set(0.4, 0.6, 1.15);
   hammer.scale.setScalar(1.05);
   g.add(hammer);
   armory.hammerInDumpster = hammer;
-
+  g.remove(shell, inner, lid);
   g.add(shell, inner, lid);
   worldRoot.add(g);
   addWorldBox(ARMORY_DUMPSTER.x - 1.8, ARMORY_DUMPSTER.x + 1.8, 0.24, 1.75, ARMORY_DUMPSTER.z - 1.1, ARMORY_DUMPSTER.z + 1.1, 'dumpster', true);
   armory.dumpster = g;
-
   // Alley dressing
-  const pallet = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.16, 1.2), makeMat(0x78350f, { texType: 'wood' }));
-  pallet.position.set(109.5, 0.32, 478.5);
-  pallet.castShadow = true;
-  worldRoot.add(pallet);
-  addWorldBox(108.7, 110.3, 0.24, 0.40, 477.9, 479.1, 'pallet', true);
-  const crate = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.0, 1.1), makeMat(0xc2853e, { texType: 'wood' }));
-  crate.position.set(109.5, 0.9, 478.5);
-  crate.castShadow = true;
-  worldRoot.add(crate);
-  addWorldBox(108.95, 110.05, 0.40, 1.40, 477.95, 479.05, 'alley_crate', true);
-
-  const alleyLamp = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.22, 0.3), makeMat(0xfef08a, { emissive: 0xfacc15, emissiveIntensity: 1.1 }));
-  alleyLamp.position.set(104, 3.6, 482.6);
-  worldRoot.add(alleyLamp);
+  makeBox(worldRoot, 1.6, 0.16, 1.2, 109.5, 0.32, 478.5, makeMat(0x78350f, { texType: 'wood' }), {
+    cast: true, box: [108.7, 110.3, 0.24, 0.40, 477.9, 479.1, 'pallet', true]
+  });
+  makeBox(worldRoot, 1.1, 1.0, 1.1, 109.5, 0.9, 478.5, makeMat(0xc2853e, { texType: 'wood' }), {
+    cast: true, box: [108.95, 110.05, 0.40, 1.40, 477.95, 479.05, 'alley_crate', true]
+  });
+  makeBox(worldRoot, 0.5, 0.22, 0.3, 104, 3.6, 482.6, makeMat(0xfef08a, { emissive: 0xfacc15, emissiveIntensity: 1.1 }));
   const alleyLight = new THREE.PointLight(0xffd9a0, 2.2, 16, 2);
   alleyLight.position.set(104, 3.4, 480.5);
   worldRoot.add(alleyLight);
   createNeonSign(worldRoot, 'STAFF ONLY', 104, 2.6, 482.85, '#1c1917', '#f87171', 2.4, 0.45);
 }
-
 export function buildFirearmsArmory() {
   armory.built = true;
   armory.cases.length = 0;
@@ -3510,128 +2981,86 @@ export function buildFirearmsArmory() {
   armory.hasHammer = false;
   armory.alarm = 0;
   armory.swing = 0;
-
   const { x, z, w, d, h, baseY } = ARMORY;
-  const wallThick = 0.4, doorW = 3.2, doorH = 3.0;
+  const t = 0.4, doorW = 3.2, doorH = 3.0;
   const g = new THREE.Group();
   g.position.set(x, baseY, z);
   g.userData.studioName = 'AURA ARMORY';
-
   const wallMat = makeMat(0x27272a, { texType: 'concrete', repeatX: 5, repeatY: 2, roughness: 0.72 });
   const trimMat = makeMat(0xdc2626, { metalness: 0.55, roughness: 0.35 });
-  const floorMat = makeMat(0x3f3f46, { texType: 'concrete', repeatX: 6, repeatY: 6, roughness: 0.55 });
-
-  const floor = new THREE.Mesh(new THREE.BoxGeometry(w - 0.2, 0.1, d - 0.2), floorMat);
-  floor.position.y = 0.05;
-  floor.receiveShadow = true;
-  const backW = new THREE.Mesh(new THREE.BoxGeometry(w, h, wallThick), wallMat);
-  backW.position.set(0, h / 2, -d / 2 + wallThick / 2);
-  backW.castShadow = true;
-
+  const floor = makeBox(g, w - 0.2, 0.1, d - 0.2, 0, 0.05, 0,
+    makeMat(0x3f3f46, { texType: 'concrete', repeatX: 6, repeatY: 6, roughness: 0.55 }), { recv: true });
+  const backW = makeBox(g, w, h, t, 0, h / 2, -d / 2 + t / 2, wallMat, { cast: true });
   const leftW = new THREE.Group();
-  leftW.position.set(-w / 2 + wallThick / 2, 0, 0);
+  leftW.position.set(-w / 2 + t / 2, 0, 0);
   leftW.rotation.y = Math.PI / 2;
-  buildWallWithRealWindow(leftW, d - wallThick * 2, h, wallThick, 3.0, 1.6, 2.6, wallMat, false);
+  buildWallWithRealWindow(leftW, d - t * 2, h, t, 3.0, 1.6, 2.6, wallMat, false);
   const rightW = new THREE.Group();
-  rightW.position.set(w / 2 - wallThick / 2, 0, 0);
+  rightW.position.set(w / 2 - t / 2, 0, 0);
   rightW.rotation.y = -Math.PI / 2;
-  buildWallWithRealWindow(rightW, d - wallThick * 2, h, wallThick, 3.0, 1.6, 2.6, wallMat, false);
-
+  buildWallWithRealWindow(rightW, d - t * 2, h, t, 3.0, 1.6, 2.6, wallMat, false);
   const segW = (w - doorW) / 2;
   const frontL = new THREE.Group();
-  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontL, segW, h, wallThick, segW - 1.0, 2.4, 2.1, wallMat, false);
+  frontL.position.set(-(doorW / 2 + segW / 2), 0, d / 2 - t / 2);
+  buildWallWithRealWindow(frontL, segW, h, t, segW - 1.0, 2.4, 2.1, wallMat, false);
   const frontR = new THREE.Group();
-  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - wallThick / 2);
-  buildWallWithRealWindow(frontR, segW, h, wallThick, segW - 1.0, 2.4, 2.1, wallMat, false);
-  const header = new THREE.Mesh(new THREE.BoxGeometry(doorW, h - doorH, wallThick), wallMat);
-  header.position.set(0, doorH + (h - doorH) / 2, d / 2 - wallThick / 2);
-
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 0.8, 0.4, d + 0.8), wallMat);
-  roof.position.y = h + 0.2;
-  roof.castShadow = true;
-  const fascia = new THREE.Mesh(new THREE.BoxGeometry(w + 1.0, 0.34, d + 1.0), trimMat);
-  fascia.position.y = h + 0.02;
-
+  frontR.position.set(doorW / 2 + segW / 2, 0, d / 2 - t / 2);
+  buildWallWithRealWindow(frontR, segW, h, t, segW - 1.0, 2.4, 2.1, wallMat, false);
+  const header = makeBox(g, doorW, h - doorH, t, 0, doorH + (h - doorH) / 2, d / 2 - t / 2, wallMat);
+  const roof = makeBox(g, w + 0.8, 0.4, d + 0.8, 0, h + 0.2, 0, wallMat, { cast: true });
+  const fascia = makeBox(g, w + 1.0, 0.34, d + 1.0, 0, h + 0.02, 0, trimMat);
   createNeonSign(g, 'AURA ARMORY', 0, 4.35, d / 2 + 0.16, '#0b0b0f', '#ef4444', 9.0, 1.25);
   createNeonSign(g, 'FIREARMS  •  AMMO  •  MELEE', 0, 3.35, d / 2 + 0.16, '#0b0b0f', '#facc15', 8.0, 0.6);
-
   // Interior fit-out lives in a distance-culled group.
   const inn = new THREE.Group();
   const slat = makeMat(0x52525b, { texType: 'corrugated', repeatX: 8, repeatY: 2, metalness: 0.5, roughness: 0.6 });
   const steel = makeMat(0xe2e8f0, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.18, flatShading: false });
   const counterMat = makeMat(0x1c1917, { texType: 'wood', repeatX: 3, repeatY: 1 });
-
-  const slatBack = new THREE.Mesh(new THREE.BoxGeometry(w - 1.2, 3.0, 0.14), slat);
-  slatBack.position.set(0, 2.0, -d / 2 + 0.55);
-  inn.add(slatBack);
-
-  const counter = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.05, 6.0), counterMat);
-  counter.position.set(w / 2 - 1.5, 0.55, 0.5);
-  const counterTop = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.1, 6.2), steel);
-  counterTop.position.set(w / 2 - 1.5, 1.12, 0.5);
-  const register = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.45, 0.55), makeMat(0x0f172a, { metalness: 0.6 }));
-  register.position.set(w / 2 - 1.5, 1.4, 2.0);
-  const registerScreen = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.3, 0.05), makeMat(0x22d3ee, { emissive: 0x0891b2, emissiveIntensity: 0.8 }));
-  registerScreen.position.set(w / 2 - 1.5, 1.5, 2.3);
-  inn.add(counter, counterTop, register, registerScreen);
+  makeBox(inn, w - 1.2, 3.0, 0.14, 0, 2.0, -d / 2 + 0.55, slat);
+  makeBox(inn, 1.5, 1.05, 6.0, w / 2 - 1.5, 0.55, 0.5, counterMat);
+  makeBox(inn, 1.7, 0.1, 6.2, w / 2 - 1.5, 1.12, 0.5, steel);
+  makeBox(inn, 0.7, 0.45, 0.55, w / 2 - 1.5, 1.4, 2.0, makeMat(0x0f172a, { metalness: 0.6 }));
+  makeBox(inn, 0.5, 0.3, 0.05, w / 2 - 1.5, 1.5, 2.3, makeMat(0x22d3ee, { emissive: 0x0891b2, emissiveIntensity: 0.8 }));
   addWorldBox(x + w / 2 - 2.35, x + w / 2 - 0.65, baseY, baseY + 1.17, z - 2.5, z + 3.5, 'armory_counter', true);
-
   // Ammo shelf + purchasable sausage crate
-  const shelf = new THREE.Mesh(new THREE.BoxGeometry(3.0, 2.2, 0.6), slat);
-  shelf.position.set(-w / 2 + 2.0, 1.1, -d / 2 + 1.0);
-  inn.add(shelf);
-  for (let r = 0; r < 3; r++) {
-    for (let c = 0; c < 5; c++) {
-      const box = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.3, 0.34), makeMat(r % 2 ? 0xd97706 : 0xb91c1c, { roughness: 0.6 }));
-      box.position.set(-w / 2 + 0.9 + c * 0.52, 0.55 + r * 0.62, -d / 2 + 1.35);
-      inn.add(box);
-    }
+  makeBox(inn, 3.0, 2.2, 0.6, -w / 2 + 2.0, 1.1, -d / 2 + 1.0, slat);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 5; c++) {
+    makeBox(inn, 0.42, 0.3, 0.34, -w / 2 + 0.9 + c * 0.52, 0.55 + r * 0.62, -d / 2 + 1.35,
+      makeMat(r % 2 ? 0xd97706 : 0xb91c1c, { roughness: 0.6 }));
   }
-  const ammoCrate = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.8, 0.9), makeMat(0xd97706, { texType: 'wood' }));
-  ammoCrate.position.set(ARMORY_AMMO.x - x, 0.4, ARMORY_AMMO.z - z);
-  ammoCrate.castShadow = true;
-  inn.add(ammoCrate);
+  const ammoCrate = makeBox(inn, 1.1, 0.8, 0.9, ARMORY_AMMO.x - x, 0.4, ARMORY_AMMO.z - z,
+    makeMat(0xd97706, { texType: 'wood' }), { cast: true });
   armory.ammoBox = ammoCrate;
   addWorldBox(ARMORY_AMMO.x - 0.55, ARMORY_AMMO.x + 0.55, baseY, baseY + 0.8, ARMORY_AMMO.z - 0.45, ARMORY_AMMO.z + 0.45, 'armory_ammo', true);
-
   for (const lx of [-5.5, 0, 5.5]) {
-    const strip = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.1, 0.5), makeMat(0xfff7d6, { emissive: 0xfff7d6, emissiveIntensity: 0.9 }));
-    strip.position.set(lx, h - 0.35, 0);
-    inn.add(strip);
+    makeBox(inn, 3.4, 0.1, 0.5, lx, h - 0.35, 0, makeMat(0xfff7d6, { emissive: 0xfff7d6, emissiveIntensity: 0.9 }));
   }
   const shopLight = new THREE.PointLight(0xfff1d6, 2.4, 26, 2);
   shopLight.position.set(0, h - 1.0, 0);
   inn.add(shopLight);
-
   createNeonSign(inn, 'LICENSED DEALER  •  NO REFUNDS', 0, 3.9, -d / 2 + 0.7, '#0b0b0f', '#a1a1aa', 7.0, 0.5);
   createNeonSign(inn, 'SAUSAGE AMMO  [E] $60', ARMORY_AMMO.x - x, 1.5, ARMORY_AMMO.z - z + 0.6, '#7f1d1d', '#fef08a', 2.8, 0.45);
-
+  g.remove(floor, backW, header, roof, fascia);
   g.add(floor, backW, leftW, rightW, frontL, frontR, header, roof, fascia, inn);
   worldRoot.add(g);
   (aura.culls || []).push({ g: inn, x, z, r: 80 });
-
   const minX = x - w / 2, maxX = x + w / 2, minZ = z - d / 2, maxZ = z + d / 2;
-  addWorldBox(minX, maxX, baseY, baseY + h, minZ, minZ + wallThick, 'wall', false);
-  addWorldBox(minX, minX + wallThick, baseY, baseY + h, minZ, maxZ, 'wall', false);
-  addWorldBox(maxX - wallThick, maxX, baseY, baseY + h, minZ, maxZ, 'wall', false);
-  addWorldBox(minX, x - doorW / 2, baseY, baseY + h, maxZ - wallThick, maxZ, 'wall', false);
-  addWorldBox(x + doorW / 2, maxX, baseY, baseY + h, maxZ - wallThick, maxZ, 'wall', false);
+  addWorldBox(minX, maxX, baseY, baseY + h, minZ, minZ + t, 'wall', false);
+  addWorldBox(minX, minX + t, baseY, baseY + h, minZ, maxZ, 'wall', false);
+  addWorldBox(maxX - t, maxX, baseY, baseY + h, minZ, maxZ, 'wall', false);
+  addWorldBox(minX, x - doorW / 2, baseY, baseY + h, maxZ - t, maxZ, 'wall', false);
+  addWorldBox(x + doorW / 2, maxX, baseY, baseY + h, maxZ - t, maxZ, 'wall', false);
   addWorldBox(minX, maxX, baseY + h - 0.1, baseY + h + 0.4, minZ, maxZ, 'roof', true);
-  addWorldBox(minX + wallThick, maxX - wallThick, baseY, baseY + 0.10, minZ + wallThick, maxZ - wallThick, 'armory_floor', true);
-
+  addWorldBox(minX + t, maxX - t, baseY, baseY + 0.10, minZ + t, maxZ - t, 'armory_floor', true);
   enterableZones.push({ minX: minX + 0.4, maxX: maxX - 0.4, minZ: minZ + 0.4, maxZ: maxZ - 0.3, name: 'AURA ARMORY' });
   mapShapes.push({ x, z, w, d, color: '#dc2626', border: '#facc15', enterable: true });
-
   for (const stock of ARMORY_STOCK) buildArmoryCase(stock);
   buildArmoryDumpster();
-
   armory.hammerMesh = makeSledgehammer();
   armory.hammerMesh.visible = false;
   armory.hammerMesh.scale.setScalar(0.95);
   armory.hammerMesh.userData.studioSelectable = false;
   worldRoot.add(armory.hammerMesh);
-
   const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), new THREE.MeshBasicMaterial({ color: 0xef4444 }));
   beacon.position.set(x, baseY + h + 0.8, z + d / 2 - 0.5);
   beacon.visible = false;
@@ -3641,34 +3070,28 @@ export function buildFirearmsArmory() {
   alarmLight.position.set(x, baseY + 3.4, z);
   worldRoot.add(alarmLight);
   armory.alarmLight = alarmLight;
-
   // Chain the armory into the existing world interaction hooks.
   const prevHint = aura.ahHint, prevF = aura.ahF;
   aura.ahHint = () => armoryHintText() || (prevHint ? prevHint() : '');
   aura.ahF = () => { if (armorySmash()) return; if (prevF) prevF(); };
 }
-
 function armoryActive() {
   return armory.built && gameState.screen === 'playing' && !gameState.inCar
     && !gameState.inventoryOpen && !gameState.mapOpen && !gameState.settingsOpen
     && !under() && player.y > -1;
 }
-
 function armoryTarget() {
   if (!armoryActive()) return null;
   let best = null;
   const consider = (kind, x, z, range, data) => {
-    const dd = Math.hypot(player.x - x, player.z - z);
-    if (dd < range && Math.abs(player.y - 0.24) < 2.4 && (!best || dd < best.dist)) {
-      best = { kind, dist: dd, data };
-    }
+    const d2 = dist2(player.x, player.z, x, z);
+    if (d2 < range * range && Math.abs(player.y - 0.24) < 2.4 && (!best || d2 < best.d2)) best = { kind, d2, data };
   };
   if (!armory.dumpsterSearched) consider('dumpster', ARMORY_DUMPSTER.x, ARMORY_DUMPSTER.z, 3.0, null);
   consider('ammo', ARMORY_AMMO.x, ARMORY_AMMO.z, 2.6, null);
   for (const c of armory.cases) if (!c.smashed) consider('case', c.x, c.z, 2.6, c);
   return best;
 }
-
 function armoryHintText() {
   const t = armoryTarget();
   if (!t) return '';
@@ -3676,9 +3099,8 @@ function armoryHintText() {
   if (t.kind === 'ammo') return `[E] BUY 60 SAUSAGES — $${ARMORY_AMMO.price}`;
   const c = t.data;
   const buy = gameState.cash >= c.price ? `[E] BUY $${c.price}` : `[E] BUY $${c.price} (SHORT $${c.price - gameState.cash})`;
-  return armory.hasHammer ? `${buy}   ·   [F] SMASH CASE` : `${buy}   ·   REINFORCED GLASS`;
+  return armory.hasHammer ? `${buy} · [F] SMASH CASE` : `${buy} · REINFORCED GLASS`;
 }
-
 function armoryEquip(id) {
   if (!gameState.rightWeapons.includes(id)) gameState.rightWeapons.push(id);
   gameState.activeRightWeapon = id;
@@ -3686,7 +3108,6 @@ function armoryEquip(id) {
   hooks.syncEquippedMeshes();
   hooks.updateHUD(true);
 }
-
 /** [E] — cash-gated purchase, dumpster search, ammo refill. */
 function armoryBuy() {
   const t = armoryTarget();
@@ -3711,7 +3132,7 @@ function armoryBuy() {
     gameState.hotdogAmmo = MAX_HOTDOG_AMMO;
     sfx.pickup();
     hooks.updateHUD(true);
-    pushFeed(`BOUGHT 60 SAUSAGES  -$${ARMORY_AMMO.price}`, 'border-l-amber-400');
+    pushFeed(`BOUGHT 60 SAUSAGES -$${ARMORY_AMMO.price}`, 'border-l-amber-400');
     hooks.mpWorldEvent({ t: 'armory_ammo' });
     return true;
   }
@@ -3725,11 +3146,10 @@ function armoryBuy() {
   armoryEquip(c.id);
   sfx.pickup();
   spawnParticles(c.x, 2.0, c.z, 0xfacc15, 8, 3.5);
-  pushFeed(`PURCHASED ${c.label}  -$${c.price}`, 'border-l-emerald-400');
+  pushFeed(`PURCHASED ${c.label} -$${c.price}`, 'border-l-emerald-400');
   hooks.mpWorldEvent({ t: 'armory_buy', id: c.id });
   return true;
 }
-
 /** [F] — smash the vitrine with the sledgehammer and take the weapon. */
 function armorySmash() {
   const t = armoryTarget();
@@ -3747,7 +3167,6 @@ function armorySmash() {
   if (gi !== -1) worldBoxes.splice(gi, 1);
   armory.swing = 1;
   armory.alarm = 45;
-
   sfx.smash();
   spawnParticles(c.x, 1.9, c.z, 0xbfe6ff, 16, 7.0);
   spawnParticles(c.x, 1.9, c.z, 0xffffff, 10, 5.5);
@@ -3757,7 +3176,6 @@ function armorySmash() {
   hooks.mpWorldEvent({ t: 'armory_smash', id: c.id });
   return true;
 }
-
 let armoryKeyBound = false;
 function bindArmoryKey() {
   if (armoryKeyBound) return;
@@ -3769,7 +3187,6 @@ function bindArmoryKey() {
     if (armoryBuy()) e.preventDefault();
   });
 }
-
 const _hammerV = new THREE.Vector3();
 function updateArmory(dt, elapsed) {
   if (!armory.built) return;
@@ -3779,17 +3196,15 @@ function updateArmory(dt, elapsed) {
     c.prop.rotation.y = c.spin;
   }
   if (armory.swing > 0) armory.swing = Math.max(0, armory.swing - dt * 3.2);
-
   if (armory.alarm > 0) {
     armory.alarm -= dt;
     const pulse = (Math.sin(elapsed * 12) + 1) * 0.5;
     if (armory.alarmLight) armory.alarmLight.intensity = 1.2 + pulse * 5.0;
-    if (armory.alarmBeacon) { armory.alarmBeacon.visible = pulse > 0.4; }
+    if (armory.alarmBeacon) armory.alarmBeacon.visible = pulse > 0.4;
   } else {
     if (armory.alarmLight) armory.alarmLight.intensity = 0;
     if (armory.alarmBeacon) armory.alarmBeacon.visible = false;
   }
-
   const hm = armory.hammerMesh;
   if (!hm) return;
   const show = armory.hasHammer && !gameState.inCar && gameState.screen === 'playing';
@@ -3817,9 +3232,7 @@ export function buildGroundIntegrity() {
   grp.userData.studioName = 'Ground integrity';
   grp.userData.studioSelectable = false;
   worldRoot.add(grp);
-
   const rockSide = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true });
-
   /** Terrain panel built from the exact collision heightfield. */
   const rangePanel = (x0, x1, z0, z1, sx, sz, name) => {
     const geo = new THREE.PlaneGeometry(x1 - x0, z0 - z1, sx, sz);
@@ -3828,8 +3241,7 @@ export function buildGroundIntegrity() {
     const col = new Float32Array(pos.count * 3);
     const c = new THREE.Color(), c2 = new THREE.Color();
     for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i) + (x0 + x1) / 2;
-      const z = pos.getZ(i) + (z0 + z1) / 2;
+      const x = pos.getX(i) + (x0 + x1) / 2, z = pos.getZ(i) + (z0 + z1) / 2;
       const hh = terrainBaseH(x, z);
       pos.setXYZ(i, x, hh - 0.1, z);
       const n = fbm(x * 0.05, z * 0.05, 3);
@@ -3846,31 +3258,20 @@ export function buildGroundIntegrity() {
     grp.add(m);
     return m;
   };
-
   // The collision heightfield runs the mountain formula for ANY x north of
   // z = -170. These panels give that invisible ground a visible surface.
   rangePanel(-720, -196, -170, -600, 132, 108, 'Northwest range');
   rangePanel(424, 560, -170, -600, 46, 108, 'Northeast range');
-
-  // Shoreline patches
   const sand = makeMat(0xe8d3a2, { texType: 'sand', repeatX: 6, repeatY: 6, roughness: 0.96 });
-  const patch = (x0, x1, z0, z1, y, mat, name) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, 0.4, z1 - z0), mat);
-    m.position.set((x0 + x1) / 2, y - 0.2, (z0 + z1) / 2);
-    m.receiveShadow = true;
-    m.userData.studioName = name;
-    grp.add(m);
-    addWorldBox(x0, x1, y - 0.4, y, z0, z1, 'ground_patch', true);
-  };
+  const patch = (x0, x1, z0, z1, y, mat, name) => makeBox(grp, x1 - x0, 0.4, z1 - z0,
+    (x0 + x1) / 2, y - 0.2, (z0 + z1) / 2, mat, {
+      recv: true, name, box: [x0, x1, y - 0.4, y, z0, z1, 'ground_patch', true]
+    });
   patch(138, 164, 190, 208, 0.17, sand, 'Cove east shore');
   patch(368, 533, 240, 320, 0.17, sand, 'North jungle shore');
-
   // Jungle north lip: closes the 1.33 step down to the new shore.
-  const lip = new THREE.Mesh(new THREE.BoxGeometry(165, 1.5, 0.6), makeMat(0x4a3f2c, { texType: 'redrock', repeatX: 16, repeatY: 1, roughness: 0.95 }));
-  lip.position.set(450.5, 0.85, 240.3);
-  lip.receiveShadow = true;
-  grp.add(lip);
-
+  makeBox(grp, 165, 1.5, 0.6, 450.5, 0.85, 240.3,
+    makeMat(0x4a3f2c, { texType: 'redrock', repeatX: 16, repeatY: 1, roughness: 0.95 }), { recv: true });
   // Dark backstop under all northern & western land — the last guarantee.
   const backstopMat = new THREE.MeshStandardMaterial({ color: 0x2b3129, roughness: 1 });
   const backstop = (x0, x1, z0, z1, name) => {
@@ -3889,68 +3290,49 @@ export function buildGroundIntegrity() {
 // COUNTY LINE — proximity-fade perimeter barrier
 // =============================================================================
 const barrierChunks = [];
-
 export function buildEdgeBarrier() {
   barrierChunks.length = 0;
   const root = new THREE.Group();
   root.userData.studioName = 'Aura county line';
   root.userData.studioSelectable = false;
   worldRoot.add(root);
-
   const minX = WORLD_BOUNDS.minX + 3, maxX = WORLD_BOUNDS.maxX - 3;
   const minZ = WORLD_BOUNDS.minZ + 3, maxZ = WORLD_BOUNDS.maxZ - 3;
   const CHUNK = 46;
-
   const themeAt = (x, z) => {
     if (z < -170) return { body: 0x6b6257, cap: 0x8a8175, label: 'AVALANCHE ZONE' };
     if (x < -196) return { body: 0x57534e, cap: 0x78716c, label: 'BACKCOUNTRY CLOSED' };
     if (x > 424) return { body: 0x4d7c0f, cap: 0x65a30d, label: 'JUNGLE RESERVE' };
     return { body: 0xd1d5db, cap: 0xef4444, label: 'END OF AURA COUNTY' };
   };
-
   const makeChunk = (cx, cz, alongX, len, index) => {
     const theme = themeAt(cx, cz);
     const g = new THREE.Group();
     g.position.set(cx, 0, cz);
     g.visible = false;
-
     const bodyMat = new THREE.MeshStandardMaterial({
-      color: theme.body, roughness: 0.88, metalness: 0.05,
-      transparent: true, opacity: 0, depthWrite: false
+      color: theme.body, roughness: 0.88, metalness: 0.05, transparent: true, opacity: 0, depthWrite: false
     });
     const capMat = new THREE.MeshStandardMaterial({
       color: theme.cap, roughness: 0.5, metalness: 0.2,
-      emissive: theme.cap, emissiveIntensity: 0.35,
-      transparent: true, opacity: 0, depthWrite: false
+      emissive: theme.cap, emissiveIntensity: 0.35, transparent: true, opacity: 0, depthWrite: false
     });
-
-    const w = alongX ? len : 1.1;
-    const d = alongX ? 1.1 : len;
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 2.6, d), bodyMat);
-    wall.position.y = 1.3;
-    const cap = new THREE.Mesh(new THREE.BoxGeometry(alongX ? len : 1.3, 0.24, alongX ? 1.3 : len), capMat);
-    cap.position.y = 2.72;
-    g.add(wall, cap);
-
+    makeBox(g, alongX ? len : 1.1, 2.6, alongX ? 1.1 : len, 0, 1.3, 0, bodyMat);
+    makeBox(g, alongX ? len : 1.3, 0.24, alongX ? 1.3 : len, 0, 2.72, 0, capMat);
     const postCount = Math.max(2, Math.round(len / 12));
     for (let i = 0; i <= postCount; i++) {
       const t = (i / postCount - 0.5) * len;
-      const marker = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.5, 0.22), capMat);
-      marker.position.set(alongX ? t : 0, 3.05, alongX ? 0 : t);
-      g.add(marker);
+      makeBox(g, 0.22, 0.5, 0.22, alongX ? t : 0, 3.05, alongX ? 0 : t, capMat);
     }
-
     if (index % 4 === 0) {
       const sign = createNeonSign(g, theme.label, 0, 3.9, 0, '#0b0b0f', '#facc15', 9.0, 1.0);
       if (!alongX) sign.rotation.y = Math.PI / 2;
       sign.material.forEach((m) => { m.transparent = true; m.opacity = 0; });
       g.userData.signMats = sign.material;
     }
-
     root.add(g);
     barrierChunks.push({ group: g, x: cx, z: cz, mats: [bodyMat, capMat], opacity: 0 });
   };
-
   let idx = 0;
   const spanX = maxX - minX, spanZ = maxZ - minZ;
   const nx = Math.max(1, Math.ceil(spanX / CHUNK)), nz = Math.max(1, Math.ceil(spanZ / CHUNK));
@@ -3966,13 +3348,13 @@ export function buildEdgeBarrier() {
     makeChunk(maxX, cz, false, lz + 0.4, idx++);
   }
 }
-
 export function updateEdgeBarrier() {
-  const NEAR = 46, FAR = 96;
+  // Squared-distance gate; sqrt only inside the fade band where it is needed.
+  const NEAR = 46, FAR = 96, NEAR2 = NEAR * NEAR, FAR2 = FAR * FAR;
   for (let i = 0; i < barrierChunks.length; i++) {
     const c = barrierChunks[i];
-    const dd = Math.hypot(player.x - c.x, player.z - c.z);
-    const target = dd >= FAR ? 0 : (dd <= NEAR ? 1 : sstep(FAR, NEAR, dd));
+    const d2 = dist2(player.x, player.z, c.x, c.z);
+    const target = d2 >= FAR2 ? 0 : (d2 <= NEAR2 ? 1 : sstep(FAR, NEAR, Math.sqrt(d2)));
     if (Math.abs(target - c.opacity) < 0.004) continue;
     c.opacity = target;
     c.group.visible = target > 0.01;
@@ -3987,11 +3369,9 @@ export function updateEdgeBarrier() {
 // -----------------------------------------------------------------------------
 export const bio = { base: null, snow: null, last: 'city' };
 export const bioC = {};
-
 export function updateBiomeAtmosphere(dt, elapsed) {
   const b = biomeAt(player.x, player.z);
   if (!bio.base) bio.base = scene.fog.color.clone();
-
   const camSurf = getWaterHeightAt(camera.position.x, camera.position.z, elapsed);
   const camUnderwater = camSurf !== null && camera.position.y < camSurf - 0.04;
   if (!camUnderwater) {
@@ -4009,10 +3389,13 @@ export function updateBiomeAtmosphere(dt, elapsed) {
       jungle: 'VERDANT JUNGLE — RIVER CURRENT RUNS SOUTH'
     }[b], 'border-l-sky-400');
   }
-
   if (!bio.snow) {
     const N = 420, pos = new Float32Array(N * 3);
-    for (let i = 0; i < N; i++) { pos[i * 3] = (rnd() - 0.5) * 44; pos[i * 3 + 1] = rnd() * 16; pos[i * 3 + 2] = (rnd() - 0.5) * 44; }
+    for (let i = 0; i < N; i++) {
+      pos[i * 3] = (rnd() - 0.5) * 44;
+      pos[i * 3 + 1] = rnd() * 16;
+      pos[i * 3 + 2] = (rnd() - 0.5) * 44;
+    }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     bio.snow = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.14, transparent: true, opacity: 0.9 }));
@@ -4031,7 +3414,6 @@ export function updateBiomeAtmosphere(dt, elapsed) {
     a.needsUpdate = true;
     bio.snow.position.set(player.x, player.y, player.z);
   }
-
   const nb = buildNewBiomes.fire;
   if (nb) {
     const f = 0.85 + Math.sin(elapsed * 17) * 0.15 + Math.random() * 0.1;
@@ -4043,28 +3425,23 @@ export function updateBiomeAtmosphere(dt, elapsed) {
     wf.fallSheet.material.opacity = 0.62 + Math.sin(elapsed * 9) * 0.1;
     wf.mistPool.scale.setScalar(1 + Math.sin(elapsed * 2.2) * 0.06);
   }
-
   const wheel = buildLosAuraNorthExpansion.wheel;
   if (wheel) {
     wheel.angle += dt * 0.13;
     wheel.group.rotation.z = wheel.angle;
     for (const pod of wheel.pods) pod.rotation.z = -wheel.angle;
   }
-
   updateArmory(dt, elapsed);
   updateAirport(dt, elapsed);
   updateEdgeBarrier();
-
   for (const r of riverFlowMats) {
     if (r.mat.map) r.mat.map.offset.y = (r.mat.map.offset.y - dt * r.speed) % 1;
   }
   updateWaterOnce(dt, elapsed);
 }
-
 export const concMat = new THREE.MeshStandardMaterial({ color: 0x7d8280, roughness: .95 });
 export const lampMat = new THREE.MeshBasicMaterial({ color: 0xffd27a });
 export const waterMat = new THREE.MeshStandardMaterial({ color: 0x2f5f4a, roughness: .15, metalness: .2, transparent: true, opacity: .82, emissive: 0x0b2a1e });
-
 // -----------------------------------------------------------------------------
 // Scorpion Hideout
 // -----------------------------------------------------------------------------
@@ -4092,15 +3469,10 @@ export function buildCriminalHideout() {
   triangle([xe, baseY, zn], [xe, baseY, zs], apex);
   triangle([xw, baseY, zn], [xe, baseY, zn], apex);
   triangle([xe, baseY, zs], [xw, baseY, zs], apex);
-  const box = (x, y, z, w, h, d, material, solid = false) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
-    m.position.set(x, y, z);
-    m.castShadow = true;
-    m.receiveShadow = true;
-    worldRoot.add(m);
-    if (solid) addWorldBox(x - w / 2, x + w / 2, baseY, baseY + h, z - d / 2, z + d / 2, 'solid', false);
-    return m;
-  };
+  const box = (x, y, z, w, h, d, material, solid = false) => makeBox(worldRoot, w, h, d, x, y, z, material, {
+    cast: true, recv: true,
+    box: solid ? [x - w / 2, x + w / 2, baseY, baseY + h, z - d / 2, z + d / 2, 'solid', false] : null
+  });
   box(cx, baseY + 0.06, cz, 54, 0.12, 54, chamberMat);
   box(cx, 8.1, cz, 50, 0.4, 50, chamberMat);
   box(cx, 4, cz - 25, 50, 8, 2, chamberMat, true);
@@ -4122,7 +3494,6 @@ export function buildCriminalHideout() {
   worldRoot.add(beacon);
   enterableZones.push({ minX: cx - 24, maxX: cx + 24, minZ: cz - 24, maxZ: cz + 24, name: 'REDROCK SCORPION HIDEOUT' });
   mapShapes.push({ x: cx, z: cz, w: 60, d: 60, color: '#b77935', border: '#78350f', enterable: true });
-
   const tank = buildSportsCar({ name: 'REDROCK SCORPION TANK', bodyHex: 0x4b5541, accentHex: 0x252a22, x: cx + 1, z: cz, yaw: -Math.PI / 2, isCoupe: false });
   placeCar(tank, 0.14);
   tank.isTank = true;
@@ -4131,20 +3502,10 @@ export function buildCriminalHideout() {
   const hull = new THREE.Group();
   const armor = new THREE.MeshStandardMaterial({ color: 0x59664c, roughness: 0.78, metalness: 0.2 });
   const darkArmor = new THREE.MeshStandardMaterial({ color: 0x30372e, roughness: 0.9 });
-  const hullBody = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.1, 4.7), armor);
-  hullBody.position.y = 0.95;
-  hullBody.castShadow = true;
-  hull.add(hullBody);
+  makeBox(hull, 2.8, 1.1, 4.7, 0, 0.95, 0, armor, { cast: true });
   for (const side of [-1, 1]) {
-    const track = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.95, 4.9), darkArmor);
-    track.position.set(side * 1.55, 0.39, 0);
-    track.castShadow = true;
-    hull.add(track);
-    for (let i = 0; i < 10; i++) {
-      const pad = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.07, 0.28), armor);
-      pad.position.set(side * 1.56, 0.39, -2.05 + i * 0.45);
-      hull.add(pad);
-    }
+    makeBox(hull, 0.55, 0.95, 4.9, side * 1.55, 0.39, 0, darkArmor, { cast: true });
+    for (let i = 0; i < 10; i++) makeBox(hull, 0.58, 0.07, 0.28, side * 1.56, 0.39, -2.05 + i * 0.45, armor);
   }
   const turret = new THREE.Mesh(new THREE.CylinderGeometry(0.86, 1.08, 0.62, 10), armor);
   turret.position.set(0, 1.75, -0.15);
@@ -4161,7 +3522,6 @@ export function buildCriminalHideout() {
   tank.tankModel = hull;
   return tank;
 }
-
 function placeCar(car, y) {
   if (!car) return car;
   car.y = y;
@@ -4179,6 +3539,7 @@ export function buildMountains() {
   const p = g.attributes.position;
   const col = new Float32Array(p.count * 3);
   const c = new THREE.Color(), c2 = new THREE.Color();
+  const scree = new THREE.Color(0x8a8175); // hoisted: was allocated per-vertex
   const stv = SX + 1, Hh = new Float32Array(p.count);
   const dx = (X1 - X0) / SX, dz = (Z0 - Z1) / SZ;
   for (let i = 0; i < p.count; i++) {
@@ -4198,7 +3559,7 @@ export function buildMountains() {
     c.set(0x547a3a).lerp(c2.set(0x6e8a45), n);
     c.lerp(c2.set(0x34502f), sstep(35, 70, h));
     c.lerp(c2.set(0x8a8070), sstep(95, 140, h));
-    c.lerp(c2.set(0x6d655b).lerp(new THREE.Color(0x8a8175), n), sstep(.4, .85, sl));
+    c.lerp(c2.set(0x6d655b).lerp(scree, n), sstep(.4, .85, sl));
     if (sl > .4) c.multiplyScalar(.92 + .08 * Math.sin(h * .45 + n * 6));
     c.lerp(c2.set(0xf2f6fa), sstep(snowLine - 12, snowLine + 8, h) * (1 - sstep(.7, 1.0, sl)));
     c.multiplyScalar(.9 + .2 * n2);
@@ -4209,12 +3570,11 @@ export function buildMountains() {
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   g.computeVertexNormals();
   const mesh = new THREE.Mesh(g, makeTerrainBlendMaterial({ roughness: 1 }));
-paintMeshTerrainSplat(mesh, 'mountains');
+  paintMeshTerrainSplat(mesh, 'mountains');
   mesh.receiveShadow = true;
   mesh.userData.studioName = 'Northern mountains';
   registerSculptableTerrain(mesh);
   worldRoot.add(mesh);
-
   function ribbon(hw, dy, hex) {
     const pos = [], idx = [];
     let k = 0;
@@ -4235,18 +3595,11 @@ paintMeshTerrainSplat(mesh, 'mountains');
   }
   ribbon(5.2, 0.05, 0x23262b);
   ribbon(0.12, 0.08, 0xe9c33a);
-
-  // --- Reforestation: groved pines with trunks, plus a snow-line species ---
-  const pineG = new THREE.ConeGeometry(2.1, 8, 7);
-  pineG.translate(0, 5.0, 0);
-  const trunkG = new THREE.CylinderGeometry(0.26, 0.4, 2.4, 6);
-  trunkG.translate(0, 1.2, 0);
-  const snowPineG = new THREE.ConeGeometry(1.8, 6.4, 7);
-  snowPineG.translate(0, 4.2, 0);
-  const snowCapG = new THREE.ConeGeometry(1.25, 2.6, 7);
-  snowCapG.translate(0, 6.6, 0);
+  const pineG = new THREE.ConeGeometry(2.1, 8, 7); pineG.translate(0, 5.0, 0);
+  const trunkG = new THREE.CylinderGeometry(0.26, 0.4, 2.4, 6); trunkG.translate(0, 1.2, 0);
+  const snowPineG = new THREE.ConeGeometry(1.8, 6.4, 7); snowPineG.translate(0, 4.2, 0);
+  const snowCapG = new THREE.ConeGeometry(1.25, 2.6, 7); snowCapG.translate(0, 6.6, 0);
   const snowTreeMat = new THREE.MeshStandardMaterial({ color: 0xe8f1f6, roughness: 0.92, flatShading: true });
-
   const PINE_CAP = 4000, SNOW_CAP = 700, ROCK_CAP = 420;
   const pines = new THREE.InstancedMesh(pineG, treeLeafMaterial, PINE_CAP);
   const trunks = new THREE.InstancedMesh(trunkG, treeBarkMaterial, PINE_CAP);
@@ -4255,7 +3608,6 @@ paintMeshTerrainSplat(mesh, 'mountains');
   const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1.6, 0), rockMat, ROCK_CAP);
   const dm = new THREE.Object3D();
   let np = 0, ns = 0, nr = 0;
-
   for (let k = 0; k < 46000 && (np < PINE_CAP || ns < SNOW_CAP || nr < ROCK_CAP); k++) {
     const x = X0 + 8 + rnd() * (X1 - X0 - 16), z = -175 - rnd() * 415;
     const h = terrainH(x, z);
@@ -4297,19 +3649,17 @@ paintMeshTerrainSplat(mesh, 'mountains');
   snowPines.castShadow = true;
   worldRoot.add(pines, trunks, snowPines, snowCaps, rocks);
   console.log(`[mountains] ${np} pines, ${ns} snow pines, ${nr} rocks`);
-
   const river = buildRiverSystem({
     id: 'aura_river', parent: worldRoot, centerX: riverX, z0: -584, z1: -176,
     halfWidth: 5, lift: 0.24, waveScale: 0.14, currentZ: 0.9, flowSpeed: 0.5,
     shallowColor: 0x67e8f9, deepColor: 0x0c4a6e, foamColor: 0xe0f2fe
   });
-  [-260, -430].forEach((bz) => {
+  for (const bz of [-260, -430]) {
     buildRiverBridge(worldRoot, riverX(bz), bz, river.surfAt(bz) + 0.3, 16, { stone: false, deckW: 4.2 });
     mapShapes.push({ x: riverX(bz), z: bz, w: 16, d: 4.2, color: '#78350f', border: '#fcd34d', enterable: false });
-  });
+  }
   [-220, -300, -380, -460, -520].forEach((bz, i) => {
-    const bx = riverX(bz) + (i % 2 ? 2 : -2);
-    const by = terrainH(bx, bz);
+    const bx = riverX(bz) + (i % 2 ? 2 : -2), by = terrainH(bx, bz);
     const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(1.0 + (i % 3) * 0.25, 0), rockMat);
     rock.position.set(bx, by + 0.35, bz);
     rock.castShadow = true;
@@ -4333,28 +3683,21 @@ export function buildSewer() {
   root.userData.studioName = 'Sewer network';
   worldRoot.add(root);
   const SW = 5.4, H2 = SW / 2, WH = 4.6, CY = SFY + WH;
-  const sg = new THREE.BoxGeometry(1, 1, 1);
   const wallM = new THREE.MeshStandardMaterial({ color: 0x6b706c, roughness: .95 });
   const flrM = new THREE.MeshStandardMaterial({ color: 0x585c58, roughness: .9 });
   const pipeM = new THREE.MeshStandardMaterial({ color: 0x7b5a3c, metalness: .5, roughness: .6 });
   const blueM = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
-  const box = (m, x, y, z, a, b, d) => {
-    const o = new THREE.Mesh(sg, m);
-    o.position.set(x, y, z);
-    o.scale.set(a, b, d);
-    root.add(o);
-    return o;
-  };
+  const box = (m, x, y, z, a, b, d) => makeBox(root, a, b, d, x, y, z, m);
   const N = { A: [-130, -30], B: [-40, -30], C: [20, -30], D: [48, -30], E: [150, -30], F: [48, -16], G: [20, -66], H: [20, 24], I: [20, 110], J: [-4, 24] };
   const E = [['A', 'B'], ['B', 'C'], ['C', 'D'], ['D', 'E'], ['D', 'F'], ['C', 'G'], ['C', 'H'], ['H', 'I'], ['H', 'J']];
   const exits = ['J', 'F', 'B', 'G'];
-  ['A', 'E', 'I'].forEach((k) => {
+  for (const k of ['A', 'E', 'I']) {
     const q = N[k];
     if (!collidesHorizontally(q[0], q[1], .2, 1.8, 1.4) && !collidesHorizontally(q[0], q[1] + 1, .2, 1.8, 1.4)) {
       exits.push(k);
       manholes.push(q.slice());
     }
-  });
+  }
   const dirOf = (p, q) => p[0] !== q[0] ? (q[0] > p[0] ? '+x' : '-x') : (q[1] > p[1] ? '+z' : '-z');
   const has = {};
   for (const k in N) has[k] = new Set();
@@ -4377,7 +3720,8 @@ export function buildSewer() {
       const c = new THREE.Mesh(holeGeo, holeM);
       c.position.set(x, CY + .6, z);
       root.add(c);
-      const sh = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.05, -SFY + .1, 16, 1, true), new THREE.MeshStandardMaterial({ color: 0x4d514d, roughness: 1, side: THREE.BackSide }));
+      const sh = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.05, -SFY + .1, 16, 1, true),
+        new THREE.MeshStandardMaterial({ color: 0x4d514d, roughness: 1, side: THREE.BackSide }));
       sh.position.set(x, (SFY + .1) / 2, z);
       root.add(sh);
       for (const sx of [-.3, .3]) box(blueM, x + sx, SFY / 2, z + .95, .05, -SFY, .05);
@@ -4385,11 +3729,10 @@ export function buildSewer() {
       lamps.push([x, CY - .1, z + 1.6]);
     }
     for (const d of ['+x', '-x', '+z', '-z']) {
-      if (!has[k].has(d)) {
-        const sgn = d[0] === '+' ? 1 : -1;
-        if (d[1] === 'x') box(wallM, x + sgn * (H2 + .25), SFY + WH / 2, z, .5, WH, SW + 1);
-        else box(wallM, x, SFY + WH / 2, z + sgn * (H2 + .25), SW + 1, WH, .5);
-      }
+      if (has[k].has(d)) continue;
+      const sgn = d[0] === '+' ? 1 : -1;
+      if (d[1] === 'x') box(wallM, x + sgn * (H2 + .25), SFY + WH / 2, z, .5, WH, SW + 1);
+      else box(wallM, x, SFY + WH / 2, z + sgn * (H2 + .25), SW + 1, WH, .5);
     }
   }
   for (const [a, b] of E) {
@@ -4414,15 +3757,14 @@ export function buildSewer() {
     root.add(pg);
     for (let t = -L / 2 + 4; t < L / 2 - 2; t += 9) lamps.push(ax ? [cx + t, CY - .1, cz] : [cx, CY - .1, cz + t]);
   }
-  const lm = new THREE.InstancedMesh(sg, lampMat, lamps.length);
-  const dm = new THREE.Object3D();
-  lamps.forEach((l, i) => { dm.position.set(l[0], l[1], l[2]); dm.scale.set(.6, .12, .6); dm.updateMatrix(); lm.setMatrixAt(i, dm.matrix); });
-  root.add(lm);
+  const lampT = [];
+  for (const l of lamps) xform(lampT, l[0], l[1], l[2], .6, .12, .6);
+  flushInstances(root, UNIT_BOX, lampMat, lampT);
   const holeDiscG = new THREE.CircleGeometry(.72, 20).rotateX(-Math.PI / 2);
   const holeDiscM = new THREE.MeshBasicMaterial({ color: 0x050505 });
   const cvG = new THREE.CylinderGeometry(.75, .75, .06, 20);
   const cvM = new THREE.MeshStandardMaterial({ color: 0x2b2e31, metalness: .8, roughness: .5 });
-  manholes.forEach((m) => {
+  for (const m of manholes) {
     const c = new THREE.Mesh(cvG, cvM);
     c.position.set(m[0], .22, m[1]);
     worldRoot.add(c);
@@ -4433,9 +3775,8 @@ export function buildSewer() {
     hd.visible = false;
     worldRoot.add(hd);
     manholeHoles.push(hd);
-  });
+  }
 }
-
 export function knockOverLamppost(l, y, s) {
   if (l.state !== 'standing') return;
   knockOverLamppostBase(l, y, s);
@@ -4447,7 +3788,6 @@ export function knockOverLamppost(l, y, s) {
 // Aura Estates / hospital
 // -----------------------------------------------------------------------------
 export function buildAuraEstates() {
-  const bxG = new THREE.BoxGeometry(1, 1, 1);
   const M = (c, r, e) => new THREE.MeshStandardMaterial({ color: c, roughness: r == null ? .9 : r, emissive: e || 0, emissiveIntensity: e ? 1.2 : 0 });
   const K = {
     wall: M(0xe9e6df), roof: M(0x2b2f36), floor: M(0xd8dde0, .5), glass: M(0x8fb8d6, .15),
@@ -4455,11 +3795,10 @@ export function buildAuraEstates() {
     lamp: M(0xfff7d6, .5, 0xfff7d6), gold: M(0xf5c542, .3, 0xb8860b), stone: M(0xb9b2a6),
     drive: M(0x3a3d42), metal: M(0x20242a, .4), blue: M(0x7ec8e3), black: M(0x111111)
   };
-  const bx = (g, m, x, y, z, a, b, d) => { const o = new THREE.Mesh(bxG, m); o.position.set(x, y, z); o.scale.set(a, b, d); g.add(o); return o; };
+  const bx = (g, m, x, y, z, a, b, d) => makeBox(g, a, b, d, x, y, z, m);
   const wb = (x, y, z, a, b, d) => addWorldBox(x - a / 2, x + a / 2, y - b / 2, y + b / 2, z - d / 2, z + d / 2, 'solid', false);
   const culls = [], houses = [], gate = { open: false, boxes: [], l1: null, l2: null };
   aura.culls = culls;
-
   {
     const X0 = -560, X1 = -196, Z0 = -172, Z1 = 172, N = 114;
     const g = new THREE.PlaneGeometry(X1 - X0, Z1 - Z0, N, N);
@@ -4489,13 +3828,12 @@ export function buildAuraEstates() {
     }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     g.computeVertexNormals();
-   const tm = new THREE.Mesh(g, makeTerrainBlendMaterial({ roughness: 1 }));
-paintMeshTerrainSplat(tm, 'hills');
+    const tm = new THREE.Mesh(g, makeTerrainBlendMaterial({ roughness: 1 }));
+    paintMeshTerrainSplat(tm, 'hills');
     tm.receiveShadow = true;
     tm.userData.studioName = 'Aura Hills terrain';
     registerSculptableTerrain(tm);
     worldRoot.add(tm);
-
     const pts = [];
     for (let s = 0; s <= 274; s += 3) { const x = -196 - s; pts.push([x, ahRz(x)]); }
     const ribbon = (w, dy, color) => {
@@ -4518,7 +3856,6 @@ paintMeshTerrainSplat(tm, 'hills');
     ribbon(4.8, .12, 0x2a2d31);
     ribbon(.12, .16, 0xe8c547);
   }
-
   {
     const WG = new THREE.Group();
     WG.userData.studioName = 'Aura Estates';
@@ -4535,7 +3872,6 @@ paintMeshTerrainSplat(tm, 'hills');
     sg.rotation.y = Math.PI / 2;
     createNeonSign(sg, 'AURA ESTATES', 0, 0, 0, '#111827', '#fcd34d', 7, 1.1);
     worldRoot.add(sg);
-
     const HW = 15, HD = 11, HT = 4.2, Y = 38.18;
     [[-508, -68, 1], [-508, -22, -1], [-470, -70, 1], [-470, -20, -1], [-448, -70, 1], [-448, -20, -1]].forEach(([cx, cz, dir], k) => {
       const g = new THREE.Group();
@@ -4565,8 +3901,6 @@ paintMeshTerrainSplat(tm, 'hills');
       culls.push({ g: inn, x: cx, z: cz, r: 65 });
     });
   }
-
-  // Hospital — placement now respects reserved road footprints.
   {
     const W = 36, D = 26, HH = 7, T = .5, HY = 0.18;
     let hx = 0, hz = 0, found = false;
@@ -4614,28 +3948,30 @@ paintMeshTerrainSplat(tm, 'hills');
       enterableZones.push({ minX: hx - W / 2 + 1, maxX: hx + W / 2 - 1, minZ: hz - D / 2 + 1, maxZ: hz + D / 2 - 1, name: 'AURA GENERAL HOSPITAL' });
     }
   }
-
   aura.ahCull = function (dt) {
     for (let i = 0; i < manholeCovers.length; i++) {
       const c = manholeCovers[i], tx = manholes[i][0] + (manholeOpen[i] ? 1.5 : 0);
       c.position.x += (tx - c.position.x) * Math.min(1, dt * 6);
       manholeHoles[i].visible = manholeOpen[i];
     }
-    for (const c of culls) c.g.visible = Math.hypot(player.x - c.x, player.z - c.z) < c.r;
+    for (const c of culls) c.g.visible = dist2(player.x, player.z, c.x, c.z) < c.r * c.r;
     const go = gate.open ? 4 : 0;
     gate.l1.position.z += ((-47 - go) - gate.l1.position.z) * Math.min(1, dt * 3);
     gate.l2.position.z += ((-43 + go) - gate.l2.position.z) * Math.min(1, dt * 3);
-    if (!under() && player.x < -196) gameState.zoneName = player.x < -430 ? 'AURA ESTATES' : player.x > -350 && player.x < -220 && Math.abs(player.z) < 105 ? 'WESTSIDE DISTRICT' : 'AURA HILLS';
+    if (!under() && player.x < -196) {
+      gameState.zoneName = player.x < -430 ? 'AURA ESTATES'
+        : player.x > -350 && player.x < -220 && Math.abs(player.z) < 105 ? 'WESTSIDE DISTRICT' : 'AURA HILLS';
+    }
   };
   aura.ahHint = function () {
-    if (!gate.open && Math.hypot(player.x + 432, player.z + 45) < 6) return '[F] FORCE OPEN GATE';
-    for (const h of houses) if (!h.taken && Math.hypot(player.x - h.sx, player.z - h.sz) < 2.4) return '[F] CRACK SAFE';
+    if (!gate.open && dist2(player.x, player.z, -432, -45) < 36) return '[F] FORCE OPEN GATE';
+    for (const h of houses) if (!h.taken && dist2(player.x, player.z, h.sx, h.sz) < 5.76) return '[F] CRACK SAFE';
     return '';
   };
   const applyGate = (open) => {
     if (!open || gate.open) return;
     gate.open = true;
-    gate.boxes.forEach((b) => { const k = worldBoxes.indexOf(b); if (k >= 0) worldBoxes.splice(k, 1); });
+    for (const b of gate.boxes) { const k = worldBoxes.indexOf(b); if (k >= 0) worldBoxes.splice(k, 1); }
   };
   const applySafe = (i) => {
     const h = houses[i];
@@ -4646,7 +3982,7 @@ paintMeshTerrainSplat(tm, 'hills');
   };
   aura.estates = { gate, houses, applyGate, applySafe };
   aura.ahF = function () {
-    if (!gate.open && Math.hypot(player.x + 432, player.z + 45) < 6) {
+    if (!gate.open && dist2(player.x, player.z, -432, -45) < 36) {
       applyGate(true);
       sfx.mantle();
       if (!hooks.mpIsGuest()) crime(.35);
@@ -4656,10 +3992,9 @@ paintMeshTerrainSplat(tm, 'hills');
     }
     for (let i = 0; i < houses.length; i++) {
       const h = houses[i];
-      if (!h.taken && Math.hypot(player.x - h.sx, player.z - h.sz) < 2.4) {
-        if (hooks.mpIsGuest()) {
-          hooks.mpWorldEvent({ t: 'safe_req', i });
-        } else {
+      if (!h.taken && dist2(player.x, player.z, h.sx, h.sz) < 5.76) {
+        if (hooks.mpIsGuest()) hooks.mpWorldEvent({ t: 'safe_req', i });
+        else {
           applySafe(i);
           gameState.cash += 600;
           sfx.pickup();
@@ -4675,12 +4010,11 @@ paintMeshTerrainSplat(tm, 'hills');
 }
 
 // -----------------------------------------------------------------------------
-// Aura Hills trees & Westside district (skyline infill is now the tower table)
+// Aura Hills trees & Westside district
 // -----------------------------------------------------------------------------
 export function buildAuraSkylineAndHighway() {
   const rr = (n) => { const v = Math.sin(n * 127.1) * 43758.5453; return v - Math.floor(v); };
   const sm = (c) => new THREE.MeshStandardMaterial({ color: c, roughness: .85 });
-
   {
     const n = 500;
     const mesh = new THREE.InstancedMesh(new THREE.ConeGeometry(2, 7, 7), treeLeafMaterial, n);
@@ -4691,7 +4025,8 @@ export function buildAuraSkylineAndHighway() {
       const h = hillsH(x, z);
       const sl = Math.abs(hillsH(x + 3, z) - hillsH(x - 3, z)) / 6;
       const dr = Math.abs(z - ahRz(x)) / Math.hypot(1, ahRzD(x));
-      if ((x > -360 && x < -205 && Math.abs(z) < 125) || sl > .7 || h < 3 || (-196 - x < 300 && dr < 12) || Math.hypot(x - AHC.px, z - AHC.pz) < 72) continue;
+      if ((x > -360 && x < -205 && Math.abs(z) < 125) || sl > .7 || h < 3
+        || (-196 - x < 300 && dr < 12) || dist2(x, z, AHC.px, AHC.pz) < 5184) continue;
       d.position.set(x, h + 3.2, z);
       d.scale.setScalar(.8 + rr(k) * .9);
       d.updateMatrix();
@@ -4701,27 +4036,19 @@ export function buildAuraSkylineAndHighway() {
     mesh.castShadow = true;
     worldRoot.add(mesh);
   }
-
   {
     const streetM = sm(0x303840), stripeM = new THREE.MeshBasicMaterial({ color: 0xf5c84c });
+    const dashGeo = new THREE.BoxGeometry(.16, .025, 2.4);
     for (const x of [-330, -310, -290, -270, -250, -230]) {
       const floor = ahRy(x) + 9, roadZ = ahRz(x);
       for (const [z0, z1] of [[-94, roadZ - 28], [roadZ + 28, 94]]) {
         if (z1 - z0 < 8) continue;
-        const road = new THREE.Mesh(new THREE.BoxGeometry(6, .12, z1 - z0), streetM);
-        road.position.set(x, floor + .04, (z0 + z1) / 2);
-        road.receiveShadow = true;
-        worldRoot.add(road);
-        addWorldBox(x - 3, x + 3, floor - .02, floor + .1, z0, z1, 'westcity_road', true);
+        makeBox(worldRoot, 6, .12, z1 - z0, x, floor + .04, (z0 + z1) / 2, streetM, {
+          recv: true, box: [x - 3, x + 3, floor - .02, floor + .1, z0, z1, 'westcity_road', true]
+        });
         const dashT = [];
-        for (let z = z0 + 3; z < z1 - 1; z += 8) dashT.push([x, floor + .112, z]);
-        if (dashT.length) {
-          const dm = new THREE.Object3D();
-          const dashes = new THREE.InstancedMesh(new THREE.BoxGeometry(.16, .025, 2.4), stripeM, dashT.length);
-          dashT.forEach(([dx2, dy, dz], i) => { dm.position.set(dx2, dy, dz); dm.updateMatrix(); dashes.setMatrixAt(i, dm.matrix); });
-          dashes.instanceMatrix.needsUpdate = true;
-          worldRoot.add(dashes);
-        }
+        for (let z = z0 + 3; z < z1 - 1; z += 8) xform(dashT, x, floor + .112, z);
+        flushInstances(worldRoot, dashGeo, stripeM, dashT);
       }
     }
     const facade = document.createElement('canvas');
@@ -4737,22 +4064,18 @@ export function buildAuraSkylineAndHighway() {
     windows.colorSpace = THREE.SRGBColorSpace;
     windows.wrapS = windows.wrapT = THREE.RepeatWrapping;
     windows.repeat.set(2, 7);
-    const towerM = [0x9ab5c5, 0xb7c4cc, 0x829eaf].map((color) => new THREE.MeshStandardMaterial({ color, map: windows, emissiveMap: windows, emissive: 0xffffff, emissiveIntensity: .18, roughness: .3, metalness: .35 }));
+    const towerM = [0x9ab5c5, 0xb7c4cc, 0x829eaf].map((color) => new THREE.MeshStandardMaterial({
+      color, map: windows, emissiveMap: windows, emissive: 0xffffff, emissiveIntensity: .18, roughness: .3, metalness: .35
+    }));
     const lowM = [0x5b6670, 0x8c8172, 0x65746f].map((color) => sm(color));
-    const cityBox = new THREE.BoxGeometry(1, 1, 1), roofM = sm(0x29323a);
+    const roofM = sm(0x29323a);
     const addBuilding = (x, z, w, d, h, mat) => {
       const ground = hillsH(x, z);
-      const body = new THREE.Mesh(cityBox, mat);
-      body.position.set(x, ground + h / 2, z);
-      body.scale.set(w, h, d);
-      body.castShadow = true;
-      body.receiveShadow = true;
-      worldRoot.add(body);
-      const roof = new THREE.Mesh(cityBox, roofM);
-      roof.position.set(x, ground + h + .24, z);
-      roof.scale.set(w + .5, .48, d + .5);
-      worldRoot.add(roof);
-      addWorldBox(x - w / 2, x + w / 2, ground, ground + h, z - d / 2, z + d / 2, 'westcity_building', false);
+      makeBox(worldRoot, w, h, d, x, ground + h / 2, z, mat, {
+        cast: true, recv: true,
+        box: [x - w / 2, x + w / 2, ground, ground + h, z - d / 2, z + d / 2, 'westcity_building', false]
+      });
+      makeBox(worldRoot, w + .5, .48, d + .5, x, ground + h + .24, z, roofM);
     };
     for (let i = 0; i < 5; i++) for (const side of [-1, 1]) {
       const x = -320 + i * 20, z = ahRz(x) + side * 43;
@@ -4772,14 +4095,12 @@ export const entityObjects = new Map();
 export const studioObjects = new Map();
 const studioObjectBaseTransforms = new Map();
 const studioDeletedObjects = new Map();
-
 function applyObjectTransform(object, transform) {
   if (!transform || transform.deleted) return;
   object.position.fromArray(transform.position);
   object.rotation.fromArray(transform.rotation);
   object.scale.fromArray(transform.scale);
 }
-
 function registerStudioObjectTree(root, rootPath, data = levelData) {
   const visit = (object, path) => {
     object.userData.studioPath = path;
@@ -4795,7 +4116,6 @@ function registerStudioObjectTree(root, rootPath, data = levelData) {
   };
   visit(root, rootPath);
 }
-
 export function applyStudioWorldTransforms(data = levelData) {
   for (const [path, entry] of [...studioDeletedObjects.entries()]) {
     const saved = data.worldTransforms && data.worldTransforms[path];
@@ -4813,22 +4133,20 @@ export function applyStudioWorldTransforms(data = levelData) {
     if (saved) applyObjectTransform(object, saved);
   }
 }
-
-/** Stable, name-based Studio keys — reordering builders no longer breaks saves. */
+/** Stable, name-based Studio keys at the landmark root level. */
 function registerGeneratedWorldObjects(data = levelData) {
   studioObjects.clear();
   studioDeletedObjects.clear();
   const usedKeys = new Map();
-  const slug = (s) => String(s || 'object').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 48) || 'object';
+  const slug = (s) => String(s || 'object').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/^ | $/g, '').slice(0, 48) || 'object';
   for (const root of worldRoot.children) {
     if (foreignRoots && foreignRoots.has(root)) continue;
     root.userData.worldBuilt = true;
     if (root.userData.studioSelectable === false || root.userData.persistentFX) continue;
     const entityId = root.userData.entityId;
     let key;
-    if (entityId) {
-      key = `entity:${entityId}`;
-    } else {
+    if (entityId) key = `entity:${entityId}`;
+    else {
       const base = `static:${slug(root.userData.studioName || root.name || root.type)}`;
       const n = usedKeys.get(base) || 0;
       usedKeys.set(base, n + 1);
@@ -4842,9 +4160,7 @@ function registerGeneratedWorldObjects(data = levelData) {
     }
   }
 }
-
 const ENTITY_Y_OFFSET = { pickup: 0.55 };
-
 function tagEntity(root, id) {
   root.userData.entityId = id;
   root.traverse((child) => { child.userData.entityId = id; });
@@ -4870,7 +4186,7 @@ function makePrimitiveMesh(shape, color, fallback) {
   if (shape === 'cylinder') geo = new THREE.CylinderGeometry(0.5, 0.5, 1, 20);
   else if (shape === 'sphere') geo = new THREE.SphereGeometry(0.5, 20, 14);
   else if (shape === 'cone') geo = new THREE.ConeGeometry(0.5, 1, 20);
-  else geo = new THREE.BoxGeometry(1, 1, 1);
+  else geo = UNIT_BOX;
   const m = new THREE.Mesh(geo, makeMat(colorToHex(color, fallback), { roughness: 0.8 }));
   m.castShadow = true;
   m.receiveShadow = true;
@@ -4886,43 +4202,22 @@ function makeBuildingMesh(entity) {
   const windowColor = colorToHex(building.windowColor, 0x7dd3fc);
   const glassMat = new THREE.MeshStandardMaterial({ color: windowColor, emissive: windowColor, emissiveIntensity: 0.12, metalness: 0.2, roughness: 0.25 });
   const root = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), wallMat);
-  body.userData.studioName = 'Building body';
-  body.position.y = height / 2;
-  body.castShadow = true;
-  body.receiveShadow = true;
-  root.add(body);
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(width + 0.5, 0.35, depth + 0.5), trimMat);
-  roof.userData.studioName = 'Roof';
-  roof.position.y = height + 0.17;
-  roof.castShadow = true;
-  root.add(roof);
-
+  const body = makeBox(root, width, height, depth, 0, height / 2, 0, wallMat, { cast: true, recv: true, name: 'Building body' });
+  makeBox(root, width + 0.5, 0.35, depth + 0.5, 0, height + 0.17, 0, trimMat, { cast: true, name: 'Roof' });
   const floors = Math.min(20, Math.max(1, Math.floor(height / 3.2)));
   const columns = Math.min(8, Math.max(1, Math.floor(width / 2.8)));
   const windowW = Math.min(1.35, width / (columns * 2.2));
   const windowH = Math.min(1.45, Math.max(0.55, height / (floors * 2.1)));
   const transforms = [];
-  const dm = new THREE.Object3D();
   for (let floor = 0; floor < floors; floor++) {
     const y = (floor + 0.55) * height / floors;
     for (let column = 0; column < columns; column++) {
       const x = (column + 0.5) * width / columns - width / 2;
-      for (const side of [-1, 1]) {
-        dm.position.set(x, y, side * (depth / 2 + 0.035));
-        dm.scale.set(windowW, windowH, 0.06);
-        dm.updateMatrix();
-        transforms.push(dm.matrix.clone());
-      }
+      for (const side of [-1, 1]) xform(transforms, x, y, side * (depth / 2 + 0.035), windowW, windowH, 0.06);
     }
   }
-  if (transforms.length) {
-    const windows = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), glassMat, transforms.length);
-    transforms.forEach((m, i) => windows.setMatrixAt(i, m));
-    windows.instanceMatrix.needsUpdate = true;
-    windows.userData.studioName = 'Windows';
-    root.add(windows);
-  }
+  const windows = flushInstances(root, UNIT_BOX, glassMat, transforms);
+  if (windows) windows.userData.studioName = 'Windows';
   return root;
 }
 function makeRoadMesh(entity) {
@@ -4930,14 +4225,10 @@ function makeRoadMesh(entity) {
   const width = THREE.MathUtils.clamp(Number(road.width) || 24, 2, 500);
   const depth = THREE.MathUtils.clamp(Number(road.depth) || 12, 2, 500);
   const root = new THREE.Group();
-  const surface = new THREE.Mesh(new THREE.BoxGeometry(width, 0.12, depth), makeMat(colorToHex(entity.color, 0x313946), { texType: 'asphalt', roughness: 0.88 }));
-  surface.position.y = 0.06;
-  surface.receiveShadow = true;
-  root.add(surface);
+  makeBox(root, width, 0.12, depth, 0, 0.06, 0,
+    makeMat(colorToHex(entity.color, 0x313946), { texType: 'asphalt', roughness: 0.88 }), { recv: true });
   if (road.markings !== false) {
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.025, depth * 0.78), new THREE.MeshBasicMaterial({ color: 0xfacc15 }));
-    stripe.position.set(0, 0.13, 0);
-    root.add(stripe);
+    makeBox(root, 0.22, 0.025, depth * 0.78, 0, 0.13, 0, new THREE.MeshBasicMaterial({ color: 0xfacc15 }));
   }
   return root;
 }
@@ -4981,7 +4272,6 @@ function registerEntityRamp(object, entity) {
   const base = y, top = y + scale[1];
   return addDriveableRamp({ minX, maxX, minZ, maxZ, startY: dir > 0 ? base : top, endY: dir > 0 ? top : base, axis, dir });
 }
-
 export function createEntityObject(entity, { register = true } = {}) {
   if (RETIRED_ENTITY_IDS.has(entity.id)) return { object: null, record: null };
   const [x, y, z] = entity.pos;
@@ -5098,11 +4388,9 @@ export function createEntityObject(entity, { register = true } = {}) {
   entityObjects.set(entity.id, { entity, object, record });
   return { object, record };
 }
-
 export function spawnLevelEntities(data = levelData, opts = {}) {
   for (const e of data.entities) createEntityObject(e, opts);
 }
-
 export function removeEntityObject(id) {
   const rec = entityObjects.get(id);
   const sRec = studioObjects.get(id);
@@ -5159,7 +4447,6 @@ export function removeEntityObject(id) {
     }
   }
 }
-
 export function updateEntityTransform(entity) {
   const rec = entityObjects.get(entity.id);
   if (!rec || !rec.object) return;
@@ -5194,7 +4481,6 @@ export function updateEntityTransform(entity) {
   }
   rec.entity = entity;
 }
-
 export function revealAllLods() {
   buildingLods.forEach((e) => { e.group.visible = true; e.active = true; });
   (aura.culls || []).forEach((c) => { c.g.visible = true; });
@@ -5202,17 +4488,22 @@ export function revealAllLods() {
 }
 
 // =============================================================================
-// LOS AURA INTERNATIONAL — landside lobby, security, gate lounge
+// LOS AURA INTERNATIONAL — rebuilt as a real airport
+//
+// A 44 × 206 m barrel-vaulted terminal: glazed landside curb with a cantilevered
+// drop-off canopy, four check-in islands, a hanging departures board, a public
+// mezzanine restaurant reached by a real staircase, a three-lane security
+// checkpoint, an airside concourse with duty-free / coffee / food court, two
+// gate hold-rooms with podiums and seat rows, and two articulated passenger
+// boarding bridges docking onto the parked aircraft. Apron stands are marked,
+// lit and serviced by tugs, bag carts, GPUs and cones.
 // =============================================================================
 const airport = { board: null, boardTex: null, boardRows: null, carousel: null, tick: 0 };
-
 const FLIGHT_DESTS = ['SUNNYVALE', 'AURA HILLS', 'REDROCK', 'FROSTPINE', 'VERDANT', 'SANTA AURA', 'WESTSIDE', 'HARBOR CITY'];
 const FLIGHT_STATUS = ['ON TIME', 'BOARDING', 'DELAYED', 'GATE OPEN', 'FINAL CALL'];
-
 function drawDeparturesBoard() {
   if (!airport.board) return;
-  const c = airport.board;
-  const ctx = c.getContext('2d');
+  const c = airport.board, ctx = c.getContext('2d');
   ctx.fillStyle = '#05070d';
   ctx.fillRect(0, 0, c.width, c.height);
   ctx.fillStyle = '#facc15';
@@ -5240,90 +4531,190 @@ function drawDeparturesBoard() {
   });
   if (airport.boardTex) airport.boardTex.needsUpdate = true;
 }
-
+/** Parametric barrel-vault surface (one geometry, reused for shell + skylight). */
+function archShellGeometry(cx, cz, halfSpan, length, baseY, rise, segX = 28, t0 = 0, t1 = 1) {
+  const pos = [], uv = [], idx = [];
+  for (let j = 0; j <= 1; j++) {
+    const z = cz - length / 2 + j * length;
+    for (let i = 0; i <= segX; i++) {
+      const t = t0 + (t1 - t0) * (i / segX);
+      pos.push(cx - halfSpan + t * 2 * halfSpan, baseY + rise * Math.sin(Math.PI * t), z);
+      uv.push(t * 8, j * length / 12);
+    }
+  }
+  for (let i = 0; i < segX; i++) {
+    const a = i, b = i + 1, c = i + segX + 1, d = i + segX + 2;
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
 function buildAirportTerminal(grp, mats) {
-  const { whiteMat, steelMat, asphaltEW } = mats;
-  const termX = 248, termZ = 565, termW = 26, termD = 160, termH = 9.0, termY = 0.25;
-  const x0 = termX - termW / 2, x1 = termX + termW / 2;
-  const z0 = termZ - termD / 2, z1 = termZ + termD / 2;
-  const wallT = 0.5;
-
-  const glassFacadeMat = makeMat(0x0ea5e9, { metalness: 0.9, roughness: 0.12, emissive: 0x0284c7, emissiveIntensity: 0.18 });
-  const floorMat = makeMat(0xf1f5f9, { texType: 'marble', repeatX: 6, repeatY: 36, roughness: 0.2 });
-  const addBox = (w, h, d, mat, x, y, z, cast = true) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y, z);
-    m.castShadow = cast;
-    m.receiveShadow = true;
-    grp.add(m);
-    return m;
-  };
-
-  const floor = addBox(termW - 0.4, 0.1, termD - 0.4, floorMat, termX, termY + 0.05, termZ, false);
-  floor.userData.studioName = 'Terminal floor';
-  addWorldBox(x0, x1, termY - 0.05, termY + 0.10, z0, z1, 'terminal_floor', true);
-
-  // Long walls with real door openings: landside (west) and airside (east).
-  const sideDoors = { '-1': [545, 585], '1': [505, 625] };
-  for (const sd of [-1, 1]) {
-    const wx = termX + sd * termW / 2;
-    const doors = sideDoors[String(sd)];
-    let cursor = z0;
-    const spans = [];
-    for (const dz of doors) { spans.push([cursor, dz - 3]); cursor = dz + 3; }
-    spans.push([cursor, z1]);
-    for (const [a, b] of spans) {
-      if (b - a < 0.4) continue;
-      addBox(wallT, termH, b - a, whiteMat, wx, termY + termH / 2, (a + b) / 2);
-      addWorldBox(wx - wallT / 2, wx + wallT / 2, termY, termY + termH, a, b, 'terminal_wall', false);
-      addBox(0.24, 4.0, Math.max(0.5, b - a - 2), glassFacadeMat, termX + sd * (termW / 2 + 0.14), termY + 5.0, (a + b) / 2, false);
-    }
-    for (const dz of doors) {
-      addBox(wallT, termH - 4.2, 6, whiteMat, wx, termY + 4.2 + (termH - 4.2) / 2, dz);
-      addBox(wallT + 0.2, 0.3, 6.4, steelMat, wx, termY + 4.2, dz, false);
-    }
-  }
-  // End walls
-  for (const ez of [-1, 1]) {
-    const wz = termZ + ez * termD / 2;
-    addBox(termW, termH, wallT, whiteMat, termX, termY + termH / 2, wz);
-    addWorldBox(x0, x1, termY, termY + termH, wz - wallT / 2, wz + wallT / 2, 'terminal_wall', false);
-    addBox(termW - 4, 3.6, 0.24, glassFacadeMat, termX, termY + 5.2, termZ + ez * (termD / 2 + 0.14), false);
-  }
-
-  addBox(termW + 1.6, 0.6, termD + 2, makeMat(0x1e293b), termX, termY + termH + 0.3, termZ);
-  addWorldBox(x0, x1, termY + termH, termY + termH + 0.6, z0, z1, 'terminal_roof', true);
-
-  // ---- Interior (distance-culled) ----
-  const inn = new THREE.Group();
-  inn.userData.studioName = 'LAX terminal interior';
-  grp.add(inn);
-  const iBox = (w, h, d, mat, x, y, z, cast = false) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y, z);
-    m.castShadow = cast;
-    m.receiveShadow = true;
-    inn.add(m);
-    return m;
-  };
+  const { whiteMat, steelMat } = mats;
+  const TX = 248, TZ = 565, HW = 22, HL = 103;      // 44 × 206 footprint
+  const x0 = TX - HW, x1 = TX + HW, z0 = TZ - HL, z1 = TZ + HL;
+  const Y = 0.30, WALL_H = 14.0, TOP = Y + WALL_H, RISE = 6.4;
+  const MEZZ = 7.60;                                 // public mezzanine deck
+  const shellMat = makeMat(0xeef4f8, { texType: 'brushedsteel', repeatX: 10, repeatY: 30, metalness: 0.72, roughness: 0.26, flatShading: false });
+  const ribMat = makeMat(0xcbd5e1, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.2, flatShading: false });
+  const mullionMat = makeMat(0x475569, { metalness: 0.8, roughness: 0.35 });
+  const curtainMat = makeMat(0x9fd8f5, { metalness: 0.85, roughness: 0.06, transparent: true, opacity: 0.26, emissive: 0x0ea5e9, emissiveIntensity: 0.22, flatShading: false });
+  curtainMat.side = THREE.DoubleSide;
+  curtainMat.depthWrite = false;
+  const floorMat = makeMat(0xf1f5f9, { texType: 'marble', repeatX: 12, repeatY: 52, roughness: 0.18, clearcoat: 0.8, flatShading: false });
   const deskMat = makeMat(0x1e293b, { metalness: 0.4, roughness: 0.4 });
   const topMat = makeMat(0xe2e8f0, { texType: 'brushedsteel', metalness: 0.9, roughness: 0.2, flatShading: false });
   const seatMat = makeMat(0x2563eb, { texType: 'fabric', roughness: 0.9 });
   const beltMat = makeMat(0x334155, { metalness: 0.6, roughness: 0.5 });
+  const woodMat = makeMat(0x8a5a2b, { texType: 'wood', repeatX: 4, repeatY: 4, roughness: 0.6 });
+  const glowMat = makeMat(0xfff7d6, { emissive: 0xfff7d6, emissiveIntensity: 0.9 });
+  const brandMat = makeMat(0x0284c7, { emissive: 0x0369a1, emissiveIntensity: 0.45, metalness: 0.6, roughness: 0.3 });
+  const B = (w, h, d, x, y, z, m, o) => makeBox(grp, w, h, d, x, y, z, m, o);
 
-  // Check-in islands (landside, west half)
-  for (const cz of [520, 552, 608]) {
-    iBox(4.0, 1.1, 8.0, deskMat, termX - 7.0, termY + 0.55, cz, true);
-    iBox(4.2, 0.1, 8.2, topMat, termX - 7.0, termY + 1.15, cz);
-    addWorldBox(termX - 9.0, termX - 5.0, termY, termY + 1.2, cz - 4.0, cz + 4.0, 'checkin_counter', true);
-    for (let i = -1; i <= 1; i++) {
-      const screen = iBox(0.1, 0.7, 1.1, makeMat(0x22d3ee, { emissive: 0x0891b2, emissiveIntensity: 0.7 }), termX - 5.0, termY + 1.7, cz + i * 2.6);
-      screen.rotation.y = Math.PI / 2;
+  // ---- Podium, floor & terrazzo guide bands --------------------------------
+  B(2 * HW + 2.4, 0.30, 2 * HL + 2.4, TX, Y - 0.15, TZ, makeMat(0xcbd5e1, { texType: 'concrete', repeatX: 12, repeatY: 52 }), { recv: true });
+  const floor = B(2 * HW - 0.4, 0.10, 2 * HL - 0.4, TX, Y + 0.05, TZ, floorMat, { recv: true, name: 'Terminal floor' });
+  addWorldBox(x0, x1, Y - 0.30, Y + 0.10, z0, z1, 'terminal_floor', true);
+  for (const bx of [234, 248, 262]) B(0.5, 0.02, 2 * HL - 6, bx, Y + 0.11, TZ, brandMat);
+
+  // ---- Barrel-vault roof: one shell, one instanced rib set, skylight crown --
+  const shell = new THREE.Mesh(archShellGeometry(TX, TZ, HW + 1.2, 2 * HL + 2.4, TOP, RISE), shellMat);
+  shell.castShadow = true;
+  shell.receiveShadow = true;
+  shell.material.side = THREE.DoubleSide;
+  shell.userData.studioName = 'Terminal vault roof';
+  grp.add(shell);
+  const ribPts = [];
+  for (let i = 0; i <= 24; i++) {
+    const t = i / 24;
+    ribPts.push(new THREE.Vector3(TX - (HW + 1.2) + t * 2 * (HW + 1.2), TOP + RISE * Math.sin(Math.PI * t) - 0.34, 0));
+  }
+  const ribGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(ribPts), 26, 0.30, 6, false);
+  const ribT = [];
+  for (let z = z0 - 1; z <= z1 + 1; z += 11.5) xform(ribT, 0, 0, z);
+  flushInstances(grp, ribGeo, ribMat, ribT, { cast: true });
+  const skylight = new THREE.Mesh(archShellGeometry(TX, TZ, HW + 1.2, 2 * HL - 4, TOP, RISE, 10, 0.40, 0.60),
+    makeMat(0xdff3ff, { emissive: 0xbfe6ff, emissiveIntensity: 0.55, transparent: true, opacity: 0.55, roughness: 0.1 }));
+  skylight.material.side = THREE.DoubleSide;
+  skylight.position.y = 0.12;
+  grp.add(skylight);
+  for (const s of [-1, 1]) B(0.6, 0.9, 2 * HL + 2.4, TX + s * (HW + 1.2), TOP + 0.1, TZ, brandMat);
+  addWorldBox(x0 - 1.2, x1 + 1.2, TOP, TOP + RISE + 0.4, z0 - 1.2, z1 + 1.2, 'terminal_roof', true);
+
+  // ---- Structure: perimeter columns ----------------------------------------
+  const colT = [];
+  for (let z = z0 + 6; z <= z1 - 6; z += 17) for (const s of [-1, 1]) xform(colT, TX + s * (HW - 1.4), Y + WALL_H / 2, z, 0.9, WALL_H, 0.9);
+  flushInstances(grp, UNIT_BOX, ribMat, colT, { cast: true, recv: true });
+
+  // ---- Landside curtain wall (west) with three entrance portals -------------
+  const westDoors = [500, 565, 630];
+  {
+    let cursor = z0;
+    const spans = [];
+    for (const dz of westDoors) { spans.push([cursor, dz - 4]); cursor = dz + 4; }
+    spans.push([cursor, z1]);
+    for (const [a, b] of spans) {
+      if (b - a < 0.4) continue;
+      B(0.5, WALL_H, b - a, x0, Y + WALL_H / 2, (a + b) / 2, whiteMat, {
+        box: [x0 - 0.25, x0 + 0.25, Y, TOP, a, b, 'terminal_wall', false]
+      });
+      const gl = B(0.16, WALL_H - 1.2, b - a - 0.6, x0 - 0.30, Y + WALL_H / 2, (a + b) / 2, curtainMat, { order: 3 });
+      gl.userData.studioName = 'Landside curtain wall';
+      const mT = [];
+      for (let z = a + 1.2; z < b - 0.6; z += 2.4) xform(mT, x0 - 0.36, Y + WALL_H / 2, z, 0.16, WALL_H - 1.2, 0.16);
+      for (const hy of [3.4, 7.0, 10.6]) xform(mT, x0 - 0.36, Y + hy, (a + b) / 2, 0.16, 0.16, b - a - 0.6);
+      flushInstances(grp, UNIT_BOX, mullionMat, mT);
+    }
+    for (const dz of westDoors) {
+      B(0.5, WALL_H - 4.6, 8, x0, Y + 4.6 + (WALL_H - 4.6) / 2, dz, whiteMat);
+      B(0.9, 0.34, 8.6, x0 - 0.2, Y + 4.6, dz, steelMat);
+      B(0.2, 4.4, 0.3, x0 - 0.2, Y + 2.2, dz - 4, steelMat);
+      B(0.2, 4.4, 0.3, x0 - 0.2, Y + 2.2, dz + 4, steelMat);
+      createNeonSign(grp, dz === 565 ? 'DEPARTURES  •  TERMINAL 1' : 'ENTRANCE', x0 - 0.62, Y + 5.5, dz, '#090d14', dz === 565 ? '#facc15' : '#38bdf8', dz === 565 ? 9.0 : 4.4, 0.9);
     }
   }
-  createNeonSign(inn, 'CHECK-IN  •  DESKS 1–12', termX - 7.0, termY + 3.4, 552, '#0b1220', '#38bdf8', 8.0, 0.8);
+  // ---- Airside curtain wall (east) with gate-pod portals --------------------
+  {
+    const spans = [[z0, 494], [510, 614], [630, z1]];
+    for (const [a, b] of spans) {
+      B(0.5, WALL_H, b - a, x1, Y + WALL_H / 2, (a + b) / 2, whiteMat, {
+        box: [x1 - 0.25, x1 + 0.25, Y, TOP, a, b, 'terminal_wall', false]
+      });
+      B(0.16, WALL_H - 1.2, b - a - 0.6, x1 + 0.30, Y + WALL_H / 2, (a + b) / 2, curtainMat, { order: 3 });
+      const mT = [];
+      for (let z = a + 1.2; z < b - 0.6; z += 2.4) xform(mT, x1 + 0.36, Y + WALL_H / 2, z, 0.16, WALL_H - 1.2, 0.16);
+      for (const hy of [3.4, 7.0, 10.6]) xform(mT, x1 + 0.36, Y + hy, (a + b) / 2, 0.16, 0.16, b - a - 0.6);
+      flushInstances(grp, UNIT_BOX, mullionMat, mT);
+    }
+  }
+  // ---- End walls -----------------------------------------------------------
+  for (const ez of [-1, 1]) {
+    const wz = TZ + ez * HL;
+    B(2 * HW, WALL_H, 0.5, TX, Y + WALL_H / 2, wz, whiteMat, {
+      box: [x0, x1, Y, TOP, wz - 0.25, wz + 0.25, 'terminal_wall', false]
+    });
+    B(2 * HW - 5, 5.0, 0.2, TX, Y + 8.0, wz + ez * 0.32, curtainMat, { order: 3 });
+  }
 
-  // Departures board on the north end wall
+  // ---- Curbside drop-off: lane, canopy, columns, signage -------------------
+  const curbAsphalt = makeMat(0x2b3138, { texType: 'asphalt', repeatX: 2, repeatY: 30, roughness: 0.86 });
+  B(12, 0.08, 178, 216, 0.22, TZ, curbAsphalt, { recv: true });
+  addWorldBox(210, 222, 0.14, 0.26, 476, 654, 'lax_curb_lane', true);
+  reserveFootprint(209, 223, 475, 655, 'road');
+  mapShapes.push({ x: 216, z: TZ, w: 12, d: 178, color: '#334155', border: '#facc15', enterable: false });
+  const laneT = [];
+  for (let z = 482; z <= 648; z += 8) xform(laneT, 216, 0.27, z, 0.22, 0.03, 3.4);
+  flushInstances(grp, UNIT_BOX, new THREE.MeshBasicMaterial({ color: 0xfacc15 }), laneT);
+  const zebraT = [];
+  for (const dz of westDoors) for (let s = -5; s <= 5; s += 2) xform(zebraT, 216 + s, 0.27, dz, 1.2, 0.03, 5.0);
+  flushInstances(grp, UNIT_BOX, new THREE.MeshBasicMaterial({ color: 0xf8fafc }), zebraT);
+  B(19, 0.55, 158, 219, 7.35, TZ, shellMat, { cast: true, recv: true, name: 'Departures canopy' });
+  B(19.4, 0.35, 158.6, 219, 7.02, TZ, brandMat);
+  addWorldBox(209.5, 228.5, 7.0, 7.65, 486, 644, 'curb_canopy', true);
+  for (let z = 492; z <= 638; z += 24.3) {
+    const c = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.52, 7.0, 10), ribMat);
+    c.position.set(212, 3.5, z);
+    c.castShadow = true;
+    grp.add(c);
+    addWorldBox(211.5, 212.5, 0.26, 7.0, z - 0.5, z + 0.5, 'canopy_column', false);
+  }
+  const stripT = [];
+  for (let z = 490; z <= 640; z += 10) xform(stripT, 219, 6.92, z, 12, 0.1, 0.6);
+  flushInstances(grp, UNIT_BOX, glowMat, stripT);
+  createNeonSign(grp, 'LOS AURA INTERNATIONAL', 209.2, 8.9, TZ, '#090d14', '#facc15', 22.0, 2.0);
+  createNeonSign(grp, 'LAX  •  TERMINAL 1  •  DEPARTURES', 209.2, 6.2, TZ, '#0b1220', '#38bdf8', 17.0, 1.0);
+
+  // =========================================================================
+  // INTERIOR (distance-culled)
+  // =========================================================================
+  const inn = new THREE.Group();
+  inn.userData.studioName = 'LAX terminal interior';
+  grp.add(inn);
+  const I = (w, h, d, x, y, z, m, o) => makeBox(inn, w, h, d, x, y, z, m, o);
+
+  // ---- Check-in islands ----------------------------------------------------
+  const screenT = [], beltT = [];
+  for (const cz of [492, 524, 606, 638]) {
+    I(5.0, 1.15, 16.0, 239, Y + 0.575, cz, deskMat, { cast: true });
+    I(5.3, 0.12, 16.3, 239, Y + 1.21, cz, topMat);
+    I(0.6, 1.9, 16.0, 241.8, Y + 2.1, cz, makeMat(0x0f172a, { metalness: 0.5, roughness: 0.4 }));
+    addWorldBox(236.5, 241.5, Y, Y + 1.27, cz - 8.0, cz + 8.0, 'checkin_counter', true);
+    for (let i = -3; i <= 3; i++) {
+      xform(screenT, 241.4, Y + 2.35, cz + i * 2.2, 0.12, 0.85, 1.5);
+      xform(beltT, 235.4, Y + 0.42, cz + i * 2.2, 1.6, 0.5, 1.7);
+    }
+    I(6.0, 0.12, 1.2, 239, Y + 3.6, cz, brandMat);
+    createNeonSign(inn, `CHECK-IN  ${cz < 550 ? 'A' : 'B'}${cz}`, 239, Y + 3.05, cz, '#0b1220', '#38bdf8', 4.6, 0.62);
+  }
+  flushInstances(inn, UNIT_BOX, makeMat(0x22d3ee, { emissive: 0x0891b2, emissiveIntensity: 0.8 }), screenT);
+  flushInstances(inn, UNIT_BOX, beltMat, beltT, { recv: true });
+  createNeonSign(inn, 'CHECK-IN  •  DESKS 1–28', 239, Y + 5.6, 565, '#0b1220', '#38bdf8', 13.0, 1.0);
+
+  // ---- Hanging departures board (shared canvas, landside + airside) --------
   const boardCanvas = document.createElement('canvas');
   boardCanvas.width = 512; boardCanvas.height = 320;
   airport.board = boardCanvas;
@@ -5341,99 +4732,235 @@ function buildAirportTerminal(grp, mats) {
   const boardTex = new THREE.CanvasTexture(boardCanvas);
   boardTex.colorSpace = THREE.SRGBColorSpace;
   airport.boardTex = boardTex;
-  const boardMat = new THREE.MeshStandardMaterial({ map: boardTex, emissiveMap: boardTex, emissive: 0xffffff, emissiveIntensity: 0.85, roughness: 0.3 });
-  const board = new THREE.Mesh(new THREE.BoxGeometry(12, 7.5, 0.3), [deskMat, deskMat, deskMat, deskMat, boardMat, boardMat]);
-  board.position.set(termX, termY + 5.0, z0 + 1.0);
-  inn.add(board);
+  const boardMat = new THREE.MeshStandardMaterial({ map: boardTex, emissiveMap: boardTex, emissive: 0xffffff, emissiveIntensity: 0.9, roughness: 0.3 });
+  const boardFaces = [boardMat, boardMat, deskMat, deskMat, deskMat, deskMat];
+  I(0.5, 10.0, 16.0, 245.5, Y + 9.4, 565, boardFaces, { name: 'Departures board' });
+  I(0.5, 7.5, 12.0, 256.0, Y + 8.4, 565, boardFaces);
+  for (const bx of [245.5, 256.0]) for (const s of [-1, 1]) I(0.16, 3.2, 0.16, bx, Y + 15.0, 565 + s * 5.5, ribMat);
 
-  // Security checkpoint spanning the middle
-  const secZ = 565;
-  for (const sx of [-1, 1]) {
-    iBox(0.5, 3.0, 5.0, steelMat, termX + sx * 3.2, termY + 1.5, secZ, true);
-    addWorldBox(termX + sx * 3.2 - 0.25, termX + sx * 3.2 + 0.25, termY, termY + 3.0, secZ - 2.5, secZ + 2.5, 'security_arch', false);
+  // ---- Security checkpoint: divider wall + three lanes ---------------------
+  for (const [a, b] of [[z0 + 0.5, 545], [585, z1 - 0.5]]) {
+    I(0.6, 6.0, b - a, 250, Y + 3.0, (a + b) / 2, makeMat(0xe2e8f0, { texType: 'siding', repeatX: 2, repeatY: 20 }), {
+      box: [249.7, 250.3, Y, Y + 6.0, a, b, 'security_divider', false]
+    });
+    I(0.2, 3.4, b - a - 1, 250.35, Y + 4.0, (a + b) / 2, curtainMat, { order: 3 });
   }
-  iBox(7.0, 0.4, 5.0, steelMat, termX, termY + 3.1, secZ);
-  iBox(2.2, 0.9, 7.0, beltMat, termX - 6.5, termY + 0.45, secZ, true);
-  iBox(2.4, 1.4, 2.6, makeMat(0x0f172a, { metalness: 0.5 }), termX - 6.5, termY + 1.4, secZ + 1.6, true);
-  addWorldBox(termX - 7.6, termX - 5.4, termY, termY + 0.9, secZ - 3.5, secZ + 3.5, 'security_belt', true);
-  createNeonSign(inn, 'SECURITY  →  GATES', termX, termY + 4.2, secZ - 3.0, '#065f46', '#f8fafc', 8.0, 0.8);
+  for (const lz of [551, 565, 579]) {
+    for (const sx of [-1, 1]) {
+      I(0.45, 3.0, 4.4, 250 + sx * 2.0, Y + 1.5, lz, steelMat, { cast: true });
+      addWorldBox(250 + sx * 2.0 - 0.23, 250 + sx * 2.0 + 0.23, Y, Y + 3.0, lz - 2.2, lz + 2.2, 'security_arch', false);
+    }
+    I(4.6, 0.35, 4.4, 250, Y + 3.15, lz, steelMat);
+    I(1.9, 0.85, 6.0, 247.0, Y + 0.43, lz, beltMat, { cast: true });
+    I(2.2, 1.35, 2.4, 247.0, Y + 1.35, lz + 1.9, makeMat(0x0f172a, { metalness: 0.5 }), { cast: true });
+    addWorldBox(246.0, 248.0, Y, Y + 0.86, lz - 3.0, lz + 3.0, 'security_belt', true);
+    const binT = [];
+    for (let i = 0; i < 3; i++) xform(binT, 246.2, Y + 0.95, lz - 2.2 + i * 0.8, 1.3, 0.22, 0.6);
+    flushInstances(inn, UNIT_BOX, makeMat(0x64748b, { roughness: 0.7 }), binT);
+  }
+  createNeonSign(inn, 'SECURITY  →  GATES 1–8', 250, Y + 5.4, 543, '#065f46', '#f8fafc', 11.0, 0.9);
+  const stanchT = [];
+  for (let z = 546; z <= 584; z += 3.2) for (const sx of [-4.2, 4.2]) xform(stanchT, 250 + sx, Y + 0.5, z, 0.1, 1.0, 0.1);
+  flushInstances(inn, UNIT_BOX, ribMat, stanchT);
 
-  // Gate lounge (airside, east half)
-  for (const gz of [500, 530, 600, 630]) {
-    for (let r = 0; r < 2; r++) {
-      const seat = iBox(3.6, 0.5, 0.9, seatMat, termX + 6.0, termY + 0.45, gz + r * 1.6, true);
-      seat.receiveShadow = true;
-      iBox(3.6, 0.7, 0.2, seatMat, termX + 6.0, termY + 0.85, gz + r * 1.6 + 0.45);
-      addWorldBox(termX + 4.2, termX + 7.8, termY, termY + 0.7, gz + r * 1.6 - 0.45, gz + r * 1.6 + 0.45, 'gate_seat', true);
+  // ---- Public mezzanine: deck, stair, railing, restaurant ------------------
+  I(13.6, 0.30, 190, 233.0, MEZZ - 0.15, 565, floorMat, { recv: true });
+  addWorldBox(226.2, 239.8, MEZZ - 0.30, MEZZ, 470, 660, 'mezzanine_deck', true);
+  for (const [a, b] of [[470, 596], [612, 660]]) {
+    I(0.16, 1.15, b - a, 239.8, MEZZ + 0.575, (a + b) / 2, ribMat);
+    I(0.10, 0.95, b - a - 0.4, 239.8, MEZZ + 0.55, (a + b) / 2, curtainMat, { order: 3 });
+    addWorldBox(239.6, 240.0, MEZZ, MEZZ + 1.15, a, b, 'mezz_rail', true);
+  }
+  for (let i = 0; i < 14; i++) {
+    const sy = Y + 0.10 + i * 0.52, sz = 611.0 - i * 1.1;
+    I(4.4, 0.52, 1.1, 235.0, sy + 0.26, sz, makeMat(0xd8dee6, { texType: 'concrete', repeatX: 2, repeatY: 1 }), {
+      recv: true, box: [232.8, 237.2, sy, sy + 0.52, sz - 0.55, sz + 0.55, 'mezz_stair', true]
+    });
+  }
+  I(4.4, 0.3, 3.0, 235.0, MEZZ - 0.15, 594.5, floorMat, { recv: true, box: [232.8, 237.2, MEZZ - 0.3, MEZZ, 593, 596, 'mezz_stair', true] });
+  for (const tz of [490, 508, 526, 620, 638]) {
+    I(1.6, 0.08, 1.6, 231.5, MEZZ + 0.78, tz, woodMat);
+    I(0.16, 0.74, 0.16, 231.5, MEZZ + 0.37, tz, ribMat);
+    for (const s of [-1, 1]) {
+      I(0.9, 0.45, 0.9, 231.5 + s * 1.7, MEZZ + 0.23, tz, seatMat);
+      I(0.9, 0.55, 0.16, 231.5 + s * 1.7, MEZZ + 0.72, tz + 0.4, seatMat);
     }
   }
-  createNeonSign(inn, 'GATE 1', termX + 11.0, termY + 4.0, 505, '#0b1220', '#facc15', 3.4, 0.8);
-  createNeonSign(inn, 'GATE 2', termX + 11.0, termY + 4.0, 625, '#0b1220', '#facc15', 3.4, 0.8);
+  I(3.0, 1.1, 12.0, 228.6, MEZZ + 0.55, 565, woodMat, { cast: true });
+  I(3.3, 0.12, 12.3, 228.6, MEZZ + 1.16, 565, topMat);
+  addWorldBox(227.1, 230.1, MEZZ, MEZZ + 1.22, 559, 571, 'mezz_bar', true);
+  createNeonSign(inn, 'SKY DECK  •  BAR & GRILL', 233.0, MEZZ + 3.2, 565, '#1c1917', '#fcd34d', 10.0, 0.85);
 
-  // Baggage carousel (south end)
+  // ---- Airside retail, food court & gate lounges ---------------------------
+  I(9.0, 3.2, 13.0, 259.0, Y + 1.6, 492, makeMat(0x7f1d1d, { texType: 'wood', repeatX: 3, repeatY: 2 }));
+  I(9.4, 0.25, 13.4, 259.0, Y + 3.3, 492, topMat);
+  addWorldBox(254.5, 263.5, Y, Y + 3.2, 485.5, 498.5, 'duty_free', false);
+  createNeonSign(inn, 'DUTY FREE', 259.0, Y + 4.2, 485.2, '#0b1220', '#facc15', 7.0, 0.85);
+  const shelfT = [];
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 6; c++) xform(shelfT, 254.9, Y + 0.7 + r * 0.85, 487 + c * 2.0, 0.5, 0.55, 1.4);
+  flushInstances(inn, UNIT_BOX, makeMat(0xf59e0b, { emissive: 0xb45309, emissiveIntensity: 0.3 }), shelfT);
+  I(3.2, 1.1, 3.2, 259.0, Y + 0.55, 640, woodMat, { cast: true });
+  I(3.6, 0.2, 3.6, 259.0, Y + 1.2, 640, topMat);
+  addWorldBox(257.4, 260.6, Y, Y + 1.3, 638.4, 641.6, 'cafe_kiosk', true);
+  createNeonSign(inn, 'SKY BEANS COFFEE', 259.0, Y + 2.7, 638.2, '#1c1917', '#fcd34d', 5.0, 0.7);
+  for (const tz of [548, 560, 572, 584]) {
+    I(1.5, 0.08, 1.5, 258.0, Y + 0.76, tz, woodMat);
+    I(0.16, 0.72, 0.16, 258.0, Y + 0.36, tz, ribMat);
+    for (const s of [-1, 1]) I(0.85, 0.45, 0.85, 258.0, Y + 0.23, tz + s * 1.6, seatMat);
+  }
+  const loungeT = [], backT = [];
+  for (const gz of [498, 610]) {
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 5; c++) {
+      const sx = 263.5, sz = gz + r * 3.0 + c * 0.0;
+      xform(loungeT, sx, Y + 0.45, sz + c * 1.05, 3.4, 0.42, 0.9);
+      xform(backT, sx, Y + 0.85, sz + c * 1.05 + 0.45, 3.4, 0.7, 0.18);
+    }
+    addWorldBox(261.8, 265.2, Y, Y + 0.7, gz - 0.5, gz + 13.0, 'gate_seat', true);
+  }
+  flushInstances(inn, UNIT_BOX, seatMat, loungeT, { cast: true, recv: true });
+  flushInstances(inn, UNIT_BOX, seatMat, backT);
+  const planterG = new THREE.CylinderGeometry(0.75, 0.62, 0.9, 10);
+  for (const [px, pz] of [[252.5, 520], [252.5, 610], [266.5, 560], [243.0, 660]]) {
+    const pl = new THREE.Mesh(planterG, makeMat(0x78350f, { roughness: 0.85 }));
+    pl.position.set(px, Y + 0.45, pz);
+    inn.add(pl);
+    const bush = new THREE.Mesh(new THREE.IcosahedronGeometry(1.0, 0), makeMat(0x16a34a, { roughness: 0.9 }));
+    bush.position.set(px, Y + 1.5, pz);
+    bush.castShadow = true;
+    inn.add(bush);
+    addWorldBox(px - 0.75, px + 0.75, Y, Y + 0.9, pz - 0.75, pz + 0.75, 'planter', true);
+  }
+  // Baggage claim carousel (south end, landside)
   const carousel = new THREE.Group();
-  carousel.position.set(termX - 4.0, termY + 0.55, z1 - 16);
-  const belt = new THREE.Mesh(new THREE.CylinderGeometry(4.0, 4.0, 0.5, 20), beltMat);
-  carousel.add(belt);
-  const hub = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 0.7, 16), steelMat);
-  carousel.add(hub);
+  carousel.position.set(232.0, Y + 0.55, 650);
+  carousel.add(new THREE.Mesh(new THREE.CylinderGeometry(4.0, 4.0, 0.5, 20), beltMat));
+  carousel.add(new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 0.7, 16), steelMat));
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2;
-    const bag = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.6, 0.5), makeMat([0xef4444, 0x2563eb, 0x16a34a, 0xf59e0b][i % 4], { roughness: 0.8 }));
-    bag.position.set(Math.cos(a) * 3.0, 0.5, Math.sin(a) * 3.0);
-    bag.rotation.y = a;
-    carousel.add(bag);
+    const bag = makeBox(carousel, 0.9, 0.6, 0.5, Math.cos(a) * 3.0, 0.5, Math.sin(a) * 3.0,
+      makeMat([0xef4444, 0x2563eb, 0x16a34a, 0xf59e0b][i % 4], { roughness: 0.8 }), { ry: a });
+    bag.castShadow = false;
   }
   inn.add(carousel);
   airport.carousel = carousel;
-  addWorldBox(termX - 8.0, termX, termY, termY + 0.8, z1 - 20, z1 - 12, 'baggage_carousel', true);
-  createNeonSign(inn, 'BAGGAGE CLAIM', termX - 4.0, termY + 3.6, z1 - 16, '#0b1220', '#a78bfa', 6.0, 0.8);
-
-  // Cafe kiosk
-  iBox(3.0, 1.1, 3.0, makeMat(0x7f1d1d, { texType: 'wood' }), termX - 9.0, termY + 0.55, z1 - 34, true);
-  iBox(3.4, 0.2, 3.4, topMat, termX - 9.0, termY + 1.2, z1 - 34);
-  createNeonSign(inn, 'SKY BEANS COFFEE', termX - 9.0, termY + 2.6, z1 - 32.4, '#1c1917', '#fcd34d', 4.4, 0.6);
-  addWorldBox(termX - 10.5, termX - 7.5, termY, termY + 1.3, z1 - 35.5, z1 - 32.5, 'cafe_kiosk', true);
-
-  for (const lz of [500, 535, 570, 605, 640]) {
-    iBox(termW - 4, 0.12, 0.7, makeMat(0xfff7d6, { emissive: 0xfff7d6, emissiveIntensity: 0.85 }), termX, termY + termH - 0.5, lz);
+  addWorldBox(228.0, 236.0, Y, Y + 0.8, 646, 654, 'baggage_carousel', true);
+  createNeonSign(inn, 'BAGGAGE CLAIM', 232.0, Y + 3.6, 650, '#0b1220', '#a78bfa', 6.5, 0.8);
+  // Ceiling light strips + hall lighting
+  const ceilT = [];
+  for (let z = 474; z <= 656; z += 9) for (const lx of [234, 248, 262]) xform(ceilT, lx, TOP - 1.2, z, 7.0, 0.14, 0.8);
+  flushInstances(inn, UNIT_BOX, glowMat, ceilT);
+  for (const lz of [500, 565, 630]) {
+    const hl = new THREE.PointLight(0xfff1d6, 2.2, 70, 2);
+    hl.position.set(TX, Y + 9.5, lz);
+    inn.add(hl);
   }
-  const hallLight = new THREE.PointLight(0xfff1d6, 2.0, 60, 2);
-  hallLight.position.set(termX, termY + 6.5, termZ);
-  inn.add(hallLight);
+  (aura.culls || []).push({ g: inn, x: TX, z: TZ, r: 135 });
 
-  (aura.culls || []).push({ g: inn, x: termX, z: termZ, r: 110 });
+  // =========================================================================
+  // GATE HOLD-ROOMS + PASSENGER BOARDING BRIDGES
+  // =========================================================================
+  const DECK = 2.45;
+  for (const g of [{ jz: 502, n: 1 }, { jz: 622, n: 2 }]) {
+    const pod = new THREE.Group();
+    pod.position.set(275.5, 0, g.jz);
+    pod.userData.studioName = `Gate ${g.n} hold-room`;
+    grp.add(pod);
+    const P = (w, h, d, x, y, z, m, o) => makeBox(pod, w, h, d, x, y, z, m, o);
+    P(11, 0.30, 28, 0, Y - 0.15, 0, floorMat, { recv: true });
+    addWorldBox(270, 281, Y - 0.30, Y + 0.10, g.jz - 14, g.jz + 14, 'gate_pod_floor', true);
+    P(11, 8.0, 0.5, 0, Y + 4.0, -14, whiteMat, { box: [270, 281, Y, Y + 8, g.jz - 14.25, g.jz - 13.75, 'gate_pod_wall', false] });
+    P(11, 8.0, 0.5, 0, Y + 4.0, 14, whiteMat, { box: [270, 281, Y, Y + 8, g.jz + 13.75, g.jz + 14.25, 'gate_pod_wall', false] });
+    P(0.5, 8.0, 28, 5.5, Y + 4.0, 0, curtainMat, { order: 3 });
+    P(11.8, 0.5, 29, 0, Y + 8.25, 0, shellMat, { cast: true, box: [269.6, 281.4, Y + 8.0, Y + 8.5, g.jz - 14.5, g.jz + 14.5, 'gate_pod_roof', true] });
+    P(2.2, 1.15, 1.2, 2.6, Y + 0.575, -6.0, deskMat, { cast: true });
+    P(2.4, 0.1, 1.4, 2.6, Y + 1.2, -6.0, topMat);
+    addWorldBox(277.0, 279.2, Y, Y + 1.25, g.jz - 6.6, g.jz - 5.4, 'gate_desk', true);
+    createNeonSign(pod, `GATE ${g.n}`, 2.6, Y + 3.4, -6.0, '#0b1220', '#facc15', 3.6, 0.9);
+    const podSeatT = [], podBackT = [];
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) {
+      xform(podSeatT, -2.2, Y + 0.45, 2.0 + r * 3.0 + c * 1.0, 3.0, 0.42, 0.85);
+      xform(podBackT, -2.2, Y + 0.85, 2.45 + r * 3.0 + c * 1.0, 3.0, 0.7, 0.16);
+    }
+    flushInstances(pod, UNIT_BOX, seatMat, podSeatT, { cast: true, recv: true });
+    flushInstances(pod, UNIT_BOX, seatMat, podBackT);
+    // Stair up to bridge deck, then the landing
+    for (let i = 0; i < 6; i++) {
+      const sy = Y + 0.10 + i * 0.36, sz = -8.0 + i * 1.0;
+      P(4.6, 0.36, 1.0, 0.5, sy + 0.18, sz, makeMat(0xd8dee6, { texType: 'concrete' }), {
+        recv: true, box: [273.7, 278.3, sy, sy + 0.36, g.jz + sz - 0.5, g.jz + sz + 0.5, 'bridge_stair', true]
+      });
+    }
+    P(9.0, 0.30, 7.0, 1.0, DECK - 0.15, 1.5, floorMat, {
+      recv: true, box: [272.0, 281.0, DECK - 0.30, DECK, g.jz - 2.0, g.jz + 5.0, 'bridge_landing', true]
+    });
+    P(0.16, 1.1, 7.0, -3.4, DECK + 0.55, 1.5, ribMat);
+    // Rotunda + telescoping tunnel out to the aircraft door
+    const rot = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.2, 3.3, 14), shellMat);
+    rot.position.set(281, DECK + 1.65, g.jz + 2);
+    rot.castShadow = true;
+    grp.add(rot);
+    const BL = 10.0, bz = g.jz + 2;
+    B(BL, 0.24, 3.6, 286.0, DECK - 0.12, bz, topMat, { recv: true, box: [281, 291, DECK - 0.24, DECK, bz - 1.8, bz + 1.8, 'bridge_deck', true] });
+    B(BL + 0.4, 0.22, 4.0, 286.0, DECK + 2.75, bz, shellMat, { cast: true });
+    for (const s of [-1, 1]) {
+      B(BL, 2.6, 0.14, 286.0, DECK + 1.35, bz + s * 1.85, curtainMat, { order: 3 });
+      addWorldBox(281, 291, DECK, DECK + 2.6, bz + s * 1.85 - 0.09, bz + s * 1.85 + 0.09, 'bridge_glass', false);
+    }
+    B(0.5, 2.9, 3.8, 290.8, DECK + 1.35, bz, makeMat(0x1e293b, { roughness: 0.6 }));
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.30, 0.36, DECK - 0.25, 8), ribMat);
+    leg.position.set(288.5, (DECK - 0.25) / 2 + 0.25, bz);
+    grp.add(leg);
+    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.3, 10), makeMat(0x1c1917));
+    wheel.rotation.z = Math.PI / 2;
+    wheel.position.set(288.5, 0.42, bz + 1.2);
+    grp.add(wheel);
+    enterableZones.push({ minX: 270.5, maxX: 280.5, minZ: g.jz - 13.5, maxZ: g.jz + 13.5, name: `LAX GATE ${g.n} HOLD-ROOM` });
+    mapShapes.push({ x: 275.5, z: g.jz, w: 11, d: 28, color: '#e2e8f0', border: '#facc15', enterable: true });
+  }
 
-  // Covered jet walkways out to the parked aircraft
+  // ---- Apron: stand markings, service equipment, flood masts ---------------
+  const paintMat = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
+  const leadT = [];
   for (const jz of [502, 622]) {
-    const deck = addBox(14, 0.24, 3.4, makeMat(0x94a3b8, { texType: 'concrete', repeatX: 6, repeatY: 2 }), x1 + 7, 0.32, jz, false);
-    deck.userData.studioName = 'Jet walkway';
-    addWorldBox(x1, x1 + 14, 0.20, 0.44, jz - 1.7, jz + 1.7, 'jet_walkway', true);
-    addBox(14, 0.2, 4.0, whiteMat, x1 + 7, 4.3, jz);
-    for (const sz of [-1, 1]) {
-      addBox(14, 3.6, 0.16, glassFacadeMat, x1 + 7, 2.4, jz + sz * 1.9, false);
-      addWorldBox(x1, x1 + 14, 0.44, 4.2, jz + sz * 1.9 - 0.08, jz + sz * 1.9 + 0.08, 'walkway_glass', false);
-    }
-    for (const px of [x1 + 3, x1 + 10]) {
-      const col = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.24, 4.2, 8), steelMat);
-      col.position.set(px, 2.1, jz + 2.4);
-      grp.add(col);
-    }
+    for (let x = 292; x <= 322; x += 5) xform(leadT, x, 0.27, jz, 3.2, 0.03, 0.32);
+    xform(leadT, 302, 0.27, jz - 16, 0.32, 0.03, 12);
+    xform(leadT, 302, 0.27, jz + 16, 0.32, 0.03, 12);
+  }
+  flushInstances(grp, UNIT_BOX, paintMat, leadT);
+  const coneG = new THREE.ConeGeometry(0.32, 0.8, 8);
+  const coneMat = makeMat(0xf97316, { emissive: 0xea580c, emissiveIntensity: 0.3 });
+  for (const jz of [502, 622]) for (const [ox, oz] of [[-16, -15], [16, -15], [-16, 15], [16, 15]]) {
+    const cone = new THREE.Mesh(coneG, coneMat);
+    cone.position.set(302 + ox, 0.65, jz + oz);
+    grp.add(cone);
+  }
+  for (const [ex, ez, hex] of [[294, 480, 0x2563eb], [294, 486, 0x2563eb], [296, 640, 0x16a34a], [296, 646, 0x16a34a]]) {
+    B(2.0, 1.1, 3.0, ex, 0.85, ez, makeMat(hex, { metalness: 0.5, roughness: 0.5 }), { cast: true });
+    B(2.2, 0.16, 3.2, ex, 1.45, ez, topMat);
+    addWorldBox(ex - 1.1, ex + 1.1, 0.25, 1.5, ez - 1.6, ez + 1.6, 'bag_cart', true);
+  }
+  B(3.2, 1.3, 5.4, 288, 0.95, 560, makeMat(0xfacc15, { metalness: 0.4, roughness: 0.5 }), { cast: true });
+  B(2.4, 1.2, 2.0, 288, 2.1, 558.4, makeMat(0x0f172a, { metalness: 0.5 }));
+  addWorldBox(286.4, 289.6, 0.25, 2.7, 557.3, 562.7, 'pushback_tug', true);
+  for (const mz of [470, 565, 660]) {
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.38, 22, 8), ribMat);
+    mast.position.set(318, 11.25, mz);
+    mast.castShadow = true;
+    grp.add(mast);
+    addWorldBox(317.6, 318.4, 0.25, 22, mz - 0.4, mz + 0.4, 'apron_mast', false);
+    B(3.4, 0.5, 1.4, 318, 22.4, mz, makeMat(0xfff7d6, { emissive: 0xfff7d6, emissiveIntensity: 1.0 }));
   }
 
-  createNeonSign(grp, 'LOS AURA INTL  •  TERMINAL 1', x0 - 0.5, 7.4, termZ, '#090d14', '#facc15', 15.0, 1.5);
-  createNeonSign(grp, 'DEPARTURES  ↑', x0 - 0.5, 5.6, 545, '#090d14', '#38bdf8', 7.0, 0.8);
-
-  enterableZones.push({ minX: x0 + 0.6, maxX: termX - 1.0, minZ: z0 + 0.6, maxZ: z1 - 0.6, name: 'LAX LANDSIDE LOBBY' });
-  enterableZones.push({ minX: termX - 1.0, maxX: termX + 2.0, minZ: z0 + 0.6, maxZ: z1 - 0.6, name: 'LAX SECURITY CHECKPOINT' });
-  enterableZones.push({ minX: termX + 2.0, maxX: x1 - 0.6, minZ: z0 + 0.6, maxZ: z1 - 0.6, name: 'LAX GATE LOUNGE' });
-  mapShapes.push({ x: termX, z: termZ, w: termW, d: termD, color: '#f8fafc', border: '#0284c7', enterable: true });
+  // ---- Zones & map ---------------------------------------------------------
+  enterableZones.push({ minX: x0 + 0.6, maxX: 249.4, minZ: z0 + 0.6, maxZ: z1 - 0.6, name: 'LAX LANDSIDE DEPARTURES HALL' });
+  enterableZones.push({ minX: 246.0, maxX: 254.0, minZ: 545, maxZ: 585, name: 'LAX SECURITY CHECKPOINT' });
+  enterableZones.push({ minX: 250.6, maxX: x1 - 0.6, minZ: z0 + 0.6, maxZ: z1 - 0.6, name: 'LAX AIRSIDE CONCOURSE' });
+  mapShapes.push({ x: TX, z: TZ, w: 2 * HW, d: 2 * HL, color: '#f8fafc', border: '#0284c7', enterable: true });
 }
-
 function updateAirport(dt, elapsed) {
   if (airport.carousel) airport.carousel.rotation.y += dt * 0.35;
   if (!airport.board) return;
-  if (Math.hypot(player.x - 248, player.z - 565) > 110) return;
+  if (dist2(player.x, player.z, 248, 565) > 14400) return;
   airport.tick += dt;
   if (airport.tick < 2.4) return;
   airport.tick = 0;
@@ -5451,53 +4978,40 @@ export function buildLosAuraNorthExpansion(register = true) {
   worldRoot.add(grp);
   camera.far = Math.max(camera.far, 1150);
   camera.updateProjectionMatrix();
-
   const grassMat = makeGroundMat('grass', { color: 0x5a9a4e, repeatX: 72, repeatY: 60, roughness: 0.94 });
-const sandMat = makeGroundMat('sand', { repeatX: 48, repeatY: 12, roughness: 0.96 });
+  const sandMat = makeGroundMat('sand', { repeatX: 48, repeatY: 12, roughness: 0.96 });
   const asphaltNS = makeMat(0x313946, { texType: 'asphalt', repeatX: 2, repeatY: 48, roughness: 0.86, bumpScale: 0.015 });
   const asphaltEW = makeMat(0x313946, { texType: 'asphalt', repeatX: 48, repeatY: 2, roughness: 0.86, bumpScale: 0.015 });
   const runwayMat = makeMat(0x1e293b, { texType: 'asphalt', repeatX: 6, repeatY: 40, roughness: 0.85 });
   const tarmacMat = makeGroundMat('concrete', { color: 0x64748b, repeatX: 24, repeatY: 24, roughness: 0.88 });
-const concreteMat = makeGroundMat('concrete', { color: 0xd1d5db, repeatX: 18, repeatY: 2, roughness: 0.88 });
-const sidewalkMat = makeGroundMat('concrete', { color: 0xcbd5e1, repeatX: 12, repeatY: 12, roughness: 0.85 });
-const plazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repeatY: 14, roughness: 0.82 });
+  const concreteMat = makeGroundMat('concrete', { color: 0xd1d5db, repeatX: 18, repeatY: 2, roughness: 0.88 });
+  const sidewalkMat = makeGroundMat('concrete', { color: 0xcbd5e1, repeatX: 12, repeatY: 12, roughness: 0.85 });
+  const plazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repeatY: 14, roughness: 0.82 });
   const woodDeckMat = makeMat(0x926c44, { texType: 'wood', repeatX: 40, repeatY: 4, roughness: 0.82 });
   const steelMat = makeMat(0xe2e8f0, { texType: 'brushedsteel', metalness: 0.92, roughness: 0.18, flatShading: false });
   const bridgeRedMat = makeMat(0xdc2626, { metalness: 0.65, roughness: 0.32 });
   const whiteMat = makeMat(0xf8fafc, { roughness: 0.55 });
   const redCurbMat = makeMat(0xef4444, { roughness: 0.6 });
-
-  const addBoxMesh = (w, h, d, mat, x, y, z, cast = true, receive = true) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y, z);
-    m.castShadow = cast;
-    m.receiveShadow = receive;
-    grp.add(m);
-    return m;
-  };
+  const B = (w, h, d, mat, x, y, z, cast = true, receive = true) => makeBox(grp, w, h, d, x, y, z, mat, { cast, recv: receive });
   const paved = (w, d, mat, x, y, z, tag) => {
-    addBoxMesh(w, 0.08, d, mat, x, y - 0.04, z, false);
+    makeBox(grp, w, 0.08, d, x, y - 0.04, z, mat, { recv: true });
     addWorldBox(x - w / 2, x + w / 2, y - 0.08, y, z - d / 2, z + d / 2, tag, true);
   };
-
   createWaterSurface({
     id: 'ocean_strait', parent: grp, minX: -260, maxX: 500, minZ: 320, maxZ: 380,
-    surfaceY: 0.20, bedFn: getOceanBedY, waveScale: 0.9, currentX: 0.55, isOcean: true,
-    segmentSize: 4
+    surfaceY: 0.20, bedFn: getOceanBedY, waveScale: 0.9, currentX: 0.55, isOcean: true, segmentSize: 4
   });
   mapShapes.push({ x: 120, z: 299, w: 760, d: 162, color: '#0284c7', border: '#38bdf8', enterable: false });
   const surfFoam = new THREE.Mesh(new THREE.PlaneGeometry(740, 2.2), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.58 }));
   surfFoam.rotation.x = -Math.PI / 2;
   surfFoam.position.set(120, 0.215, 380.3);
   grp.add(surfFoam);
-
   buildChannelBuoy(grp, I88.x - 30, 300, 0xdc2626);
   buildChannelBuoy(grp, I88.x + 30, 300, 0x22c55e);
   buildChannelBuoy(grp, I88.x - 30, 352, 0xdc2626);
   buildChannelBuoy(grp, I88.x + 30, 352, 0x22c55e);
   buildRowboat(grp, -58, 348, 0x926c44);
   buildRowboat(grp, -30, 372, 0x0ea5e9);
-
   const northLandGeo = new THREE.PlaneGeometry(740, 550, 185, 138);
   northLandGeo.rotateX(-Math.PI / 2);
   const northLand = new THREE.Mesh(northLandGeo, grassMat);
@@ -5506,31 +5020,26 @@ const plazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repea
   registerSculptableTerrain(northLand);
   grp.add(northLand);
   mapShapes.unshift({ x: 120, z: 655, w: 740, d: 550, color: '#4d7c0f', border: '#365314', enterable: false });
-
   // Santa Aura beach & boardwalk
   paved(366, 28, sandMat, -47, 0.24, 394, 'beach_sand');
   mapShapes.push({ x: -47, z: 394, w: 366, d: 28, color: '#fcd34d', border: '#f59e0b', enterable: false });
-  addBoxMesh(354, 0.22, 14, woodDeckMat, -43, 0.29, 413, false);
+  B(354, 0.22, 14, woodDeckMat, -43, 0.29, 413, false);
   addWorldBox(-220, 134, 0.18, 0.40, 406, 420, 'boardwalk_deck', true);
   mapShapes.push({ x: -43, z: 413, w: 354, d: 14, color: '#b45309', border: '#fef08a', enterable: false });
   paved(362, 12, asphaltEW, -39, 0.24, 428, 'boardwalk_ave');
   mapShapes.push({ x: -39, z: 428, w: 362, d: 12, color: '#334155', border: '#facc15', enterable: false });
   reserveFootprint(-220, 142, 421, 435, 'road');
-
-  addBoxMesh(12, 0.26, 82, woodDeckMat, -42, 0.42, 365);
+  B(12, 0.26, 82, woodDeckMat, -42, 0.42, 365);
   addWorldBox(-48, -36, 0.18, 0.55, 324, 406, 'santa_aura_pier', true);
   mapShapes.push({ x: -42, z: 365, w: 12, d: 82, color: '#92400e', border: '#f59e0b', enterable: false });
-  for (let pz = 328; pz <= 402; pz += 10) {
-    [-5.2, 5.2].forEach((ox) => {
-      const piling = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 1.8, 8), makeMat(0x57534e));
-      piling.position.set(-42 + ox, -0.3, pz);
-      grp.add(piling);
-    });
+  for (let pz = 328; pz <= 402; pz += 10) for (const ox of [-5.2, 5.2]) {
+    const piling = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 1.8, 8), makeMat(0x57534e));
+    piling.position.set(-42 + ox, -0.3, pz);
+    grp.add(piling);
   }
-  addBoxMesh(0.45, 5.2, 0.45, bridgeRedMat, -47.2, 3.0, 405.5);
-  addBoxMesh(0.45, 5.2, 0.45, bridgeRedMat, -36.8, 3.0, 405.5);
+  B(0.45, 5.2, 0.45, bridgeRedMat, -47.2, 3.0, 405.5);
+  B(0.45, 5.2, 0.45, bridgeRedMat, -36.8, 3.0, 405.5);
   createNeonSign(grp, 'SANTA AURA PIER & BOARDWALK', -42, 5.4, 405.5, '#1e1b4b', '#38bdf8', 11.2, 1.35);
-
   const wheelGroup = new THREE.Group();
   wheelGroup.position.set(-42, 14.5, 352);
   wheelGroup.userData.studioName = 'Santa Aura Ferris wheel';
@@ -5548,64 +5057,46 @@ const plazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repea
     const spoke = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, wheelRadius * 2, 6), steelMat);
     spoke.rotation.z = ang + Math.PI / 2;
     wheelGroup.add(spoke);
-    const pod = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.3, 2.0), gondolaMat);
-    pod.position.set(Math.cos(ang) * wheelRadius, Math.sin(ang) * wheelRadius, 0);
-    wheelGroup.add(pod);
+    const pod = makeBox(wheelGroup, 1.5, 1.3, 2.0, Math.cos(ang) * wheelRadius, Math.sin(ang) * wheelRadius, 0, gondolaMat);
     wheelPods.push(pod);
   }
   grp.add(wheelGroup);
   buildLosAuraNorthExpansion.wheel = { group: wheelGroup, pods: wheelPods, angle: 0 };
-  [-2.2, 2.2].forEach((lz) => {
-    [-1, 1].forEach((dir) => {
-      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.32, 15.5, 8), steelMat);
-      leg.position.set(-42 + dir * 3.8, 7.3, 352 + lz);
-      leg.rotation.z = dir * 0.46;
-      grp.add(leg);
-    });
-  });
-
+  for (const lz of [-2.2, 2.2]) for (const dir of [-1, 1]) {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.32, 15.5, 8), steelMat);
+    leg.position.set(-42 + dir * 3.8, 7.3, 352 + lz);
+    leg.rotation.z = dir * 0.46;
+    grp.add(leg);
+  }
   buildHotdogStore(-18, 439);
   buildWalkInHouse({ x: -72, z: 439, w: 11.5, d: 9.0, wallColor: 0x38bdf8, roofColor: 0xf43f5e, label: 'SANTA AURA ARCADE' });
   buildWalkInHouse({ x: 38, z: 439, w: 11.5, d: 9.0, wallColor: 0xfef08a, roofColor: 0x0284c7, label: 'PACIFIC SURF & GEAR' });
-  [[-165, 392, 0xef4444], [-125, 390, 0x3b82f6], [-85, 393, 0xfacc15], [15, 391, 0x22c55e], [65, 392, 0xec4899], [105, 390, 0xf97316]].forEach(([ux, uz, col]) => {
-    addBoxMesh(0.08, 2.4, 0.08, whiteMat, ux, 1.35, uz, false);
-    const umbrella = new THREE.Mesh(new THREE.ConeGeometry(1.6, 0.6, 8), makeMat(col));
+  const umbrellaG = new THREE.ConeGeometry(1.6, 0.6, 8);
+  for (const [ux, uz, col] of [[-165, 392, 0xef4444], [-125, 390, 0x3b82f6], [-85, 393, 0xfacc15], [15, 391, 0x22c55e], [65, 392, 0xec4899], [105, 390, 0xf97316]]) {
+    B(0.08, 2.4, 0.08, whiteMat, ux, 1.35, uz, false);
+    const umbrella = new THREE.Mesh(umbrellaG, makeMat(col));
     umbrella.position.set(ux, 2.65, uz);
     grp.add(umbrella);
-  });
+  }
   for (let px = -205; px <= 125; px += 30) if (Math.abs(px + 42) > 12) createTree(px, 421.5, 1.05);
-
-  // Downtown Los Aura
-  const dtNsRoads = [-108, -60, -12, 36, 84, 124];
-  const dtEwRoads = [468, 516, 564, 612, 660];
-  dtNsRoads.forEach((rx) => {
-    paved(12, 204, asphaltNS, rx, 0.24, 564, 'dt_road');
-    mapShapes.push({ x: rx, z: 564, w: 12, d: 204, color: '#334155', border: '#475569', enterable: false });
-    reserveFootprint(rx - 7, rx + 7, 461, 667, 'road');
-  });
-  dtEwRoads.forEach((rz) => {
-    paved(244, 12, asphaltEW, 8, 0.24, rz, 'dt_road');
-    mapShapes.push({ x: 8, z: rz, w: 244, d: 12, color: '#334155', border: '#475569', enterable: false });
-    reserveFootprint(-115, 131, rz - 7, rz + 7, 'road');
-  });
-  [468, 564, 660].forEach((cz) => {
+  // Downtown Los Aura — same generator as Sunnyvale, different config
+  roadGrid(grp,
+    { at: [-108, -60, -12, 36, 84, 124], w: 12, d: 204, c: 564, top: 0.24, thick: 0.08, mat: asphaltNS, tag: 'dt_road', map: ['#334155', '#475569'] },
+    { at: [468, 516, 564, 612, 660], w: 12, d: 244, c: 8, top: 0.24, thick: 0.08, mat: asphaltEW, tag: 'dt_road', map: ['#334155', '#475569'] },
+    null);
+  for (const cz of [468, 564, 660]) {
     paved(22, 12, asphaltEW, 135, 0.24, cz, 'dt_connector');
     reserveFootprint(124, 146, cz - 7, cz + 7, 'road');
-  });
-
-  const dtBlockX = [-84, -36, 12, 60, 104];
-  const dtBlockZ = [492, 540, 588, 636];
-  dtBlockX.forEach((bx) => {
+  }
+  cityBlocks(grp, [-84, -36, 12, 60, 104], [492, 540, 588, 636], (bx) => {
     const bw = bx === 104 ? 28 : 36;
-    dtBlockZ.forEach((bz) => {
-      addBoxMesh(bw, 0.12, 36, sidewalkMat, bx, 0.24, bz, false);
-      addBoxMesh(bw - 4, 0.14, 32, plazaMat, bx, 0.25, bz, false);
-      buildKnockableLamppost(bx - bw / 2 + 1.2, bz - 16.8);
-      buildKnockableLamppost(bx + bw / 2 - 1.2, bz + 16.8);
-    });
+    return [[bw, 0.12, 36, 0.24, sidewalkMat], [bw - 4, 0.14, 32, 0.25, plazaMat]];
+  }, (bx, bz) => {
+    const bw = bx === 104 ? 28 : 36;
+    buildKnockableLamppost(bx - bw / 2 + 1.2, bz - 16.8);
+    buildKnockableLamppost(bx + bw / 2 - 1.2, bz + 16.8);
   });
-
-  // Landmark roof dressing (the towers themselves come from TOWER_PLACEMENTS)
+  // Landmark roof dressing
   const crownRing1 = new THREE.Mesh(new THREE.TorusGeometry(7.7, 1.1, 10, 24), makeMat(0xbae6fd, { metalness: 0.9, roughness: 0.12, emissive: 0x0284c7, emissiveIntensity: 0.25 }));
   crownRing1.rotation.x = Math.PI / 2;
   crownRing1.position.set(-36, 88.6, 540);
@@ -5616,47 +5107,33 @@ const plazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repea
   usGlowBand.rotation.x = Math.PI / 2;
   usGlowBand.position.set(-36, 90.5, 540);
   grp.add(crownRing1, crownRing2, usGlowBand);
-  [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => addBoxMesh(0.6, 3.4, 0.6, steelMat, -36 + sx * 7.4, 88.2, 540 + sz * 7.4));
-
-  const sailMesh = new THREE.Mesh(new THREE.BoxGeometry(15.5, 11.0, 1.4), makeMat(0x7dd3fc, { metalness: 0.95, roughness: 0.08, emissive: 0x38bdf8, emissiveIntensity: 0.35 }));
-  sailMesh.position.set(12, 88.0, 540);
-  sailMesh.rotation.z = 0.24;
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) B(0.6, 3.4, 0.6, steelMat, -36 + sx * 7.4, 88.2, 540 + sz * 7.4);
+  const sailMesh = makeBox(grp, 15.5, 11.0, 1.4, 12, 88.0, 540,
+    makeMat(0x7dd3fc, { metalness: 0.95, roughness: 0.08, emissive: 0x38bdf8, emissiveIntensity: 0.35 }), { rz: 0.24 });
   const wilshireSpire = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.42, 18.0, 8), steelMat);
   wilshireSpire.position.set(17.5, 93.0, 540);
-  grp.add(sailMesh, wilshireSpire);
-
-  addBoxMesh(14.5, 5.5, 12.0, makeMat(0x0284c7, { emissive: 0x0369a1, emissiveIntensity: 0.3 }), 60, 71.0, 540);
-  addBoxMesh(12.5, 8.0, 12.5, whiteMat, -36, 56.2, 636);
-  addBoxMesh(8.0, 6.0, 8.0, whiteMat, -36, 63.2, 636);
+  grp.add(wilshireSpire);
+  B(14.5, 5.5, 12.0, makeMat(0x0284c7, { emissive: 0x0369a1, emissiveIntensity: 0.3 }), 60, 71.0, 540);
+  B(12.5, 8.0, 12.5, whiteMat, -36, 56.2, 636);
+  B(8.0, 6.0, 8.0, whiteMat, -36, 63.2, 636);
   const cityHallPyramid = new THREE.Mesh(new THREE.ConeGeometry(5.8, 5.5, 4), makeMat(0xfef08a, { emissive: 0xfacc15, emissiveIntensity: 0.35 }));
   cityHallPyramid.rotation.y = Math.PI / 4;
   cityHallPyramid.position.set(-36, 68.9, 636);
   grp.add(cityHallPyramid);
-
   const hallGroup = new THREE.Group();
   hallGroup.position.set(-84, 0.30, 588);
   hallGroup.userData.studioName = 'WALT AURA CONCERT HALL';
-  const hallBase = new THREE.Mesh(new THREE.BoxGeometry(24, 6.5, 22), makeMat(0xf8fafc, { texType: 'marble' }));
-  hallBase.position.y = 3.25;
-  hallBase.castShadow = true;
-  hallGroup.add(hallBase);
-  [
+  makeBox(hallGroup, 24, 6.5, 22, 0, 3.25, 0, makeMat(0xf8fafc, { texType: 'marble' }), { cast: true });
+  for (const s of [
     { w: 14, h: 15, d: 0.55, x: -3.5, y: 10.5, z: 4.5, rx: 0.32, ry: 0.25, rz: -0.28 },
     { w: 15, h: 17, d: 0.55, x: 3.8, y: 11.5, z: 2.0, rx: -0.25, ry: -0.35, rz: 0.30 },
     { w: 13, h: 14, d: 0.55, x: 0.0, y: 10.0, z: -4.8, rx: -0.35, ry: 0.15, rz: -0.20 },
     { w: 11, h: 12, d: 0.55, x: -6.5, y: 8.8, z: -2.5, rx: 0.20, ry: 0.45, rz: 0.34 }
-  ].forEach((s) => {
-    const sail = new THREE.Mesh(new THREE.BoxGeometry(s.w, s.h, s.d), steelMat);
-    sail.position.set(s.x, s.y, s.z);
-    sail.rotation.set(s.rx, s.ry, s.rz);
-    sail.castShadow = true;
-    hallGroup.add(sail);
-  });
+  ]) makeBox(hallGroup, s.w, s.h, s.d, s.x, s.y, s.z, steelMat, { cast: true, rx: s.rx, ry: s.ry, rz: s.rz });
   createNeonSign(hallGroup, 'WALT AURA CONCERT HALL', 0, 5.2, 11.2, '#0f172a', '#38bdf8', 11.5, 1.15);
   grp.add(hallGroup);
   addWorldBox(-96, -72, 0.30, 7.0, 577, 599, 'concert_hall', false);
   mapShapes.push({ x: -84, z: 588, w: 24, d: 22, color: '#e2e8f0', border: '#38bdf8', enterable: false });
-
   const arenaGroup = new THREE.Group();
   arenaGroup.position.set(60, 0.30, 492);
   arenaGroup.userData.studioName = 'AURA ARENA';
@@ -5672,20 +5149,18 @@ const plazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repea
   grp.add(arenaGroup);
   addWorldBox(46, 74, 0.30, 17.2, 478, 506, 'aura_arena', false);
   mapShapes.push({ x: 60, z: 492, w: 28, d: 28, color: '#4f46e5', border: '#facc15', enterable: false });
-
   buildReserveBank(12, 492);
   buildCarDealership(-36, 492);
-  buildHotdogStore(12, 588); // relocated off the north–south carriageway
-
-  // Los Aura International Airport
+  buildHotdogStore(12, 588);
+  // ---- Los Aura International Airport -------------------------------------
   paved(288, 260, tarmacMat, 324, 0.25, 565, 'lax_tarmac');
   mapShapes.push({ x: 324, z: 565, w: 288, d: 260, color: '#475569', border: '#94a3b8', enterable: false });
   paved(64, 14, asphaltEW, 194, 0.26, 564, 'lax_access');
   reserveFootprint(162, 226, 557, 571, 'road');
   createNeonSign(grp, 'LAX • LOS AURA INTL AIRPORT', 186, 6.2, 555.5, '#0f172a', '#38bdf8', 13.0, 1.5);
-
+  // Theme Building — gateway monument at the airport entrance
   const themeGroup = new THREE.Group();
-  themeGroup.position.set(216, 0.24, 564);
+  themeGroup.position.set(196, 0.24, 424);
   themeGroup.userData.studioName = 'LAX Theme Building';
   const coreShaft = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 3.4, 15.0, 14), whiteMat);
   coreShaft.position.y = 7.5;
@@ -5694,66 +5169,46 @@ const plazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repea
   const saucerRoof = new THREE.Mesh(new THREE.ConeGeometry(8.8, 2.2, 20), whiteMat);
   saucerRoof.position.y = 12.6;
   themeGroup.add(coreShaft, observationSaucer, saucerRoof);
-  [0, Math.PI / 2].forEach((rotY) => {
+  for (const rotY of [0, Math.PI / 2]) {
     const archPts = [];
     for (let t = -1; t <= 1.001; t += 0.1) archPts.push(new THREE.Vector3(t * 16.5, (1 - t * t) * 18.5, 0));
     const archMesh = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(archPts), 28, 0.55, 8, false), whiteMat);
     archMesh.rotation.y = rotY;
     archMesh.castShadow = true;
     themeGroup.add(archMesh);
-  });
+  }
   grp.add(themeGroup);
-  addWorldBox(212.5, 219.5, 0.24, 15.2, 560.5, 567.5, 'lax_theme_bldg', false);
-
+  addWorldBox(192.5, 199.5, 0.24, 15.2, 420.5, 427.5, 'lax_theme_bldg', false);
+  mapShapes.push({ x: 196, z: 424, w: 34, d: 34, color: '#f8fafc', border: '#38bdf8', enterable: false });
   buildAirportTerminal(grp, { whiteMat, steelMat, asphaltEW });
-
-  addBoxMesh(5.2, 34.0, 5.2, whiteMat, 272, 17.24, 565);
+  // Control tower — clear of the terminal, with sightlines down both runways
+  B(5.2, 34.0, 5.2, whiteMat, 296, 17.24, 440);
   const atcCab = new THREE.Mesh(new THREE.CylinderGeometry(5.4, 3.8, 4.6, 12), makeMat(0x10b981, { metalness: 0.85, roughness: 0.15, emissive: 0x059669, emissiveIntensity: 0.28 }));
-  atcCab.position.set(272, 36.2, 565);
+  atcCab.position.set(296, 36.2, 440);
   const atcRoof = new THREE.Mesh(new THREE.CylinderGeometry(5.8, 5.8, 0.7, 12), whiteMat);
-  atcRoof.position.set(272, 38.8, 565);
+  atcRoof.position.set(296, 38.8, 440);
   const atcBeacon = new THREE.Mesh(new THREE.SphereGeometry(0.35, 8, 8), new THREE.MeshBasicMaterial({ color: 0xef4444 }));
-  atcBeacon.position.set(272, 41.2, 565);
+  atcBeacon.position.set(296, 41.2, 440);
   aviationBeacons.push(atcBeacon);
   grp.add(atcCab, atcRoof, atcBeacon);
-  addWorldBox(269.4, 274.6, 0.24, 39.2, 562.4, 567.6, 'atc_tower', false);
-
+  addWorldBox(293.4, 298.6, 0.24, 39.2, 437.4, 442.6, 'atc_tower', false);
+  createNeonSign(grp, 'CONTROL TOWER', 296, 30.0, 437.2, '#052e2b', '#6ee7b7', 5.0, 0.7);
+  mapShapes.push({ x: 296, z: 440, w: 11, d: 11, color: '#10b981', border: '#6ee7b7', enterable: false });
+  // Runways
   const runwayXs = [336, 394];
-  const rwEdgePositions = [], stripeTransforms = [];
-  const sdm = new THREE.Object3D();
-  runwayXs.forEach((rx) => {
+  const rwEdgeT = [], stripeT = [];
+  for (const rx of runwayXs) {
     paved(22, 240, runwayMat, rx, 0.29, 565, 'runway');
     mapShapes.push({ x: rx, z: 565, w: 22, d: 240, color: '#0f172a', border: '#f8fafc', enterable: false });
-    [452, 678].forEach((tz) => {
-      for (let sx = -8; sx <= 8; sx += 3.2) {
-        sdm.position.set(rx + sx, 0.295, tz);
-        sdm.rotation.set(0, 0, 0);
-        sdm.scale.set(1.4, 0.09, 7.5);
-        sdm.updateMatrix();
-        stripeTransforms.push(sdm.matrix.clone());
-      }
-    });
+    for (const tz of [452, 678]) for (let sx = -8; sx <= 8; sx += 3.2) xform(stripeT, rx + sx, 0.295, tz, 1.4, 0.09, 7.5);
     for (let z = 466; z <= 664; z += 12) {
-      sdm.position.set(rx, 0.295, z);
-      sdm.rotation.set(0, 0, 0);
-      sdm.scale.set(0.45, 0.09, 5.5);
-      sdm.updateMatrix();
-      stripeTransforms.push(sdm.matrix.clone());
-      rwEdgePositions.push([rx - 10.6, 0.46, z], [rx + 10.6, 0.46, z]);
+      xform(stripeT, rx, 0.295, z, 0.45, 0.09, 5.5);
+      xform(rwEdgeT, rx - 10.6, 0.46, z, 0.35, 0.35, 0.35);
+      xform(rwEdgeT, rx + 10.6, 0.46, z, 0.35, 0.35, 0.35);
     }
-  });
-  {
-    const stripes = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), whiteMat, stripeTransforms.length);
-    stripeTransforms.forEach((m, i) => stripes.setMatrixAt(i, m));
-    stripes.instanceMatrix.needsUpdate = true;
-    grp.add(stripes);
-    const rwLights = new THREE.InstancedMesh(new THREE.BoxGeometry(0.35, 0.35, 0.35), new THREE.MeshBasicMaterial({ color: 0x38bdf8 }), rwEdgePositions.length);
-    const dm = new THREE.Object3D();
-    rwEdgePositions.forEach(([x, y, z], i) => { dm.position.set(x, y, z); dm.updateMatrix(); rwLights.setMatrixAt(i, dm.matrix); });
-    rwLights.instanceMatrix.needsUpdate = true;
-    grp.add(rwLights);
   }
-
+  flushInstances(grp, UNIT_BOX, whiteMat, stripeT);
+  flushInstances(grp, UNIT_BOX, new THREE.MeshBasicMaterial({ color: 0x38bdf8 }), rwEdgeT);
   const spawnParkedJet = (jx, jz, yaw, stripeHex) => {
     const jet = new THREE.Group();
     jet.position.set(jx, 0.29, jz);
@@ -5766,24 +5221,17 @@ const plazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repea
     const nose = new THREE.Mesh(new THREE.ConeGeometry(2.1, 4.8, 14), whiteMat);
     nose.rotation.x = Math.PI / 2;
     nose.position.set(0, 3.2, 14.4);
-    const wingL = new THREE.Mesh(new THREE.BoxGeometry(14.5, 0.35, 4.2), steelMat);
-    wingL.position.set(-7.5, 2.8, 1.0);
-    wingL.rotation.y = 0.26;
-    const wingR = wingL.clone();
-    wingR.position.x = 7.5;
-    wingR.rotation.y = -0.26;
-    const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.45, 5.8, 3.8), makeMat(stripeHex));
-    tailFin.position.set(0, 6.2, -10.2);
-    tailFin.rotation.x = -0.25;
-    const hStab = new THREE.Mesh(new THREE.BoxGeometry(8.4, 0.25, 2.2), steelMat);
-    hStab.position.set(0, 3.4, -10.8);
-    [-5.5, 5.5].forEach((ex) => {
+    const wingL = makeBox(jet, 14.5, 0.35, 4.2, -7.5, 2.8, 1.0, steelMat, { ry: 0.26 });
+    makeBox(jet, 14.5, 0.35, 4.2, 7.5, 2.8, 1.0, steelMat, { ry: -0.26 });
+    const tailFin = makeBox(jet, 0.45, 5.8, 3.8, 0, 6.2, -10.2, makeMat(stripeHex), { rx: -0.25 });
+    makeBox(jet, 8.4, 0.25, 2.2, 0, 3.4, -10.8, steelMat);
+    for (const ex of [-5.5, 5.5]) {
       const eng = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.78, 3.4, 12), makeMat(0x334155, { metalness: 0.85 }));
       eng.rotation.x = Math.PI / 2;
       eng.position.set(ex, 1.9, 2.2);
       jet.add(eng);
-    });
-    jet.add(body, nose, wingL, wingR, tailFin, hStab);
+    }
+    jet.add(body, nose);
     grp.add(jet);
     const c = Math.abs(Math.cos(yaw)), s = Math.abs(Math.sin(yaw));
     const fHX = 2.3 * c + 14.5 * s, fHZ = 2.3 * s + 14.5 * c;
@@ -5791,122 +5239,102 @@ const plazaMat = makeGroundMat('concrete', { color: 0x94a3b8, repeatX: 14, repea
     const wHX = 14.5 * c + 2.5 * s, wHZ = 14.5 * s + 2.5 * c;
     addWorldBox(jx - wHX, jx + wHX, 2.5, 3.3, jz - wHZ, jz + wHZ, 'jet_wing', false);
   };
-  spawnParkedJet(292, 502, -Math.PI / 2, 0xdc2626);
-  spawnParkedJet(292, 622, -Math.PI / 2, 0x0284c7);
-
-  [500, 630].forEach((hz) => {
+  spawnParkedJet(302, 502, -Math.PI / 2, 0xdc2626);
+  spawnParkedJet(302, 622, -Math.PI / 2, 0x0284c7);
+  for (const hz of [500, 630]) {
     const hw = 26, hd = 28, hh = 11;
-    addBoxMesh(hw, hh, 0.6, steelMat, 442, 0.29 + hh / 2, hz - hd / 2);
-    addBoxMesh(hw, hh, 0.6, steelMat, 442, 0.29 + hh / 2, hz + hd / 2);
-    addBoxMesh(0.6, hh, hd, steelMat, 442 + hw / 2, 0.29 + hh / 2, hz);
-    addBoxMesh(hw + 0.8, 0.6, hd + 0.8, makeMat(0x334155), 442, 0.29 + hh + 0.3, hz);
+    B(hw, hh, 0.6, steelMat, 442, 0.29 + hh / 2, hz - hd / 2);
+    B(hw, hh, 0.6, steelMat, 442, 0.29 + hh / 2, hz + hd / 2);
+    B(0.6, hh, hd, steelMat, 442 + hw / 2, 0.29 + hh / 2, hz);
+    B(hw + 0.8, 0.6, hd + 0.8, makeMat(0x334155), 442, 0.29 + hh + 0.3, hz);
     addWorldBox(442 - hw / 2, 442 + hw / 2, 0.29, 0.29 + hh, hz - hd / 2, hz - hd / 2 + 0.6, 'hangar_wall', false);
     addWorldBox(442 - hw / 2, 442 + hw / 2, 0.29, 0.29 + hh, hz + hd / 2 - 0.6, hz + hd / 2, 'hangar_wall', false);
     addWorldBox(442 + hw / 2 - 0.6, 442 + hw / 2, 0.29, 0.29 + hh, hz - hd / 2, hz + hd / 2, 'hangar_wall', false);
     addWorldBox(442 - hw / 2, 442 + hw / 2, 0.29 + hh, 0.29 + hh + 0.6, hz - hd / 2, hz + hd / 2, 'hangar_roof', true);
+    createNeonSign(grp, hz === 500 ? 'HANGAR 1 • MAINTENANCE' : 'HANGAR 2 • CARGO', 442, 9.4, hz - hd / 2 - 0.4, '#0f172a', '#facc15', 12.0, 1.1);
     enterableZones.push({ minX: 442 - hw / 2 + 1, maxX: 442 + hw / 2 - 1, minZ: hz - hd / 2 + 1, maxZ: hz + hd / 2 - 1, name: 'LAX AIRCRAFT HANGAR' });
     mapShapes.push({ x: 442, z: hz, w: hw, d: hd, color: '#94a3b8', border: '#1e293b', enterable: true });
-  });
-
-  // Los Aura Motor Speedway
+  }
+  // ---- Los Aura Motor Speedway (turn segments batched by material) ---------
   paved(102, 16, asphaltEW, 91, 0.26, 738, 'speedway_access');
   paved(14, 66, asphaltNS, -12, 0.26, 699, 'speedway_access');
   reserveFootprint(40, 142, 730, 746, 'road');
   reserveFootprint(-19, -5, 666, 732, 'road');
-
   const trackCenterZ = 807, trackRadius = 69, trackW = 18, straightLen = 180, straightMidX = -50;
   paved(straightLen, trackW, runwayMat, straightMidX, 0.27, 738, 'track_surface');
   paved(straightLen, trackW, runwayMat, straightMidX, 0.27, 876, 'track_surface');
   mapShapes.push({ x: straightMidX, z: 738, w: straightLen, d: trackW, color: '#1e293b', border: '#ef4444', enterable: false });
   mapShapes.push({ x: straightMidX, z: 876, w: straightLen, d: trackW, color: '#1e293b', border: '#ef4444', enterable: false });
-  addBoxMesh(straightLen, 1.1, 0.7, concreteMat, straightMidX, 0.82, 728.6);
+  B(straightLen, 1.1, 0.7, concreteMat, straightMidX, 0.82, 728.6);
   addWorldBox(-140, 40, 0.26, 1.39, 728.2, 729.0, 'track_wall_s', true);
-  addBoxMesh(straightLen, 1.1, 0.7, concreteMat, straightMidX, 0.82, 885.4);
+  B(straightLen, 1.1, 0.7, concreteMat, straightMidX, 0.82, 885.4);
   addWorldBox(-140, 40, 0.26, 1.39, 885.0, 885.8, 'track_wall_n', true);
-
   const turnSteps = 32;
-  [
+  const segT = [], curbRedT = [], curbWhiteT = [], wallRedT = [], wallWhiteT = [];
+  for (const { cx, startAng, endAng } of [
     { cx: 40, startAng: -Math.PI / 2, endAng: Math.PI / 2 },
     { cx: -140, startAng: Math.PI / 2, endAng: (3 * Math.PI) / 2 }
-  ].forEach(({ cx, startAng, endAng }) => {
+  ]) {
     for (let i = 0; i < turnSteps; i++) {
       const a0 = startAng + (i / turnSteps) * (endAng - startAng);
       const a1 = startAng + ((i + 1) / turnSteps) * (endAng - startAng);
       const aMid = (a0 + a1) / 2;
       const segLen = Math.abs(a1 - a0) * (trackRadius + trackW / 2) + 1.2;
-      const tx = cx + Math.cos(aMid) * trackRadius;
-      const tz = trackCenterZ + Math.sin(aMid) * trackRadius;
-      const seg = new THREE.Mesh(new THREE.BoxGeometry(trackW, 0.08, segLen), runwayMat);
-      seg.position.set(tx, 0.23, tz);
-      seg.rotation.y = -aMid;
-      seg.receiveShadow = true;
-      grp.add(seg);
+      const tx = cx + Math.cos(aMid) * trackRadius, tz = trackCenterZ + Math.sin(aMid) * trackRadius;
+      xform(segT, tx, 0.23, tz, trackW, 0.08, segLen, 0, -aMid, 0);
       const innerR = trackRadius - trackW / 2 + 0.6;
-      const curb = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.11, segLen * 0.95), i % 2 === 0 ? redCurbMat : whiteMat);
-      curb.position.set(cx + Math.cos(aMid) * innerR, 0.28, trackCenterZ + Math.sin(aMid) * innerR);
-      curb.rotation.y = -aMid;
-      grp.add(curb);
+      const curbX = cx + Math.cos(aMid) * innerR, curbZ = trackCenterZ + Math.sin(aMid) * innerR;
+      xform(i % 2 === 0 ? curbRedT : curbWhiteT, curbX, 0.28, curbZ, 1.1, 0.11, segLen * 0.95, 0, -aMid, 0);
       const outerR = trackRadius + trackW / 2 + 0.4;
       const wx = cx + Math.cos(aMid) * outerR, wz = trackCenterZ + Math.sin(aMid) * outerR;
-      const wall = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.1, segLen), i % 2 === 0 ? redCurbMat : whiteMat);
-      wall.position.set(wx, 0.82, wz);
-      wall.rotation.y = -aMid;
-      grp.add(wall);
+      xform(i % 2 === 0 ? wallRedT : wallWhiteT, wx, 0.82, wz, 0.7, 1.1, segLen, 0, -aMid, 0);
       addWorldBox(wx - 1.2, wx + 1.2, 0.26, 1.39, wz - 1.2, wz + 1.2, 'track_turn_wall', true);
     }
     mapShapes.push({ x: cx, z: trackCenterZ, w: 78, d: 156, color: '#1e293b', border: '#ef4444', enterable: false });
-  });
-
-  for (let row = 0; row < 2; row++) {
-    for (let col = 0; col < 8; col++) {
-      const sq = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.10, 2.2), (row + col) % 2 === 0 ? whiteMat : makeMat(0x090d14));
-      sq.position.set(-51.1 + row * 1.1, 0.28, 730.2 + col * 2.2);
-      grp.add(sq);
-    }
   }
-  addBoxMesh(0.5, 7.6, 0.5, steelMat, -50, 4.0, 727.6);
-  addBoxMesh(0.5, 7.6, 0.5, steelMat, -50, 4.0, 748.6);
-  addBoxMesh(0.5, 0.5, 21.5, steelMat, -50, 7.6, 738);
+  flushInstances(grp, UNIT_BOX, runwayMat, segT, { recv: true });
+  flushInstances(grp, UNIT_BOX, redCurbMat, curbRedT);
+  flushInstances(grp, UNIT_BOX, whiteMat, curbWhiteT);
+  flushInstances(grp, UNIT_BOX, redCurbMat, wallRedT);
+  flushInstances(grp, UNIT_BOX, whiteMat, wallWhiteT);
+  const gridWhiteT = [], gridBlackT = [];
+  for (let row = 0; row < 2; row++) for (let col = 0; col < 8; col++) {
+    xform((row + col) % 2 === 0 ? gridWhiteT : gridBlackT, -51.1 + row * 1.1, 0.28, 730.2 + col * 2.2, 1.1, 0.10, 2.2);
+  }
+  flushInstances(grp, UNIT_BOX, whiteMat, gridWhiteT);
+  flushInstances(grp, UNIT_BOX, makeMat(0x090d14), gridBlackT);
+  B(0.5, 7.6, 0.5, steelMat, -50, 4.0, 727.6);
+  B(0.5, 7.6, 0.5, steelMat, -50, 4.0, 748.6);
+  B(0.5, 0.5, 21.5, steelMat, -50, 7.6, 738);
   createNeonSign(grp, 'LOS AURA MOTOR SPEEDWAY', -50, 6.8, 738, '#090d14', '#ef4444', 14.5, 1.45);
-
   paved(120, 8, asphaltEW, -50, 0.26, 752, 'pit_lane');
-  addBoxMesh(120, 0.75, 0.5, concreteMat, -50, 0.64, 747.6);
+  B(120, 0.75, 0.5, concreteMat, -50, 0.64, 747.6);
   addWorldBox(-110, 10, 0.26, 1.02, 747.3, 747.9, 'pit_wall', true);
   const garageMat = makeMat(0x334155, { texType: 'corrugated', metalness: 0.7 });
-  addBoxMesh(96, 0.5, 10, garageMat, -50, 5.0, 761);
+  B(96, 0.5, 10, garageMat, -50, 5.0, 761);
   addWorldBox(-98, -2, 4.75, 5.25, 756, 766, 'pit_garage_roof', true);
-  addBoxMesh(96, 4.8, 0.5, garageMat, -50, 2.68, 765.75);
+  B(96, 4.8, 0.5, garageMat, -50, 2.68, 765.75);
   addWorldBox(-98, -2, 0.26, 5.06, 765.5, 766, 'pit_garage_back', false);
   for (let gx = -98; gx <= -2; gx += 16) {
-    addBoxMesh(0.5, 4.8, 10, garageMat, gx, 2.68, 761);
+    B(0.5, 4.8, 10, garageMat, gx, 2.68, 761);
     addWorldBox(gx - 0.25, gx + 0.25, 0.26, 5.06, 756, 766, 'pit_garage_wall', false);
   }
   createNeonSign(grp, 'PIT LANE & TEAM GARAGES', -50, 4.4, 755.8, '#1e293b', '#facc15', 14.0, 1.1);
   enterableZones.push({ minX: -98, maxX: -2, minZ: 756, maxZ: 766, name: 'SPEEDWAY PIT GARAGES' });
-
   for (let tier = 0; tier < 5; tier++) {
     const ty = 0.6 + tier * 1.1, tz = 723 - tier * 1.8;
-    addBoxMesh(130, 1.0, 1.8, tier % 2 === 0 ? steelMat : makeMat(0x2563eb), -50, ty, tz);
+    B(130, 1.0, 1.8, tier % 2 === 0 ? steelMat : makeMat(0x2563eb), -50, ty, tz);
     addWorldBox(-115, 15, 0.26, ty + 0.5, tz - 0.9, tz + 0.9, 'grandstand_tier', true);
   }
-  addBoxMesh(132, 0.4, 11, makeMat(0x0f172a), -50, 7.6, 719);
+  B(132, 0.4, 11, makeMat(0x0f172a), -50, 7.6, 719);
   mapShapes.push({ x: -50, z: 719, w: 132, d: 11, color: '#2563eb', border: '#f8fafc', enterable: false });
-
   const stuntAngle = Math.atan2(3.0, 18);
-  const stuntRampW = new THREE.Mesh(new THREE.BoxGeometry(18, 0.35, 10), makeMat(0xf59e0b));
-  stuntRampW.position.set(-20, 1.75, 812);
-  stuntRampW.rotation.z = stuntAngle;
-  stuntRampW.castShadow = true;
-  grp.add(stuntRampW);
+  const stuntMat = makeMat(0xf59e0b);
+  makeBox(grp, 18, 0.35, 10, -20, 1.75, 812, stuntMat, { cast: true, rz: stuntAngle });
   addDriveableRamp({ minX: -29, maxX: -11, minZ: 807, maxZ: 817, startY: 0.26, endY: 3.24, axis: 'x', dir: 1 });
-  const stuntRampE = new THREE.Mesh(new THREE.BoxGeometry(18, 0.35, 10), makeMat(0xf59e0b));
-  stuntRampE.position.set(8, 1.75, 812);
-  stuntRampE.rotation.z = -stuntAngle;
-  stuntRampE.castShadow = true;
-  grp.add(stuntRampE);
+  makeBox(grp, 18, 0.35, 10, 8, 1.75, 812, stuntMat, { cast: true, rz: -stuntAngle });
   addDriveableRamp({ minX: -1, maxX: 17, minZ: 807, maxZ: 817, startY: 3.24, endY: 0.26, axis: 'x', dir: 1 });
   buildCarDealership(-85, 812);
-
   if (register) {
     placeCar(buildSportsCar({ name: 'LOS AURA GT-R #1', bodyHex: 0xdc2626, accentHex: 0xfacc15, x: -58, z: 734.5, yaw: Math.PI / 2, isCoupe: true, isSupercar: true }), 0.27);
     placeCar(buildSportsCar({ name: 'PACIFIC APEX #7', bodyHex: 0x0284c7, accentHex: 0xf8fafc, x: -66, z: 741.5, yaw: Math.PI / 2, isCoupe: true, isSupercar: true }), 0.27);
@@ -5933,7 +5361,6 @@ function disposeWorldObject(root) {
     }
   });
 }
-
 function pruneDetachedHighDetail() {
   for (let i = highDetailObjects.length - 1; i >= 0; i--) {
     let o = highDetailObjects[i], attached = false;
@@ -5941,7 +5368,6 @@ function pruneDetachedHighDetail() {
     if (!attached) highDetailObjects.splice(i, 1);
   }
 }
-
 function clearBuiltWorld() {
   disposeTowerInteriors();
   for (const child of [...worldRoot.children]) {
@@ -5950,9 +5376,8 @@ function clearBuiltWorld() {
     disposeWorldObject(child);
   }
   resetTowerSystem();
-  signCache.clear();
+  disposeSignCache();
   barrierChunks.length = 0;
-
   armory.built = false;
   armory.cases.length = 0;
   armory.dumpster = null;
@@ -5960,17 +5385,16 @@ function clearBuiltWorld() {
   armory.hammerInDumpster = null;
   armory.alarmLight = null;
   armory.alarmBeacon = null;
+  armory.ammoBox = null;
   armory.hasHammer = false;
   armory.dumpsterSearched = false;
   armory.alarm = 0;
   armory.swing = 0;
-
   airport.board = null;
   airport.boardTex = null;
   airport.boardRows = null;
   airport.carousel = null;
   airport.tick = 0;
-
   resetWaterSystem();
   riverFlowMats.length = 0;
   lastWaterFrame = -Infinity;
@@ -5989,12 +5413,10 @@ function clearBuiltWorld() {
   buildLosAuraNorthExpansion.wheel = null;
   pruneDetachedHighDetail();
 }
-
 export function buildWorld(data = levelData, { register = true, afterStatic = null } = {}) {
   if (!foreignRoots) foreignRoots = new Set(worldRoot.children);
   bindArmoryKey();
   clearBuiltWorld();
-
   buildRoadsFreewayAndDesert();
   buildRedrockDesertBiome();
   buildNewBiomes();
@@ -6011,16 +5433,13 @@ export function buildWorld(data = levelData, { register = true, afterStatic = nu
   buildFirearmsArmory();
   buildTowerDistricts();
   buildGroundIntegrity();
-
   buildOceanSeabed(worldRoot);
   recomputeWorldBounds();
   buildEdgeBarrier();
-
   registerGeneratedWorldObjects(data);
   recomputeWorldBounds();
 }
-
-// Register late-bound implementations for lower layers (see state.js / water.js).
+// Late-bound implementations for lower layers (see state.js / water.js).
 Object.assign(hooks, {
   knockOverLamppost,
   updateWater: updateWaterOnce,
