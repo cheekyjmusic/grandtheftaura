@@ -1,63 +1,114 @@
 // =============================================================================
-// vehicles.js — Vehicle mesh builders, 6-speed manual gearbox, driving physics,
-// car-to-car collisions, 3D terrain physics, suspension & exhaust flame effects.
+// vehicles.js — Vehicle mesh builders (sports car / supercar / tank / BUS),
+// 6-speed manual gearbox, driving physics, car-to-car collisions, 3D terrain
+// physics, suspension & exhaust flame effects.
 //
 // FIXES IN THIS REVISION
 // -----------------------------------------------------------------------------
-// 1. NPC ROADKILL RESTORED
-//    The old test only compared the car's CENTRE point against a 1.85 m radius,
-//    ran BEFORE the car actually moved, required `!npc.asleep`, and read
-//    `npc.y` (undefined on pooled/sleeping NPCs => NaN => the compare was always
-//    false). A ~6 m car therefore drove straight through people. Replaced with
-//    a swept two-circle footprint test that runs AFTER movement, tolerates a
-//    missing npc.y, wakes sleepers, and has a per-NPC hit cooldown.
+// 1. HEIGHT-AWARE WATER (bridge fix)
+//    isInWater(x,z) is a 2D footprint test, so the Golden Gate deck counted as
+//    water and the car was damped ~1.4/s while crossing it. Water is now a
+//    HEIGHT test: only geometry actually below the surface gets wet. The deck
+//    drives exactly like tarmac (full grip, no drag).
 //
-// 2. SMALL LEDGES NO LONGER STOP CARS
-//    The wall probe started at v.y + 0.25, so curbs, sidewalks, plaza slabs,
-//    boardwalk lips and ramp seams were treated as walls and killed the speed.
-//    The probe now starts at v.y + STEP_HEIGHT (0.55 m) and the ground probes
-//    reach above the step, so the car rolls up and over instead of stopping.
-//    Real walls, guardrails, hydrants and barriers still block.
+// 2. REAL WATER BEHAVIOUR — CARS SINK
+//    Off the deck there is no tyre bite: momentum + drag, engine floods at
+//    ~1.15 m, nose drops, body sinks at a terminal rate to the seabed. Occupants
+//    drown below 2.6 m. Bailing out places you at the surface, not the seabed.
+//    Parked/unmanned cars sink too.
 //
-// 3. MULTIPLAYER OCCUPANCY — DRIVER + PASSENGERS
-//    Cars now have seats. The first player in takes seat 0 (driver); everyone
-//    else rides along in the next free seat until the car is full. Drivers
-//    leaving promote the next occupant. Passengers get their own seat camera,
-//    free look, door animation, exit spot and crash damage, but no controls.
-//    Seat state is broadcast through hooks.mpWorldEvent and can be mirrored by
-//    the net layer via applyRemoteCarSeatEvent().
+// 3. BUS
+//    8 seats (first rider drives, everyone else rides), slower caps/accel/steer/
+//    brakes, 3-circle footprint, 6 wheels, heavier mass, working doors.
+//
+// 4. ROOF / BODY COLLISION WHEN ROLLED
+//    The body is now an oriented box: a rolled car rests on its roof or side
+//    instead of sinking through the floor, its rolled body blocks walls, it
+//    scrapes/sparks/takes damage, cannot drive, and can be rocked upright with
+//    SPACE + W while stopped. Ceiling guard stops roof punch-through.
+//
+// 5. CAR-TO-CAR COLLISIONS ARE HEIGHT-AWARE
+//    A car on the bridge no longer collides with traffic on the road below.
+//
+// (Previous revisions: swept NPC roadkill, STEP_HEIGHT ledge climbing,
+//  driver + passenger multiplayer occupancy — all retained.)
 // =============================================================================
 import * as THREE from 'three';
 import { levelData } from './levelData.js';
-import { CAR_PTS, collidesHorizontally, computeSupportFloor, gameState, hooks, inputState, isInWater, keys, lampPosts, npcs, player, pushFeed, surfaceGrip, terrainH } from './state.js';
+import {
+  CAR_PTS, collidesHorizontally, computeSupportFloor, gameState, hooks, inputState,
+  isInWater, keys, lampPosts, npcs, player, pushFeed, surfaceGrip, terrainH
+} from './state.js';
 import { camera, makeMat, worldRoot } from './engine.js';
 import { sfx } from './audio.js';
 import { spawnParticles } from './items.js';
 
 export const vehicles = [];
+
 export const GEAR_LABELS = ['R', 'N', '1', '2', '3', '4', '5', '6'];
 // Index 0 = Reverse, 1 = Neutral (cap 0 is intentional), 2..7 = forward gears.
 export const GEAR_CAPS_MPH = [36, 0, 39, 66, 95, 125, 154, 180];
+// The bus is deliberately a bit slower than the cars (~65% top end).
+export const BUS_GEAR_CAPS_MPH = [26, 0, 30, 50, 70, 88, 104, 118];
 export const GEAR_RATIO_MULT = [-0.55, 0, 1.0, 0.66, 0.46, 0.34, 0.26, 0.21];
 
 const DEFAULT_SCALE = 1.35;
+const BUS_DEFAULT_SCALE = 1.2;
+export const BUS_SEAT_COUNT = 8;
+
 // Anything shorter than this relative to the car's base is driven over, not into.
 const STEP_HEIGHT = 0.55;
 const NPC_HIT_RADIUS = 0.5;
 const NPC_MIN_SPEED = 1.2;
 const NPC_HIT_COOLDOWN = 900;
 
+// --- Water tuning ------------------------------------------------------------
+const WATER_CONTACT_EPS  = 0.10;  // body must dip this far under to count
+const WATER_AWASH_DEPTH  = 0.75;  // shallow phase: a little wheel bite left
+const WATER_FLOOD_DEPTH  = 1.15;  // engine dies until the car is dry again
+const WATER_DEEP_DEPTH   = 2.60;  // occupants start drowning
+const WATER_SINK_GRAVITY = 5.4;   // effective gravity (weight minus buoyancy)
+const WATER_MAX_SINK_SPD = 3.2;   // terminal sink speed, m/s
+const WATER_DRAG         = 2.4;   // per-second horizontal damping
+const WATER_DPS          = 6;
+
+// --- Rollover / roof contact tuning -----------------------------------------
+const ROLL_TIP_START     = 0.78;  // existing tipping threshold
+const ROLL_CONTACT_BLEND = 0.55;  // radians over which the body takes the weight
+const ROOF_DOWN_FACTOR   = 0.30;  // roof counts as "down" past this
+const ROOF_SCRAPE_DRAG   = 3.6;
+const ROOF_RIGHT_SPEED   = 1.5;   // must be nearly stopped to rock it upright
+
 let vehicleUid = 0;
 const carCollisionCooldowns = new Map();
+
+// -----------------------------------------------------------------------------
+// Small maths helpers
+// -----------------------------------------------------------------------------
+function wrapPi(a) {
+  let x = a % (Math.PI * 2);
+  if (x > Math.PI) x -= Math.PI * 2;
+  if (x < -Math.PI) x += Math.PI * 2;
+  return x;
+}
 
 /**
  * Live gearbox caps from levelData (Studio tuning used to be ignored entirely).
  * Falls back to the built-in table and repairs malformed saves so a bad value
  * can never produce a divide-by-zero or a forward gear that cannot accelerate.
+ * With no argument it resolves the car you are currently driving, so the HUD
+ * shows bus gears correctly without any caller changes.
  */
-export function getGearCaps() {
-  const out = GEAR_CAPS_MPH.slice();
-  const src = levelData?.params?.vehicles?.gearCapsMph;
+export function getGearCaps(v = null) {
+  let veh = v;
+  if (!veh && gameState.inCar && gameState.activeCarIndex >= 0) {
+    veh = vehicles[gameState.activeCarIndex] || null;
+  }
+  const isBus = Boolean(veh && veh.isBus);
+  const out = (isBus ? BUS_GEAR_CAPS_MPH : GEAR_CAPS_MPH).slice();
+  const src = isBus
+    ? levelData?.params?.vehicles?.busGearCapsMph
+    : levelData?.params?.vehicles?.gearCapsMph;
   if (Array.isArray(src)) {
     for (let i = 0; i < out.length; i++) {
       const n = Number(src[i]);
@@ -80,24 +131,215 @@ function tune(key, fallback = 1) {
 function footprintScale(v) {
   return (v.carScale || DEFAULT_SCALE) * (v.isTank ? 1.28 : 1);
 }
-function wheelHalfX(v) { return (v.isTank ? 1.55 : 0.98) * (v.carScale || DEFAULT_SCALE); }
-function wheelHalfZ(v) { return (v.isTank ? 2.05 : 1.38) * (v.carScale || DEFAULT_SCALE); }
+function wheelHalfX(v) {
+  if (v.isBus) return 1.08 * (v.carScale || BUS_DEFAULT_SCALE);
+  return (v.isTank ? 1.55 : 0.98) * (v.carScale || DEFAULT_SCALE);
+}
+function wheelHalfZ(v) {
+  if (v.isBus) return 2.80 * (v.carScale || BUS_DEFAULT_SCALE);
+  return (v.isTank ? 2.05 : 1.38) * (v.carScale || DEFAULT_SCALE);
+}
+function wheelRadius(v) { return v.wheelRadius || 0.38; }
+function chaseDistance(v) {
+  return 11.4 * (v.carScale || DEFAULT_SCALE) * (v.isBus ? 1.45 : 1);
+}
+function chaseLookHeight(v) { return v.isBus ? 1.70 : 0.95; }
+
+/** Two circles for cars, three for the long bus body. */
+function footprintLayout(v) {
+  const scale = footprintScale(v);
+  if (v.isBus) return { d: 2.90 * scale, r: 1.20 * scale, offsets: [1, 0, -1] };
+  return { d: 0.95 * scale, r: 0.92 * scale, offsets: [1, -1] };
+}
+
+// -----------------------------------------------------------------------------
+// Body box: roof height, rollover support, roof-down detection
+// -----------------------------------------------------------------------------
+function roofTopLocal(v) {
+  if (v.isBus) return 3.05;
+  if (v.isTank) return 1.90;
+  return v.isSupercar ? 1.29 : 1.65;
+}
+function roofHeight(v) { return roofTopLocal(v) * (v.carScale || DEFAULT_SCALE); }
+function bodyHalfWidth(v) {
+  const s = v.carScale || DEFAULT_SCALE;
+  return (v.isBus ? 1.20 : v.isTank ? 1.62 : 1.06) * s;
+}
+function bodyHalfLength(v) {
+  const s = v.carScale || DEFAULT_SCALE;
+  return (v.isBus ? 4.40 : v.isTank ? 2.90 : 2.30) * s;
+}
+
+/** +1 when the roof points straight down, 0 when the car is on its wheels. */
+function roofDownFactor(v) {
+  const up = Math.cos(v.roll || 0) * Math.cos(v.pitch || 0);
+  return Math.max(0, -up);
+}
+
+/**
+ * How far the body's lowest corner hangs below the origin at this attitude.
+ * Zero while the wheels are underneath (so ramps/slopes are unaffected), ramps
+ * in past the tipping threshold, and reaches roof height when fully inverted.
+ */
+function bodySupportOffset(v) {
+  const roll = wrapPi(v.roll || 0);
+  const pitch = wrapPi(v.pitch || 0);
+  const hw = bodyHalfWidth(v);
+  const hl = bodyHalfLength(v);
+  const ht = roofHeight(v);
+
+  let rollOffset = 0;
+  const aRoll = Math.abs(roll);
+  if (aRoll > ROLL_TIP_START) {
+    const cr = Math.cos(roll);
+    const full = hw * Math.abs(Math.sin(roll)) + (cr < 0 ? -ht * cr : 0);
+    rollOffset = full * Math.min(1, (aRoll - ROLL_TIP_START) / ROLL_CONTACT_BLEND);
+  }
+
+  let pitchOffset = 0;
+  const aPitch = Math.abs(pitch);
+  if (aPitch > 1.10) {
+    const cp = Math.cos(pitch);
+    const full = hl * Math.abs(Math.sin(pitch)) + (cp < 0 ? -ht * cp : 0);
+    pitchOffset = full * Math.min(1, (aPitch - 1.10) / 0.5);
+  }
+
+  return Math.max(rollOffset, pitchOffset);
+}
+
+/** Highest point of the body above the origin — used for the ceiling guard. */
+function bodyTopOffset(v) {
+  const roll = wrapPi(v.roll || 0);
+  const ht = roofHeight(v);
+  const hw = bodyHalfWidth(v);
+  return Math.max(ht * Math.max(0, Math.cos(roll)), hw * Math.abs(Math.sin(roll))) + 0.35;
+}
+
+// -----------------------------------------------------------------------------
+// Water — HEIGHT AWARE. A bridge deck above the surface is DRY.
+// -----------------------------------------------------------------------------
+function waterLevelFallback() {
+  const w = levelData?.params?.water;
+  const cands = [w?.surfaceY, w?.level, w?.y, w?.height, levelData?.params?.seaLevel, levelData?.seaLevel];
+  for (const c of cands) {
+    const n = Number(c);
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
+/** World Y of the water surface here, or null when there is no water at all. */
+export function waterSurfaceY(x, z) {
+  // Preferred: let the real water system answer (waves, tides, volumes).
+  if (hooks.waterSurfaceY) {
+    const n = Number(hooks.waterSurfaceY(x, z));
+    return Number.isFinite(n) ? n : null;
+  }
+  // Fallback: legacy 2D zone test gives the footprint, levelData gives height.
+  if (!isInWater(x, z)) return null;
+  return waterLevelFallback();
+}
+
+/** Per-frame water state for one vehicle. Also drives the parked-car sink path. */
+function updateVehicleWater(v, dt) {
+  const w = v.water || (v.water = {
+    active: false, wasActive: false, surfaceY: null,
+    depth: 0, awash: false, flooded: false, floodLatch: false, deep: false, t: 0
+  });
+
+  const surf = waterSurfaceY(v.x, v.z);
+  let active = false;
+  let contactY = v.y;
+
+  if (surf !== null) {
+    contactY = v.y - bodySupportOffset(v);
+    // On the Golden Gate deck the support floor is metres above the surface,
+    // so this stays false and the car drives exactly like tarmac.
+    const support = computeSupportFloor(v.x, v.z, v.y + 0.55, v.isBus ? 1.3 : 0.8);
+    const standingOnDeck = support > surf + 0.05 && contactY >= support - 0.30;
+    active = !standingOnDeck && (contactY < surf - WATER_CONTACT_EPS);
+  }
+
+  w.surfaceY = surf;
+  w.active   = active;
+  w.depth    = active ? Math.max(0, surf - contactY) : 0;
+  w.awash    = active && w.depth < WATER_AWASH_DEPTH;
+  w.flooded  = active && w.depth >= WATER_FLOOD_DEPTH;
+  w.deep     = active && w.depth >= WATER_DEEP_DEPTH;
+  w.t        = active ? w.t + dt : 0;
+  if (w.flooded) w.floodLatch = true;
+  if (!active) w.floodLatch = false;
+  v._inWater = active;
+
+  if (active && !w.wasActive) {
+    spawnParticles(v.x, surf + 0.15, v.z, 0xbae6fd, 16, 6.5);
+    if (sfx.splash) sfx.splash();
+    else if (Math.abs(v.speed) > 6) sfx.hit();
+    if (gameState.inCar && vehicles[gameState.activeCarIndex] === v) {
+      pushFeed('VEHICLE IN WATER — IT IS SINKING • [F] EXIT', 'border-l-sky-400');
+    }
+  }
+  w.wasActive = active;
+  return w;
+}
+
+/** Shared sink integrator for driven and parked bodies. */
+function stepVehicleSinking(v, dt, w) {
+  const offset = bodySupportOffset(v);
+  const seabed = computeSupportFloor(v.x, v.z, v.y + 0.35, v.isBus ? 1.3 : 0.9) + offset;
+  const sinkAccel = WATER_SINK_GRAVITY * (w.awash && w.t < 1.2 ? 0.35 : 1);
+  v.vy = Math.max(-WATER_MAX_SINK_SPD, (v.vy || 0) - sinkAccel * dt);
+  v.y += v.vy * dt;
+  if (v.y <= seabed) { v.y = seabed; v.vy = 0; }
+
+  // Engine bay floods first: nose drops, gentle wallow on the roll axis.
+  const roll = wrapPi(v.roll || 0);
+  const restRoll = Math.abs(roll) > ROLL_TIP_START ? (roll >= 0 ? Math.PI : -Math.PI) : 0;
+  v.pitch = (v.pitch || 0) + (-0.42 - (v.pitch || 0)) * Math.min(1, dt * 1.4);
+  v.roll = (v.roll || 0) + (restRoll - (v.roll || 0)) * Math.min(1, dt * 1.2);
+
+  const drag = Math.max(0, 1 - WATER_DRAG * dt);
+  v.speed *= drag;
+  v.velX = (v.velX || 0) * drag;
+  v.velZ = (v.velZ || 0) * drag;
+
+  if (Math.random() < dt * 14) spawnParticles(v.x, v.y + 0.9, v.z, 0xe0f2fe, 1, 1.2);
+}
 
 // -----------------------------------------------------------------------------
 // Occupancy / seats
 // -----------------------------------------------------------------------------
+// Bus eye anchors (local space): driver front-left, then paired rows behind.
+const BUS_SEAT_ANCHORS = [
+  [-0.62, 1.95, 3.30],  // 0 driver
+  [ 0.66, 1.95, 2.30],  // 1 front right (behind the door)
+  [-0.66, 1.95, 2.30],  // 2
+  [ 0.66, 1.95, 1.20],  // 3
+  [-0.66, 1.95, 1.20],  // 4
+  [ 0.66, 1.95, 0.10],  // 5
+  [-0.66, 1.95, 0.10],  // 6
+  [ 0.66, 1.95, -1.00]  // 7
+];
+
 /** Seats available on this shell. Evaluated live so late flags (isTank) apply. */
 export function seatCapacity(v) {
   if (!v) return 0;
+  if (v.isBus) return BUS_SEAT_COUNT;
   if (v.isTank) return 2;
   if (v.isSupercar) return 2;
   return v.isCoupe === false ? 4 : 2;
 }
+
 function localPlayerId() {
   return (hooks.mpLocalId && hooks.mpLocalId()) || 'local';
 }
+
 /** Local-space eye/camera anchor for a given seat. */
 function seatLocalPos(v, seatIndex) {
+  if (v.isBus) {
+    const a = BUS_SEAT_ANCHORS[Math.max(0, Math.min(BUS_SEAT_ANCHORS.length - 1, seatIndex))];
+    return new THREE.Vector3(a[0], a[1], a[2]);
+  }
   const y = v.isSupercar ? 1.02 : 1.30;
   switch (seatIndex) {
     case 0: return new THREE.Vector3(-0.38, y, 0.12);          // driver (left)
@@ -106,7 +348,13 @@ function seatLocalPos(v, seatIndex) {
     default: return new THREE.Vector3(0.38, y - 0.06, -0.78);  // rear right
   }
 }
-function seatSideSign(seatIndex) { return (seatIndex % 2 === 0) ? -1 : 1; }
+
+/** Which side of the vehicle this occupant's door is on. */
+function seatSideSign(seatIndex, v = null) {
+  if (v && v.isBus) return seatIndex === 0 ? -1 : 1; // driver left, riders right
+  return (seatIndex % 2 === 0) ? -1 : 1;
+}
+
 function firstFreeSeat(v) {
   const cap = seatCapacity(v);
   for (let s = 0; s < cap; s++) {
@@ -116,9 +364,11 @@ function firstFreeSeat(v) {
 }
 function occupantBySeat(v, seat) { return v.occupants.find((o) => o.seat === seat) || null; }
 function localOccupant(v) { return v.occupants.find((o) => o.local) || null; }
+
 function broadcastSeat(t, v, id, seat) {
   if (hooks.mpWorldEvent) hooks.mpWorldEvent({ t, car: v.uid, id, seat });
 }
+
 /** Net layer can mirror seat traffic from the host with this. */
 export function applyRemoteCarSeatEvent(evt) {
   if (!evt) return;
@@ -144,9 +394,11 @@ export function applyRemoteCarSeatEvent(evt) {
     }
   }
 }
+
 export function isLocalPassenger() {
   return Boolean(gameState.inCar && gameState.isPassenger);
 }
+
 export function getVehicleSeatInfo(idx) {
   const v = vehicles[idx];
   if (!v) return null;
@@ -175,32 +427,36 @@ function createRemappedTexture(defaultFill) {
   tex.repeat.set(3, 3);
   return { canvas, tex };
 }
+
 const carBaseRough = createRemappedTexture(56);
 const carClearcoatRough = createRemappedTexture(36);
 const texLoader = new THREE.TextureLoader();
 const carScratchBumpTex = texLoader.load('assets/textures/metal.png', (tex) => {
   const img = tex.image;
   if (!img || !img.width || !img.height) return;
+
   carBaseRough.canvas.width = img.width;
   carBaseRough.canvas.height = img.height;
   const rCtx = carBaseRough.canvas.getContext('2d');
   rCtx.drawImage(img, 0, 0);
   const rData = rCtx.getImageData(0, 0, img.width, img.height);
+
   carClearcoatRough.canvas.width = img.width;
   carClearcoatRough.canvas.height = img.height;
   const cCtx = carClearcoatRough.canvas.getContext('2d');
   const cData = cCtx.createImageData(img.width, img.height);
+
   const rd = rData.data;
   const cd = cData.data;
   for (let i = 0; i < rd.length; i += 4) {
     const lum = (rd[i] + rd[i + 1] + rd[i + 2]) / 3;
     const t = lum / 255;
-    // Metallic base: [54..222] -> effective roughness ~0.18 on clean paint, ~0.76 on scratches
+    // Metallic base: [54..222] -> effective roughness ~0.18 clean, ~0.76 scratched
     const baseVal = Math.round(54 + t * 168);
     rd[i] = baseVal;
     rd[i + 1] = baseVal;
     rd[i + 2] = baseVal;
-    // Clearcoat layer: [34..185] -> crisp automotive gloss on clean paint, dull on scratches
+    // Clearcoat layer: [34..185] -> crisp gloss on clean paint, dull on scratches
     const coatVal = Math.round(34 + t * 151);
     cd[i] = coatVal;
     cd[i + 1] = coatVal;
@@ -217,7 +473,7 @@ carScratchBumpTex.wrapT = THREE.RepeatWrapping;
 carScratchBumpTex.repeat.set(3, 3);
 
 // -----------------------------------------------------------------------------
-// Mesh builder
+// Sports car / supercar mesh builder
 // -----------------------------------------------------------------------------
 export function buildSportsCarMesh({
   name = 'SPORTS CAR',
@@ -329,8 +585,10 @@ export function buildSportsCarMesh({
   const floorPan = new THREE.Mesh(new THREE.BoxGeometry(1.86, 0.14, doorLen), carbonMat);
   floorPan.position.set(0, lowerY - lowerH / 2 + 0.07, doorCenterZ);
   floorPan.receiveShadow = true;
+
   const centerConsole = new THREE.Mesh(new THREE.BoxGeometry(0.28, lowerH * 0.76, doorLen), carbonMat);
   centerConsole.position.set(0, lowerY - lowerH / 2 + lowerH * 0.38, doorCenterZ);
+
   const sideSkirtL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.14, 2.7), carbonMat);
   sideSkirtL.position.set(-1.04, 0.34, 0);
   const sideSkirtR = sideSkirtL.clone();
@@ -374,6 +632,7 @@ export function buildSportsCarMesh({
       cabin.add(rearSill, rearQuarterGlass);
     }
   }
+
   const glassFront = new THREE.Mesh(new THREE.PlaneGeometry(1.48, cabinH * 0.74), glassMat);
   glassFront.position.set(0, -0.015, cabinLen / 2 - 0.035);
   glassFront.rotation.x = -0.16;
@@ -387,24 +646,31 @@ export function buildSportsCarMesh({
     const doorPivot = new THREE.Group();
     doorPivot.userData.studioName = side < 0 ? 'Left Door' : 'Right Door';
     doorPivot.position.set(side * 0.96, lowerY, doorFrontZ);
+
     const doorPanel = new THREE.Mesh(new THREE.BoxGeometry(0.12, lowerH, doorLen), bodyMat);
     doorPanel.position.set(0, 0, -doorLen * 0.5);
     doorPanel.castShadow = true;
     doorPanel.receiveShadow = true;
+
     const beltTrim = new THREE.Mesh(new THREE.BoxGeometry(0.125, 0.045, doorLen), carbonMat);
     beltTrim.position.set(0, lowerH * 0.5 - 0.01, -doorLen * 0.5);
+
     const doorGlass = new THREE.Mesh(new THREE.PlaneGeometry(doorLen - 0.12, cabinH * 0.64), glassMat);
     doorGlass.position.set(side * 0.01, lowerH * 0.5 + cabinH * 0.33, -doorLen * 0.5);
     doorGlass.rotation.y = side * (Math.PI / 2);
+
     const handle = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.045, 0.18), chromeMat);
     handle.position.set(side * 0.065, lowerH * 0.5 - 0.09, -doorLen + 0.24);
+
     const mirrorArm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.035, 0.05), carbonMat);
     mirrorArm.position.set(side * 0.09, lowerH * 0.5 + 0.05, -0.14);
     const mirrorCap = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.075, 0.09), bodyMat);
     mirrorCap.position.set(side * 0.15, lowerH * 0.5 + 0.07, -0.14);
+
     doorPivot.add(doorPanel, beltTrim, doorGlass, handle, mirrorArm, mirrorCap);
     return doorPivot;
   }
+
   const doorLeftPivot = buildDoorAssembly(-1);
   const doorRightPivot = buildDoorAssembly(1);
 
@@ -424,6 +690,7 @@ export function buildSportsCarMesh({
     seat.position.x = side * 0.4;
     seats.push(seat);
   }
+
   // Rear bench for 4-seat shells so passengers have something to sit on.
   if (!isCoupe && !isSupercar) {
     const bench = new THREE.Group();
@@ -457,18 +724,22 @@ export function buildSportsCarMesh({
   grille.position.set(0, 0.52, 2.24);
   const splitter = new THREE.Mesh(new THREE.BoxGeometry(2.08, 0.07, 0.35), carbonMat);
   splitter.position.set(0, 0.32, 2.26);
+
   const hlMat = makeMat(0xfef9c3, { emissive: 0xfef08a, emissiveIntensity: 0.9 });
   const hlL = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.14, 0.08), hlMat);
   hlL.position.set(-0.68, 0.66, 2.24);
   const hlR = hlL.clone();
   hlR.position.x = 0.68;
+
   const tlMat = makeMat(0xef4444, { emissive: 0xdc2626, emissiveIntensity: 0.65 });
   const tlL = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.14, 0.08), tlMat);
   tlL.position.set(-0.64, 0.68, -2.24);
   const tlR = tlL.clone();
   tlR.position.x = 0.64;
+
   const diffuser = new THREE.Mesh(new THREE.BoxGeometry(1.88, 0.22, 0.14), carbonMat);
   diffuser.position.set(0, 0.36, -2.23);
+
   const pipeGeo = new THREE.CylinderGeometry(0.07, 0.07, 0.22, 10);
   const pipeL = new THREE.Mesh(pipeGeo, chromeMat);
   pipeL.rotation.x = Math.PI / 2;
@@ -543,27 +814,326 @@ export function buildSportsCarMesh({
 
   return {
     root, chassis, doorLeftPivot, doorRightPivot, wheelPivots, wheelSpinners, flameL, flameR,
-    windowMaterial: glassMat, steeringPivot, name, isSupercar, isCoupe, carScale,
+    windowMaterial: glassMat, steeringPivot, name, isSupercar, isCoupe, isBus: false,
+    carScale, wheelRadius: 0.38,
     cameraSeat: new THREE.Vector3(-0.38, isSupercar ? 1.02 : 1.30, 0.12),
     cameraYaw: yaw + Math.PI, cameraPitch: 0.25, cameraLookIdle: 2, lastCameraYaw: yaw
   };
 }
 
-export function buildSportsCar(cfg) {
-  const { name, x, z, yaw, isSupercar = false } = cfg;
-  // Rest on the actual surface below the spawn point (showroom marble, speedway
-  // tarmac, desert highway) instead of a hardcoded street height.
-  const spawnY = Number.isFinite(cfg.y) ? cfg.y : computeSupportFloor(x, z, 1.2, 0.9) + 0.02;
-  const {
+// -----------------------------------------------------------------------------
+// Bus mesh builder — 8 seats, 6 wheels, front right passenger door
+// -----------------------------------------------------------------------------
+export function buildBusMesh({
+  name = 'CITY BUS',
+  bodyHex = 0xf59e0b,
+  accentHex = 0x0f172a,
+  x = 0,
+  y = 0.12,
+  z = 0,
+  yaw = 0,
+  scale = BUS_DEFAULT_SCALE
+} = {}) {
+  const root = new THREE.Group();
+  root.userData.studioName = name;
+  const carScale = Number.isFinite(scale) && scale > 0.2 ? scale : BUS_DEFAULT_SCALE;
+  root.scale.setScalar(carScale);
+  root.position.set(x, Number.isFinite(y) ? y : 0.12, z);
+  root.rotation.order = 'YXZ';
+  root.rotation.y = yaw;
+
+  const chassis = new THREE.Group();
+  chassis.userData.studioName = 'Chassis';
+  root.add(chassis);
+
+  const bodyMat = makeMat(bodyHex, {
+    isCarMetal: true,
+    texType: 'metallicflake',
+    repeatX: 8,
+    repeatY: 4,
+    metalness: 0.58,
+    roughness: 0.88,
+    clearcoat: 0.62,
+    clearcoatRoughness: 0.95,
+    envMapIntensity: 1.25,
+    flatShading: false
+  });
+  bodyMat.roughnessMap = carBaseRough.tex;
+  bodyMat.clearcoatRoughnessMap = carClearcoatRough.tex;
+  bodyMat.bumpMap = carScratchBumpTex;
+  bodyMat.bumpScale = 0.012;
+  bodyMat.needsUpdate = true;
+
+  const accentMat = makeMat(accentHex, {
+    isCarMetal: true, metalness: 0.6, roughness: 0.88, clearcoat: 0.5,
+    clearcoatRoughness: 0.95, envMapIntensity: 1.2, flatShading: false
+  });
+  accentMat.roughnessMap = carBaseRough.tex;
+  accentMat.bumpMap = carScratchBumpTex;
+  accentMat.bumpScale = 0.01;
+  accentMat.needsUpdate = true;
+
+  const chromeMat = makeMat(0xf8fafc, {
+    texType: 'brushedsteel', metalness: 0.92, roughness: 0.55,
+    envMapIntensity: 1.6, flatShading: false
+  });
+  const darkMat = makeMat(0x1f2937, { roughness: 0.72, metalness: 0.25, flatShading: false });
+  const floorMat = makeMat(0x334155, { roughness: 0.92, flatShading: false });
+  const seatMat = makeMat(0x1e3a8a, { roughness: 0.8, flatShading: false });
+  const glassMat = makeMat(0x38bdf8, {
+    metalness: 0.25, roughness: 0.16, clearcoat: 0.55, envMapIntensity: 0.9,
+    transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide, flatShading: false
+  });
+
+  const halfLen = 4.35;
+  const bodyLen = halfLen * 2;
+
+  // Lower body / skirt
+  const skirt = new THREE.Mesh(new THREE.BoxGeometry(2.36, 0.95, bodyLen), bodyMat);
+  skirt.userData.studioName = 'Body Lower';
+  skirt.position.set(0, 1.05, 0);
+  skirt.castShadow = true;
+  skirt.receiveShadow = true;
+
+  const belt = new THREE.Mesh(new THREE.BoxGeometry(2.38, 0.14, bodyLen + 0.02), accentMat);
+  belt.userData.studioName = 'Belt rail';
+  belt.position.set(0, 1.60, 0);
+
+  const floorPan = new THREE.Mesh(new THREE.BoxGeometry(2.16, 0.12, bodyLen - 0.4), floorMat);
+  floorPan.position.set(0, 0.74, 0);
+  floorPan.receiveShadow = true;
+
+  const roofPanel = new THREE.Mesh(new THREE.BoxGeometry(2.34, 0.12, bodyLen - 0.04), bodyMat);
+  roofPanel.userData.studioName = 'Roof';
+  roofPanel.position.set(0, 2.86, 0);
+  roofPanel.castShadow = true;
+
+  const roofCap = new THREE.Mesh(new THREE.BoxGeometry(2.16, 0.10, bodyLen - 0.4), bodyMat);
+  roofCap.position.set(0, 2.97, 0);
+  roofCap.castShadow = true;
+
+  const acUnit = new THREE.Mesh(new THREE.BoxGeometry(1.30, 0.22, 2.20), darkMat);
+  acUnit.userData.studioName = 'Roof AC unit';
+  acUnit.position.set(0, 3.08, -1.20);
+
+  // Front / rear caps above the belt line
+  const frontCap = new THREE.Mesh(new THREE.BoxGeometry(2.34, 1.24, 0.16), bodyMat);
+  frontCap.position.set(0, 2.24, halfLen - 0.05);
+  frontCap.castShadow = true;
+  const rearCap = new THREE.Mesh(new THREE.BoxGeometry(2.34, 1.24, 0.16), bodyMat);
+  rearCap.position.set(0, 2.24, -halfLen + 0.05);
+  rearCap.castShadow = true;
+
+  const windshield = new THREE.Mesh(new THREE.PlaneGeometry(2.02, 1.02), glassMat);
+  windshield.position.set(0, 2.26, halfLen + 0.04);
+  const rearWindow = new THREE.Mesh(new THREE.PlaneGeometry(1.90, 0.92), glassMat);
+  rearWindow.position.set(0, 2.26, -halfLen - 0.04);
+  rearWindow.rotation.y = Math.PI;
+
+  // Destination blind
+  const signMat = makeMat(0xfef3c7, { emissive: 0xfbbf24, emissiveIntensity: 0.85 });
+  const destSign = new THREE.Mesh(new THREE.BoxGeometry(1.60, 0.28, 0.06), signMat);
+  destSign.userData.studioName = 'Destination sign';
+  destSign.position.set(0, 2.76, halfLen + 0.05);
+
+  // Side glazing + pillars
+  const sideParts = [];
+  for (const side of [-1, 1]) {
+    const glassStrip = new THREE.Mesh(new THREE.PlaneGeometry(bodyLen - 1.0, 1.02), glassMat);
+    glassStrip.position.set(side * 1.19, 2.24, -0.25);
+    glassStrip.rotation.y = side * (Math.PI / 2);
+    sideParts.push(glassStrip);
+    for (let pz = 3.55; pz >= -4.0; pz -= 1.28) {
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.10, 1.22, 0.12), bodyMat);
+      pillar.position.set(side * 1.17, 2.24, pz);
+      pillar.castShadow = true;
+      sideParts.push(pillar);
+    }
+    const lowerRail = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.16, bodyLen - 0.2), accentMat);
+    lowerRail.position.set(side * 1.19, 1.70, 0);
+    sideParts.push(lowerRail);
+  }
+
+  // Doors: right = front passenger entrance, left = driver door
+  function buildBusDoor(side, leafCount) {
+    const pivot = new THREE.Group();
+    pivot.userData.studioName = side < 0 ? 'Driver Door' : 'Passenger Door';
+    pivot.position.set(side * 1.19, 1.55, 3.95);
+    const leafLen = leafCount === 2 ? 0.56 : 0.95;
+    for (let i = 0; i < leafCount; i++) {
+      const zOff = -0.30 - i * (leafLen + 0.04);
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.85, leafLen), bodyMat);
+      panel.position.set(0, 0.35, zOff);
+      panel.castShadow = true;
+      const glass = new THREE.Mesh(new THREE.PlaneGeometry(leafLen - 0.10, 1.05), glassMat);
+      glass.position.set(side * 0.02, 0.62, zOff);
+      glass.rotation.y = side * (Math.PI / 2);
+      pivot.add(panel, glass);
+    }
+    return pivot;
+  }
+  const doorLeftPivot = buildBusDoor(-1, 1);
+  const doorRightPivot = buildBusDoor(1, 2);
+
+  // Interior: seats for every occupant, aisle poles, driver console
+  const seats = [];
+  BUS_SEAT_ANCHORS.forEach((a, i) => {
+    const seat = new THREE.Group();
+    seat.userData.studioName = i === 0 ? 'Driver seat' : `Passenger seat ${i}`;
+    const cushion = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.12, 0.52), seatMat);
+    cushion.position.set(0, 1.20, 0);
+    const back = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.52, 0.12), seatMat);
+    back.position.set(0, 1.50, -0.26);
+    const pedestal = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.44, 0.16), darkMat);
+    pedestal.position.set(0, 0.98, 0);
+    seat.add(cushion, back, pedestal);
+    seat.position.set(a[0], 0, a[2]);
+    seats.push(seat);
+  });
+
+  const rearBench = new THREE.Mesh(new THREE.BoxGeometry(2.00, 0.14, 0.60), seatMat);
+  rearBench.position.set(0, 1.20, -3.60);
+  const rearBenchBack = new THREE.Mesh(new THREE.BoxGeometry(2.00, 0.52, 0.12), seatMat);
+  rearBenchBack.position.set(0, 1.50, -3.90);
+
+  const poles = [];
+  for (const pz of [2.85, 1.75, 0.65, -0.45]) {
+    for (const px of [-0.34, 0.34]) {
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 2.05, 8), chromeMat);
+      pole.position.set(px, 1.80, pz);
+      poles.push(pole);
+    }
+  }
+  const grabRail = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 6.4, 8), chromeMat);
+  grabRail.rotation.x = Math.PI / 2;
+  grabRail.position.set(0, 2.72, -0.4);
+
+  const dashboard = new THREE.Mesh(new THREE.BoxGeometry(1.90, 0.28, 0.55), darkMat);
+  dashboard.userData.studioName = 'Dashboard';
+  dashboard.position.set(0, 1.62, 4.00);
+
+  const steeringPivot = new THREE.Group();
+  steeringPivot.userData.studioName = 'Steering assembly';
+  steeringPivot.position.set(-0.62, 1.74, 3.82);
+  steeringPivot.rotation.x = -0.85;
+  const steeringWheel = new THREE.Mesh(new THREE.TorusGeometry(0.29, 0.038, 8, 22), darkMat);
+  steeringWheel.userData.studioName = 'Steering wheel';
+  steeringPivot.add(steeringWheel);
+  const steeringHub = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.10, 8), chromeMat);
+  steeringHub.rotation.x = Math.PI / 2;
+  steeringPivot.add(steeringHub);
+  for (let spoke = 0; spoke < 3; spoke++) {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.26, 0.04), chromeMat);
+    bar.rotation.z = spoke * Math.PI * 2 / 3;
+    steeringPivot.add(bar);
+  }
+
+  // Lamps, bumpers, mirrors
+  const hlMat = makeMat(0xfef9c3, { emissive: 0xfef08a, emissiveIntensity: 0.9 });
+  const tlMat = makeMat(0xef4444, { emissive: 0xdc2626, emissiveIntensity: 0.65 });
+  const amberMat = makeMat(0xf59e0b, { emissive: 0xf59e0b, emissiveIntensity: 0.6 });
+  const lamps = [];
+  for (const side of [-1, 1]) {
+    const hl = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.24, 0.10), hlMat);
+    hl.position.set(side * 0.76, 0.98, halfLen + 0.04);
+    const tl = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 0.10), tlMat);
+    tl.position.set(side * 0.92, 1.18, -halfLen - 0.04);
+    const indicator = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.14, 0.08), amberMat);
+    indicator.position.set(side * 1.06, 0.98, halfLen + 0.04);
+    const mirrorArm = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.05, 0.05), darkMat);
+    mirrorArm.position.set(side * 1.34, 2.52, halfLen - 0.18);
+    const mirrorCap = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.34, 0.16), darkMat);
+    mirrorCap.position.set(side * 1.50, 2.42, halfLen - 0.18);
+    lamps.push(hl, tl, indicator, mirrorArm, mirrorCap);
+  }
+  const bumperF = new THREE.Mesh(new THREE.BoxGeometry(2.42, 0.30, 0.24), darkMat);
+  bumperF.position.set(0, 0.66, halfLen + 0.10);
+  const bumperR = bumperF.clone();
+  bumperR.position.z = -halfLen - 0.10;
+
+  const exhaust = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.26, 10), chromeMat);
+  exhaust.rotation.x = Math.PI / 2;
+  exhaust.position.set(-0.70, 0.46, -halfLen - 0.14);
+
+  const flameMat = new THREE.MeshBasicMaterial({ color: 0xf97316, transparent: true, opacity: 0.9 });
+  const flameCoreMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.92 });
+  const flameL = new THREE.Group();
+  const fOuter = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.62, 8), flameMat);
+  fOuter.rotation.x = -Math.PI / 2;
+  fOuter.position.z = -0.30;
+  const fInner = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.34, 8), flameCoreMat);
+  fInner.rotation.x = -Math.PI / 2;
+  fInner.position.z = -0.17;
+  flameL.add(fOuter, fInner);
+  flameL.position.set(-0.70, 0.46, -halfLen - 0.22);
+  flameL.visible = false;
+  const flameR = flameL.clone();
+  flameR.position.x = 0.70;
+  flameR.visible = false;
+
+  chassis.add(
+    skirt, belt, floorPan, roofPanel, roofCap, acUnit,
+    frontCap, rearCap, windshield, rearWindow, destSign,
+    ...sideParts, doorLeftPivot, doorRightPivot,
+    ...seats, rearBench, rearBenchBack, ...poles, grabRail,
+    dashboard, steeringPivot, ...lamps, bumperF, bumperR, exhaust, flameL, flameR
+  );
+
+  // Wheels: front axle steers (indices 0/1), rear axle is dual-tyred.
+  const tireMat = makeMat(0x111827, { roughness: 0.88, flatShading: false });
+  const wheelPivots = [];
+  const wheelSpinners = [];
+  const R = 0.52;
+  [
+    [-1.02, R, 3.05, 0.34],
+    [1.02, R, 3.05, 0.34],
+    [-1.22, R, -2.55, 0.30],
+    [1.22, R, -2.55, 0.30],
+    [-0.88, R, -2.55, 0.30],
+    [0.88, R, -2.55, 0.30]
+  ].forEach(([wx, wy, wz, width], idx) => {
+    const pivot = new THREE.Group();
+    pivot.userData.studioName = `${idx < 2 ? 'Front' : 'Rear'} wheel ${idx}`;
+    pivot.position.set(wx, wy, wz);
+    const spinGroup = new THREE.Group();
+    const tire = new THREE.Mesh(new THREE.CylinderGeometry(R, R, width, 18), tireMat);
+    tire.rotation.z = Math.PI / 2;
+    tire.castShadow = true;
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.58, R * 0.58, width + 0.02, 14), chromeMat);
+    rim.rotation.z = Math.PI / 2;
+    spinGroup.add(tire, rim);
+    pivot.add(spinGroup);
+    root.add(pivot);
+    wheelPivots.push(pivot);
+    wheelSpinners.push(spinGroup);
+
+    const arch = new THREE.Mesh(new THREE.BoxGeometry(width + 0.14, 0.14, R * 2.3), darkMat);
+    arch.position.set(wx, R + 0.52, wz);
+    chassis.add(arch);
+  });
+
+  return {
     root, chassis, doorLeftPivot, doorRightPivot, wheelPivots, wheelSpinners, flameL, flameR,
-    windowMaterial, steeringPivot, carScale, isCoupe, cameraSeat, cameraYaw, cameraPitch, cameraLookIdle, lastCameraYaw
-  } = buildSportsCarMesh({ ...cfg, y: spawnY });
-  worldRoot.add(root);
+    windowMaterial: glassMat, steeringPivot, name,
+    isSupercar: false, isCoupe: false, isBus: true,
+    carScale, wheelRadius: R,
+    cameraSeat: new THREE.Vector3(BUS_SEAT_ANCHORS[0][0], BUS_SEAT_ANCHORS[0][1], BUS_SEAT_ANCHORS[0][2]),
+    cameraYaw: yaw + Math.PI, cameraPitch: 0.25, cameraLookIdle: 2, lastCameraYaw: yaw
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Vehicle record registration (shared by car / bus)
+// -----------------------------------------------------------------------------
+function createVehicleRecord(cfg, parts, spawnY) {
+  const { name, x, z, yaw } = cfg;
   const carObj = {
     uid: ++vehicleUid,
     name,
-    isSupercar,
-    isCoupe,
+    isSupercar: Boolean(parts.isSupercar),
+    isCoupe: parts.isCoupe,
+    isBus: Boolean(parts.isBus),
+    isTank: Boolean(cfg.isTank),
     x,
     y: spawnY,
     z,
@@ -582,35 +1152,74 @@ export function buildSportsCar(cfg) {
     pitchAngle: 0,
     rollAngle: 0,
     flameTimer: 0,
-    flameL,
-    flameR,
-    windowMaterial,
-    root,
-    chassis,
-    doorLeftPivot,
-    doorRightPivot,
+    flameL: parts.flameL,
+    flameR: parts.flameR,
+    windowMaterial: parts.windowMaterial,
+    root: parts.root,
+    chassis: parts.chassis,
+    doorLeftPivot: parts.doorLeftPivot,
+    doorRightPivot: parts.doorRightPivot,
     doorOpenL: 0,
     doorOpenR: 0,
     doorTargetL: 0,
     doorTargetR: 0,
     doorAutoCloseTimer: 0,
     entryAnim: null,
-    carScale,
-    cameraSeat,
-    cameraYaw,
-    cameraPitch,
-    cameraLookIdle,
-    lastCameraYaw,
-    steeringPivot,
-    wheelPivots,
-    wheelSpinners,
+    carScale: parts.carScale,
+    wheelRadius: parts.wheelRadius || 0.38,
+    cameraSeat: parts.cameraSeat,
+    cameraYaw: parts.cameraYaw,
+    cameraPitch: parts.cameraPitch,
+    cameraLookIdle: parts.cameraLookIdle,
+    lastCameraYaw: parts.lastCameraYaw,
+    steeringPivot: parts.steeringPivot,
+    wheelPivots: parts.wheelPivots,
+    wheelSpinners: parts.wheelSpinners,
+    // --- rollover / water state ---
+    water: null,
+    _inWater: false,
+    _roofWasDown: false,
+    _rightTimer: 0,
+    _roofScrapeT: 0,
     // --- occupancy ---
     occupants: [],
     localSeat: -1
   };
-  root.userData.vehicleUid = carObj.uid;
+  parts.root.userData.vehicleUid = carObj.uid;
   vehicles.push(carObj);
   return carObj;
+}
+
+export function buildSportsCar(cfg) {
+  // Name/type routing lets a Studio entry called "CITY BUS" spawn as a bus
+  // without touching the world spawner.
+  const wantsBus = cfg && (cfg.isBus === true || cfg.type === 'bus' || /\b(bus|coach)\b/i.test(cfg.name || ''));
+  if (wantsBus) return buildBus(cfg);
+
+  const { x, z, yaw } = cfg;
+  // Rest on the actual surface below the spawn point (showroom marble, speedway
+  // tarmac, desert highway) instead of a hardcoded street height.
+  const spawnY = Number.isFinite(cfg.y) ? cfg.y : computeSupportFloor(x, z, 1.2, 0.9) + 0.02;
+  const parts = buildSportsCarMesh({ ...cfg, y: spawnY });
+  worldRoot.add(parts.root);
+  return createVehicleRecord(cfg, parts, spawnY);
+}
+
+/** City bus: 8 seats, first rider drives, everyone else rides along. */
+export function buildBus(cfg = {}) {
+  const merged = { name: 'CITY BUS', scale: BUS_DEFAULT_SCALE, ...cfg, isBus: true };
+  const { x = 0, z = 0 } = merged;
+  const spawnY = Number.isFinite(merged.y) ? merged.y : computeSupportFloor(x, z, 1.6, 1.4) + 0.02;
+  const parts = buildBusMesh({ ...merged, y: spawnY });
+  worldRoot.add(parts.root);
+  return createVehicleRecord(merged, parts, spawnY);
+}
+
+/** Generic dispatcher for level spawners. */
+export function buildVehicle(cfg = {}) {
+  const t = String(cfg.type || '').toLowerCase();
+  if (t === 'bus' || cfg.isBus || /\b(bus|coach)\b/i.test(cfg.name || '')) return buildBus(cfg);
+  return buildSportsCar(cfg);
 }
 
 /** Drop every vehicle record (used by world rebuilds; meshes go with worldRoot). */
@@ -626,14 +1235,18 @@ export function resetVehicles() {
 // Lightweight character proxy shown during third-person enter/exit transitions
 function buildEntryProxyMesh() {
   const pp = levelData?.params?.player || {};
-  const toHex = (c, d) => (c === undefined || c === null || c === '') ? d : (typeof c === 'number' ? c : new THREE.Color(c).getHex());
+  const toHex = (c, d) => (c === undefined || c === null || c === '')
+    ? d
+    : (typeof c === 'number' ? c : new THREE.Color(c).getHex());
   const shirtMat = makeMat(toHex(pp.bodyColor, 0x1e293b));
   const pantsMat = makeMat(toHex(pp.accentColor, 0x0f172a));
   const skinMat = makeMat(0xe2a87e);
+
   const rig = new THREE.Group();
   const hip = new THREE.Group();
   hip.position.y = 0.88;
   rig.add(hip);
+
   const torso = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.54, 0.22), shirtMat);
   torso.position.y = 0.27;
   torso.castShadow = true;
@@ -642,40 +1255,57 @@ function buildEntryProxyMesh() {
   head.castShadow = true;
   const hair = new THREE.Mesh(new THREE.BoxGeometry(0.27, 0.09, 0.27), pantsMat);
   hair.position.y = 0.82;
+
   const armL = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.46, 0.11), shirtMat);
   armL.position.set(-0.30, 0.28, 0.04);
   armL.rotation.x = -0.35;
   const armR = armL.clone();
   armR.position.x = 0.30;
+
   const legL = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.70, 0.14), pantsMat);
   legL.position.set(-0.12, -0.35, 0);
   legL.castShadow = true;
   const legR = legL.clone();
   legR.position.x = 0.12;
+
   hip.add(torso, head, hair, armL, armR, legL, legR);
   return { rig, hip, legL, legR };
 }
+
 function disposeEntryProxy(anim) {
   if (!anim || !anim.proxy) return;
   worldRoot.remove(anim.proxy.rig);
   anim.proxy = null;
 }
 
-/** Exit spot beside the occupant's own door. */
+/** Exit spot beside the occupant's own door (or at the surface if submerged). */
 function computeVehicleExitSpot(v, seatIndex = 0) {
-  const exitDistance = 2.1 * footprintScale(v);
+  const sideSign = seatSideSign(seatIndex, v);
+
+  // Submerged: hand the player to the swim system at the surface, not the seabed.
+  const surf = waterSurfaceY(v.x, v.z);
+  if (surf !== null && v.y - bodySupportOffset(v) < surf - 0.25) {
+    const sx = Math.cos(v.yaw) * sideSign;
+    const sz = -Math.sin(v.yaw) * sideSign;
+    const d = (v.isBus ? 3.0 : 2.6) * footprintScale(v) / (v.carScale || DEFAULT_SCALE);
+    return { x: v.x + sx * d, y: surf - 0.25, z: v.z + sz * d };
+  }
+
+  const exitDistance = (v.isBus ? 2.4 : 2.1) * footprintScale(v);
+  const alongDistance = v.isBus ? bodyHalfLength(v) + 1.2 : exitDistance;
   const forwardX = Math.sin(v.yaw);
   const forwardZ = Math.cos(v.yaw);
-  const sideSign = seatSideSign(seatIndex);
   const sideX = Math.cos(v.yaw) * sideSign;
   const sideZ = -Math.sin(v.yaw) * sideSign;
-  const rearOffset = seatIndex >= 2 ? -0.9 : 0.2;
+  const rearOffset = v.isBus ? (seatIndex === 0 ? 3.2 : 2.6) : (seatIndex >= 2 ? -0.9 : 0.2);
+
   const candidates = [
     { x: v.x + sideX * exitDistance + forwardX * rearOffset, z: v.z + sideZ * exitDistance + forwardZ * rearOffset },
     { x: v.x - sideX * exitDistance, z: v.z - sideZ * exitDistance },
-    { x: v.x - forwardX * exitDistance, z: v.z - forwardZ * exitDistance },
+    { x: v.x - forwardX * alongDistance, z: v.z - forwardZ * alongDistance },
     { x: v.x, y: v.y + 3, z: v.z }
   ];
+
   for (const candidate of candidates) {
     const candidateY = candidate.y ?? Math.max(0.18, v.y + 0.06);
     const floorY = computeSupportFloor(candidate.x, candidate.z, candidateY + 0.4, player.radius);
@@ -694,6 +1324,7 @@ function releaseLocalSeat(idx, v) {
   const wasDriver = mine.seat === 0;
   v.occupants = v.occupants.filter((o) => o !== mine);
   v.localSeat = -1;
+
   if (wasDriver) {
     if (hooks.mpCarExit) hooks.mpCarExit(idx);
     broadcastSeat('car_seat_exit', v, mine.id, 0);
@@ -718,6 +1349,7 @@ function finalizeExitCar(idx, v, exitSpot, silent = false) {
   gameState.inCar = false;
   gameState.isPassenger = false;
   gameState.activeCarIndex = -1;
+
   if (v) {
     releaseLocalSeat(idx, v);
     v.flameL.visible = false;
@@ -733,13 +1365,17 @@ function finalizeExitCar(idx, v, exitSpot, silent = false) {
   } else if (hooks.mpCarExit) {
     hooks.mpCarExit(idx);
   }
+
   player.x = exitSpot.x;
   player.y = exitSpot.y;
   player.z = exitSpot.z;
   player.vy = 0;
-  player.grounded = true;
+  // Bailing out into water hands the player straight to the swim system.
+  const surf = waterSurfaceY(player.x, player.z);
+  player.grounded = !(surf !== null && player.y < surf - 0.15);
   player.peakAirY = player.y;
   player.pitch = 0;
+
   sfx.updateEngine(false, 0, false);
   if (!silent) pushFeed(wasPassenger ? 'LEFT VEHICLE (PASSENGER)' : 'EXITED VEHICLE', 'border-l-slate-400');
   if (hooks.syncMobileControls) hooks.syncMobileControls(true);
@@ -757,8 +1393,9 @@ export function getNearestVehicle(maxDist = 5.2) {
     const locked = hooks.mpCarLocked ? hooks.mpCarLocked(idx) : false;
     if (locked && freeSeat <= 0) return;
     if (freeSeat < 0) return;
+    const reach = maxDist + (v.isBus ? 1.8 : 0);
     const d = Math.hypot(player.x - v.x, player.z - v.z);
-    if (d < bestDist && Math.abs(player.y - v.y) < 2.6) {
+    if (d < reach && d < bestDist + (v.isBus ? 1.8 : 0) && Math.abs(player.y - v.y) < 2.8) {
       bestDist = d;
       best = { v, idx };
     }
@@ -769,16 +1406,15 @@ export function getNearestVehicle(maxDist = 5.2) {
 export function enterVehicle(idx) {
   const v = vehicles[idx];
   if (!v || v.entryAnim || gameState.inCar) return;
-
   const seat = firstFreeSeat(v);
   if (seat < 0) {
     pushFeed(`${v.name} IS FULL`, 'border-l-rose-500');
     sfx.uiClick();
     return;
   }
+
   const me = localPlayerId();
   const takingDriverSeat = seat === 0;
-
   if (takingDriverSeat) {
     // First in claims the wheel through the existing ownership hook.
     if (hooks.mpCarEnter && !hooks.mpCarEnter(idx)) return;
@@ -796,7 +1432,7 @@ export function enterVehicle(idx) {
   gameState.isPassenger = !takingDriverSeat;
   broadcastSeat('car_seat_enter', v, me, seat);
 
-  const sideSign = seatSideSign(seat);
+  const sideSign = seatSideSign(seat, v);
   const side = sideSign > 0 ? 'R' : 'L';
   if (side === 'R') {
     v.doorTargetR = 1;
@@ -807,7 +1443,8 @@ export function enterVehicle(idx) {
   }
   v.doorAutoCloseTimer = 0;
 
-  const doorwayLocal = new THREE.Vector3(sideSign * 1.48, 0.05, seat >= 2 ? -0.8 : 0.05);
+  const doorZ = v.isBus ? (seat === 0 ? 3.45 : 3.55) : (seat >= 2 ? -0.8 : 0.05);
+  const doorwayLocal = new THREE.Vector3(sideSign * (v.isBus ? 1.62 : 1.48), 0.05, doorZ);
   const outsideWorld = v.root.localToWorld(doorwayLocal);
   outsideWorld.y = Math.max(player.y, v.y + 0.04);
 
@@ -845,16 +1482,21 @@ export function enterVehicle(idx) {
   v.cameraYaw = v.yaw + Math.PI;
   v.cameraPitch = 0.25;
   v.cameraLookIdle = 2;
+
   if (takingDriverSeat) {
     v.gearIndex = 2;
     v.rpm = 1100;
   }
   sfx.shift();
+
   if (takingDriverSeat) {
     pushFeed(`ENTERED ${v.name} — [I] UPSHIFT • [K] DOWNSHIFT`, 'border-l-amber-400');
   } else {
     const others = v.occupants.length - 1;
-    pushFeed(`RIDING IN ${v.name} — PASSENGER SEAT ${seat + 1} (${others} OTHER${others === 1 ? '' : 'S'} ABOARD) • [F] EXIT`, 'border-l-sky-400');
+    pushFeed(
+      `RIDING IN ${v.name} — PASSENGER SEAT ${seat + 1} (${others} OTHER${others === 1 ? '' : 'S'} ABOARD) • [F] EXIT`,
+      'border-l-sky-400'
+    );
   }
   if (hooks.syncMobileControls) hooks.syncMobileControls(true);
   if (hooks.updateHUD) hooks.updateHUD();
@@ -871,13 +1513,14 @@ export function exitCurrentCar(silent = false) {
   const mine = localOccupant(v);
   const seat = mine ? mine.seat : 0;
   const exitSpot = computeVehicleExitSpot(v, seat);
+
   if (silent) {
     finalizeExitCar(idx, v, exitSpot, true);
     return;
   }
   if (v.entryAnim) return;
 
-  const sideSign = seatSideSign(seat);
+  const sideSign = seatSideSign(seat, v);
   const side = sideSign > 0 ? 'R' : 'L';
   if (side === 'R') {
     v.doorTargetR = 1;
@@ -919,6 +1562,7 @@ function stepVehicleEntryExitAnim(v, dt) {
   const rawT = Math.min(1, anim.timer / anim.duration);
   const ease = rawT < 0.5 ? 2 * rawT * rawT : 1 - Math.pow(-2 * rawT + 2, 2) / 2;
   const duckDip = Math.sin(rawT * Math.PI) * 0.22;
+
   const seatAnchor = seatLocalPos(v, anim.seat || 0);
   const seatWorld = v.root.localToWorld(seatAnchor.clone());
   const seatFloorWorld = v.root.localToWorld(seatAnchor.clone().setY(0.24));
@@ -937,6 +1581,7 @@ function stepVehicleEntryExitAnim(v, dt) {
       anim.weightDropped = true;
       v.sus.hv -= 1.6;
     }
+
     // Animate third-person entry proxy stepping in and bending knees to sit
     if (anim.proxy) {
       anim.proxy.rig.visible = Boolean(gameState.thirdPerson);
@@ -952,6 +1597,7 @@ function stepVehicleEntryExitAnim(v, dt) {
       anim.proxy.legL.rotation.x = -sitT * 1.15;
       anim.proxy.legR.rotation.x = -sitT * 1.15;
     }
+
     // Smooth camera swoop into the seat (FP) or aerial follow cam (TP)
     if (!gameState.thirdPerson) {
       const targetCamPos = seatWorld.clone();
@@ -966,7 +1612,7 @@ function stepVehicleEntryExitAnim(v, dt) {
       const endQuat = new THREE.Quaternion().setFromRotationMatrix(endMat);
       camera.quaternion.slerpQuaternions(anim.startCamQuat, endQuat, ease);
     } else {
-      const aerialDist = 11.4 * (v.carScale || DEFAULT_SCALE);
+      const aerialDist = chaseDistance(v);
       const horizontalDist = aerialDist * Math.cos(v.cameraPitch);
       const endCamPos = new THREE.Vector3(
         v.x + Math.sin(v.cameraYaw) * horizontalDist,
@@ -974,11 +1620,12 @@ function stepVehicleEntryExitAnim(v, dt) {
         v.z + Math.cos(v.cameraYaw) * horizontalDist
       );
       camera.position.lerpVectors(anim.startCamPos, endCamPos, ease);
-      const lookAtPos = new THREE.Vector3(v.x, v.y + 0.95, v.z);
+      const lookAtPos = new THREE.Vector3(v.x, v.y + chaseLookHeight(v), v.z);
       const endMat = new THREE.Matrix4().lookAt(camera.position, lookAtPos, new THREE.Vector3(0, 1, 0));
       const endQuat = new THREE.Quaternion().setFromRotationMatrix(endMat);
       camera.quaternion.slerpQuaternions(anim.startCamQuat, endQuat, ease);
     }
+
     if (rawT >= 1) {
       disposeEntryProxy(anim);
       v.entryAnim = null;
@@ -1008,6 +1655,7 @@ function stepVehicleEntryExitAnim(v, dt) {
       anim.proxy.legL.rotation.x = -(1 - standT) * 1.15;
       anim.proxy.legR.rotation.x = -(1 - standT) * 1.15;
     }
+
     const eyeH = player.eyeHeight || 1.62;
     if (!gameState.thirdPerson) {
       const endCamPos = new THREE.Vector3(exitPos.x, exitPos.y + eyeH, exitPos.z);
@@ -1038,6 +1686,7 @@ function stepVehicleEntryExitAnim(v, dt) {
       const endQuat = new THREE.Quaternion().setFromRotationMatrix(endMat);
       camera.quaternion.slerpQuaternions(anim.startCamQuat, endQuat, ease);
     }
+
     if (rawT >= 1) {
       finalizeExitCar(anim.carIdx, v, anim.exitSpot, false);
       return true;
@@ -1050,6 +1699,11 @@ export function shiftVehicleGear(delta) {
   if (!gameState.inCar || gameState.isPassenger) return;
   const v = vehicles[gameState.activeCarIndex];
   if (!v) return;
+  if (v.water && v.water.floodLatch) {
+    pushFeed('ENGINE FLOODED', 'border-l-sky-400');
+    sfx.uiClick();
+    return;
+  }
   const next = Math.max(0, Math.min(GEAR_LABELS.length - 1, v.gearIndex + delta));
   if (next !== v.gearIndex) {
     const prevGear = v.gearIndex;
@@ -1059,7 +1713,7 @@ export function shiftVehicleGear(delta) {
       v.rpm = Math.max(1400, v.rpm * 0.68);
     } else if (delta < 0 && next >= 2) {
       v.rpm = Math.min(7950, v.rpm * 1.38 + 900);
-      if (v.isSupercar || prevGear >= 4) {
+      if ((v.isSupercar || prevGear >= 4) && !v.isBus) {
         v.flameTimer = v.isSupercar ? 0.52 : 0.28;
         sfx.backfire();
         spawnParticles(
@@ -1076,28 +1730,26 @@ export function shiftVehicleGear(delta) {
   }
 }
 
-// 2-Circle Capsule Geometry for Car Body Representation
+// Capsule geometry for the car body representation (2 circles, bus uses 3)
 function getCarCircles(v) {
-  const scale = footprintScale(v);
-  const d = 0.95 * scale;
-  const r = 0.92 * scale;
+  const { d, r, offsets } = footprintLayout(v);
   const fx = Math.sin(v.yaw);
   const fz = Math.cos(v.yaw);
-  return [
-    { x: v.x + fx * d, z: v.z + fz * d, r, isFront: true },
-    { x: v.x - fx * d, z: v.z - fz * d, r, isFront: false }
-  ];
+  return offsets.map((o) => ({
+    x: v.x + fx * d * o,
+    z: v.z + fz * d * o,
+    r,
+    isFront: o > 0
+  }));
 }
 
 /**
- * Swept capsule test: does the car's two-circle footprint touch (tx,tz) at any
- * point along this frame's motion? Prevents fast cars tunnelling through people
- * and props between frames.
+ * Swept capsule test: does the vehicle footprint touch (tx,tz) at any point
+ * along this frame's motion? Prevents fast cars tunnelling through people.
  */
 function sweptFootprintHit(v, fromX, fromZ, toX, toZ, tx, tz, extraRadius) {
-  const scale = footprintScale(v);
-  const d = 0.95 * scale;
-  const r = 0.92 * scale + extraRadius;
+  const { d, r, offsets } = footprintLayout(v);
+  const rr = r + extraRadius;
   const fx = Math.sin(v.yaw) * d;
   const fz = Math.cos(v.yaw) * d;
   const travel = Math.hypot(toX - fromX, toZ - fromZ);
@@ -1106,10 +1758,17 @@ function sweptFootprintHit(v, fromX, fromZ, toX, toZ, tx, tz, extraRadius) {
     const t = s / steps;
     const px = fromX + (toX - fromX) * t;
     const pz = fromZ + (toZ - fromZ) * t;
-    if (Math.hypot(px + fx - tx, pz + fz - tz) < r) return true;
-    if (Math.hypot(px - fx - tx, pz - fz - tz) < r) return true;
+    for (const o of offsets) {
+      if (Math.hypot(px + fx * o - tx, pz + fz * o - tz) < rr) return true;
+    }
   }
   return false;
+}
+
+function vehicleMass(v) {
+  if (v.isTank) return 3.5;
+  if (v.isBus) return 3.2;
+  return v.carScale || DEFAULT_SCALE;
 }
 
 // Car-to-Car Physics, Angular Spin (PIT / T-bone), & AI Traffic Collision Resolution
@@ -1117,24 +1776,33 @@ function resolveVehicleCollisions(dt) {
   const now = performance.now();
   const numCars = vehicles.length;
   if (numCars < 2) return;
+
   // Cooldowns are keyed by stable uid so removing a vehicle can't re-map them.
   if (carCollisionCooldowns.size > 256) {
     for (const [key, stamp] of carCollisionCooldowns) {
       if (now - stamp > 4000) carCollisionCooldowns.delete(key);
     }
   }
+
   for (let i = 0; i < numCars; i++) {
     const v1 = vehicles[i];
     if (!v1) continue;
     for (let j = i + 1; j < numCars; j++) {
       const v2 = vehicles[j];
       if (!v2) continue;
+
+      // Height separation: a car on the bridge must not hit traffic below it.
+      const y1 = v1.y - bodySupportOffset(v1) * 0.5;
+      const y2 = v2.y - bodySupportOffset(v2) * 0.5;
+      if (Math.abs(y1 - y2) > 2.4) continue;
+
       const dx = v2.x - v1.x;
       const dz = v2.z - v1.z;
       const dist = Math.hypot(dx, dz);
-      const s1 = footprintScale(v1);
-      const s2 = footprintScale(v2);
-      if (dist > (s1 + s2) * 2.2 || dist < 0.0001) continue;
+      const l1 = footprintLayout(v1);
+      const l2 = footprintLayout(v2);
+      const reach = (l1.d + l1.r) + (l2.d + l2.r);
+      if (dist > reach || dist < 0.0001) continue;
 
       const circles1 = getCarCircles(v1);
       const circles2 = getCarCircles(v2);
@@ -1143,6 +1811,7 @@ function resolveVehicleCollisions(dt) {
       let colNormalZ = 0;
       let contactX = 0;
       let contactZ = 0;
+
       for (const c1 of circles1) {
         for (const c2 of circles2) {
           const cdx = c2.x - c1.x;
@@ -1163,8 +1832,8 @@ function resolveVehicleCollisions(dt) {
       }
       if (maxOverlap <= 0) continue;
 
-      const m1 = v1.isTank ? 3.5 : (v1.carScale || DEFAULT_SCALE);
-      const m2 = v2.isTank ? 3.5 : (v2.carScale || DEFAULT_SCALE);
+      const m1 = vehicleMass(v1);
+      const m2 = vehicleMass(v2);
       const totalMass = m1 + m2;
       const owner1 = hooks.mpCarOwner ? hooks.mpCarOwner(i) : null;
       const owner2 = hooks.mpCarOwner ? hooks.mpCarOwner(j) : null;
@@ -1172,6 +1841,7 @@ function resolveVehicleCollisions(dt) {
       const isDriven2 = gameState.inCar && gameState.activeCarIndex === j;
       const w1 = m2 / totalMass;
       const w2 = m1 / totalMass;
+
       v1.x -= colNormalX * maxOverlap * w1;
       v1.z -= colNormalZ * maxOverlap * w1;
       v2.x += colNormalX * maxOverlap * w2;
@@ -1184,15 +1854,18 @@ function resolveVehicleCollisions(dt) {
       const rvx = vx1 - vx2;
       const rvz = vz1 - vz2;
       const velAlongNormal = rvx * colNormalX + rvz * colNormalZ;
+
       if (velAlongNormal > 0) {
         const restitution = 0.35;
         const impulseMag = ((1 + restitution) * velAlongNormal) / (1 / m1 + 1 / m2);
         const impulseX = impulseMag * colNormalX;
         const impulseZ = impulseMag * colNormalZ;
+
         v1.velX = vx1 - impulseX / m1;
         v1.velZ = vz1 - impulseZ / m1;
         v2.velX = vx2 + impulseX / m2;
         v2.velZ = vz2 + impulseZ / m2;
+
         const f1x = Math.sin(v1.yaw), f1z = Math.cos(v1.yaw);
         const f2x = Math.sin(v2.yaw), f2z = Math.cos(v2.yaw);
         v1.speed = v1.velX * f1x + v1.velZ * f1z;
@@ -1204,8 +1877,8 @@ function resolveVehicleCollisions(dt) {
         const rz2 = contactZ - v2.z;
         const torque1 = rx1 * (-impulseZ) - rz1 * (-impulseX);
         const torque2 = rx2 * impulseZ - rz2 * impulseX;
-        const inertia1 = m1 * 1.8;
-        const inertia2 = m2 * 1.8;
+        const inertia1 = m1 * (v1.isBus ? 4.2 : 1.8);
+        const inertia2 = m2 * (v2.isBus ? 4.2 : 1.8);
         const yawImpulse1 = torque1 / inertia1;
         const yawImpulse2 = torque2 / inertia2;
         v1.yaw += yawImpulse1 * 0.45;
@@ -1224,6 +1897,7 @@ function resolveVehicleCollisions(dt) {
             hooks.applyPlayerDamage(Math.min(30, (impactSpeed - 7.0) * 1.6), 'VEHICLE COLLISION');
           }
         }
+
         if (hooks.mpActive && hooks.mpActive()) {
           if (isDriven1 && owner2 && owner2 !== hooks.mpLocalId()) {
             if (hooks.mpVehicleImpact) hooks.mpVehicleImpact(j, impulseX, impulseZ, yawImpulse2);
@@ -1247,10 +1921,10 @@ function resolveWorldStrikes(v, fromX, fromZ, speedMag) {
   for (const lp of lampPosts) {
     if (lp.state !== 'standing') continue;
     const lpY = lp.pivot ? lp.pivot.position.y : 0.18;
-    if (Math.abs(v.y - lpY) > 2.6) continue;
+    if (Math.abs(v.y - lpY) > 2.6 + (v.isBus ? 1.2 : 0)) continue;
     if (sweptFootprintHit(v, fromX, fromZ, v.x, v.z, lp.x, lp.z, 0.2)) {
       if (hooks.knockOverLamppost) hooks.knockOverLamppost(lp, v.yaw, Math.abs(v.speed));
-      v.speed *= 0.88;
+      v.speed *= v.isBus ? 0.97 : 0.88;
     }
   }
 
@@ -1261,9 +1935,7 @@ function resolveWorldStrikes(v, fromX, fromZ, speedMag) {
     if (!npc.spawned) continue;
     if (npc._carHitT && now - npc._carHitT < NPC_HIT_COOLDOWN) continue;
     // npc.y is not maintained on pooled/sleeping NPCs — fall back to the mesh.
-    const npcY = Number.isFinite(npc.y)
-      ? npc.y
-      : (npc.mesh ? npc.mesh.position.y : 0.18);
+    const npcY = Number.isFinite(npc.y) ? npc.y : (npc.mesh ? npc.mesh.position.y : 0.18);
     if (Math.abs(v.y - npcY) > 3.0) continue;
     if (!sweptFootprintHit(v, fromX, fromZ, v.x, v.z, npc.x, npc.z, NPC_HIT_RADIUS)) continue;
     npc._carHitT = now;
@@ -1272,7 +1944,7 @@ function resolveWorldStrikes(v, fromX, fromZ, speedMag) {
     if (hooks.damageNpc) hooks.damageNpc(npc, Math.max(18, speedMag * 4.5), v.yaw);
     sfx.hit();
     spawnParticles(npc.x, npcY + 1.0, npc.z, 0xfacc15, 7, 5.0);
-    v.speed *= 0.85;
+    v.speed *= v.isBus ? 0.96 : 0.85;
   }
 
   // --- Other players (driver only) ---
@@ -1303,8 +1975,15 @@ function stepPassengerRiding(v, dt, elapsed) {
 
   if (v.entryAnim && stepVehicleEntryExitAnim(v, dt)) return;
 
+  // Passengers drown with the bus/car too.
+  const w = v.water;
+  if (w && w.deep && hooks.applyPlayerDamage) {
+    hooks.applyPlayerDamage(WATER_DPS * dt, 'DROWNING');
+  }
+
   // Engine note is audible from inside even though we're not driving.
-  sfx.updateEngine(true, v.rpm || 900, false, false);
+  const dead = Boolean(w && w.floodLatch);
+  sfx.updateEngine(!dead, dead ? 0 : (v.rpm || 900), false, false);
 
   if (!gameState.thirdPerson) {
     let yawStep = v.yaw - (v.lastCameraYaw === undefined ? v.yaw : v.lastCameraYaw);
@@ -1324,17 +2003,18 @@ function stepPassengerRiding(v, dt, elapsed) {
       v.cameraYaw += yawDelta * followBlend;
       v.cameraPitch += (0.25 - v.cameraPitch) * followBlend;
     }
-    const aerialDist = (11.4 * (v.carScale || DEFAULT_SCALE)) + Math.min(5.0, Math.abs(v.speed) * 0.085);
+    const aerialDist = chaseDistance(v) + Math.min(5.0, Math.abs(v.speed) * 0.085);
     const horizontalDist = aerialDist * Math.cos(v.cameraPitch);
     const camX = v.x + Math.sin(v.cameraYaw) * horizontalDist;
     const camZ = v.z + Math.cos(v.cameraYaw) * horizontalDist;
     const camY = Math.max(v.y + 1.15 + Math.sin(v.cameraPitch) * aerialDist, terrainH(camX, camZ) + 3.0, 2.4);
     camera.position.set(camX, camY, camZ);
-    camera.lookAt(v.x, v.y + 0.95, v.z);
+    camera.lookAt(v.x, v.y + chaseLookHeight(v), v.z);
   }
 }
 
-// Per-frame driving model (6-speed gearbox, grip, collisions, 3D slope physics & side-roll tipping).
+// Per-frame driving model (6-speed gearbox, grip, collisions, 3D slope physics,
+// side-roll tipping, roof contact and height-aware water).
 export function stepVehicleDriving(dt, elapsed) {
   resolveVehicleCollisions(dt);
   if (!gameState.inCar) return;
@@ -1347,21 +2027,28 @@ export function stepVehicleDriving(dt, elapsed) {
     return;
   }
 
+  const water = updateVehicleWater(v, dt);
+  const engineDead = water.floodLatch;
+  const roofDown = roofDownFactor(v) > 0.35;
+  const driveEnabled = (!water.active || water.awash) && !roofDown;
+
   const animLock = Boolean(v.entryAnim);
-  const throttleInput = animLock ? 0 : (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0);
+  const throttleInput = (animLock || engineDead) ? 0 : (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0);
   const brakeInput = animLock ? 1 : (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0);
   const steerInput = animLock ? 0 : ((keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0) - (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0));
   const handbrake = animLock ? 0 : (keys['Space'] ? 1 : 0);
-  const accelMul = tune('accelMultiplier');
-  const brakeMul = tune('brakeMultiplier');
-  const steerMul = tune('steerMultiplier');
+
+  const accelMul = tune('accelMultiplier') * (v.isBus ? 0.55 : 1);
+  const brakeMul = tune('brakeMultiplier') * (v.isBus ? 0.74 : 1);
+  const steerMul = tune('steerMultiplier') * (v.isBus ? 0.66 : 1);
   const gripMulData = tune('gripMultiplier');
+
   const gIdx = v.gearIndex;
-  const gearCapMps = getGearCaps()[gIdx] / 2.237 * (v.isTank ? 0.48 : 1);
+  const gearCapMps = getGearCaps(v)[gIdx] / 2.237 * (v.isTank ? 0.48 : 1);
   const gearRatio = GEAR_RATIO_MULT[gIdx];
   const prevSpeed = v.speed;
 
-  if (v.flameTimer > 0) {
+  if (v.flameTimer > 0 && !water.active) {
     v.flameTimer -= dt;
     const flOn = v.flameTimer > 0 && Math.sin(elapsed * 65) > -0.35;
     v.flameL.visible = flOn;
@@ -1372,6 +2059,7 @@ export function stepVehicleDriving(dt, elapsed) {
       v.flameR.scale.set(1, 1, s);
     }
   } else {
+    v.flameTimer = water.active ? 0 : v.flameTimer;
     v.flameL.visible = false;
     v.flameR.visible = false;
   }
@@ -1384,8 +2072,8 @@ export function stepVehicleDriving(dt, elapsed) {
   } else if (gIdx === 0) { // Reverse
     const targetRpm = 900 + (Math.abs(v.speed) / Math.max(1, gearCapMps)) * 6600;
     v.rpm += (targetRpm - v.rpm) * Math.min(1, dt * 10);
-    if (throttleInput) {
-      v.speed = Math.max(-gearCapMps, v.speed - 14.5 * dt);
+    if (throttleInput && driveEnabled) {
+      v.speed = Math.max(-gearCapMps, v.speed - 14.5 * (v.isBus ? 0.55 : 1) * dt);
     } else {
       v.speed *= Math.max(0, 1 - 1.5 * dt);
     }
@@ -1395,9 +2083,9 @@ export function stepVehicleDriving(dt, elapsed) {
     v.rpm += (Math.min(8000, rawRpm) - v.rpm) * Math.min(1, dt * 11);
     const normRpm = v.rpm / 8000;
     const torqueCurve = Math.max(0.32, 1 - Math.pow((normRpm - 0.62) / 0.65, 2));
-    const superMult = v.isTank ? 0.62 : v.isSupercar ? 1.32 : 1.0;
+    const superMult = v.isTank ? 0.62 : v.isBus ? 0.70 : v.isSupercar ? 1.32 : 1.0;
     const driveAccel = 23.0 * superMult * gearRatio * torqueCurve * accelMul;
-    if (throttleInput) {
+    if (throttleInput && driveEnabled) {
       if (v.speed < gearCapMps) {
         v.speed = Math.min(gearCapMps, v.speed + driveAccel * dt);
       } else {
@@ -1405,26 +2093,31 @@ export function stepVehicleDriving(dt, elapsed) {
         v.rpm = 7750 + Math.sin(elapsed * 55) * 240;
         v.speed -= 4.0 * dt;
       }
+    } else if (engineDead) {
+      v.rpm = Math.max(0, v.rpm - 5200 * dt);
     } else {
-      const engineBrake = 2.4 + (1.45 / Math.max(0.2, gearRatio)) * 0.55;
+      const engineBrake = (2.4 + (1.45 / Math.max(0.2, gearRatio)) * 0.55) * (v.isBus ? 1.25 : 1);
       v.speed = Math.max(0, v.speed - engineBrake * dt);
     }
   }
+
   if (brakeInput) {
-    if (v.speed > 0.2) v.speed = Math.max(0, v.speed - 36.0 * brakeMul * dt);
-    else if (v.speed < -0.2) v.speed = Math.min(0, v.speed + 36.0 * brakeMul * dt);
+    const brakeForce = 36.0 * brakeMul;
+    if (v.speed > 0.2) v.speed = Math.max(0, v.speed - brakeForce * dt);
+    else if (v.speed < -0.2) v.speed = Math.min(0, v.speed + brakeForce * dt);
     else v.speed = 0;
   }
   if (handbrake) {
-    v.speed *= Math.max(0, 1 - (v.isSupercar ? 2.1 : 3.2) * dt);
+    v.speed *= Math.max(0, 1 - (v.isBus ? 1.6 : v.isSupercar ? 2.1 : 3.2) * dt);
   }
 
-  const targetSteer = steerInput * (v.isSupercar ? 0.54 : 0.46) * steerMul;
-  v.steerAngle += (targetSteer - v.steerAngle) * Math.min(1, dt * 11);
-  const speedFactor = Math.min(1, Math.abs(v.speed) / 4.2);
+  const targetSteer = steerInput * (v.isBus ? 0.40 : v.isSupercar ? 0.54 : 0.46) * steerMul;
+  v.steerAngle += (targetSteer - v.steerAngle) * Math.min(1, dt * (v.isBus ? 7.5 : 11));
+  const speedFactor = Math.min(1, Math.abs(v.speed) / (v.isBus ? 6.0 : 4.2));
   const dirSign = v.speed >= 0 ? 1 : -1;
   const driftYawMult = handbrake ? (v.isSupercar ? 1.55 : 1.32) : 1.0;
-  v.yaw += v.steerAngle * 2.45 * speedFactor * dirSign * driftYawMult * dt;
+  const yawRate = v.isBus ? 1.55 : 2.45;
+  v.yaw += v.steerAngle * yawRate * speedFactor * dirSign * driftYawMult * dt;
 
   const headX = Math.sin(v.yaw);
   const headZ = Math.cos(v.yaw);
@@ -1432,21 +2125,39 @@ export function stepVehicleDriving(dt, elapsed) {
   const sideZ = -Math.sin(v.yaw);
   const targetVx = headX * v.speed;
   const targetVz = headZ * v.speed;
-  const isTipping = Math.abs(v.roll || 0) > 0.78;
-  const lateralGrip = isTipping ? 0.8 : (handbrake ? (v.isSupercar ? 1.35 : 1.8) : (v.isSupercar ? 8.2 : 6.8));
-  const gripMul = Math.min(1, surfaceGrip(v.x, v.z) / 14 + 0.12) * gripMulData;
-  if (isInWater(v.x, v.z)) v.speed *= Math.max(0, 1 - 1.4 * dt);
+
+  const isTipping = Math.abs(wrapPi(v.roll || 0)) > ROLL_TIP_START;
+  const lateralGrip = water.active ? 0.45
+    : isTipping ? 0.8
+    : (handbrake ? (v.isSupercar ? 1.35 : 1.8) : (v.isBus ? 5.4 : v.isSupercar ? 8.2 : 6.8));
+
+  // Height-aware surface grip: the bridge deck reads as tarmac, not water.
+  const rawGrip = water.active ? 3 : surfaceGrip(v.x, v.z, v.y);
+  const gripMul = Math.min(1, rawGrip / 14 + 0.12) * gripMulData;
+
+  // Real water: no tyre bite, momentum only, then drag.
+  if (water.active) {
+    const drag = WATER_DRAG * (water.awash ? 0.55 : 1);
+    const k = Math.max(0, 1 - drag * dt);
+    v.speed *= k;
+    v.velX *= k;
+    v.velZ *= k;
+    if (engineDead) v.rpm = Math.max(0, v.rpm - 5200 * dt);
+  }
+
   v.velX += (targetVx - v.velX) * Math.min(1, lateralGrip * gripMul * dt);
   v.velZ += (targetVz - v.velZ) * Math.min(1, lateralGrip * gripMul * dt);
 
   const slipSpeed = Math.hypot(v.velX - targetVx, v.velZ - targetVz);
-  const isSkidding = (handbrake && Math.abs(v.speed) > 4.5)
+  const isSkidding = !water.active && !roofDown && (
+    (handbrake && Math.abs(v.speed) > 4.5)
     || (slipSpeed > 3.6 && Math.abs(v.speed) > 6.5)
-    || (brakeInput && Math.abs(v.speed) > 12);
+    || (brakeInput && Math.abs(v.speed) > 12)
+  );
   if (isSkidding) {
     sfx.skid(dt);
-    const rWheelX = v.x - headX * 1.4;
-    const rWheelZ = v.z - headZ * 1.4;
+    const rWheelX = v.x - headX * wheelHalfZ(v) * 0.75;
+    const rWheelZ = v.z - headZ * wheelHalfZ(v) * 0.75;
     spawnParticles(rWheelX, v.y + 0.14, rWheelZ, handbrake && v.isSupercar ? 0xf8fafc : 0xcbd5e1, 1, 1.8);
   }
 
@@ -1456,6 +2167,7 @@ export function stepVehicleDriving(dt, elapsed) {
   const crx = sideX, crz = sideZ;
   const wheelZ = wheelHalfZ(v);
   const wheelX = wheelHalfX(v);
+
   // Ground probes reach above the step height so a curb is found and climbed
   // rather than driven into.
   const probeReachY = v.y + STEP_HEIGHT + 0.35;
@@ -1465,76 +2177,175 @@ export function stepVehicleDriving(dt, elapsed) {
     probeReachY,
     0.42
   );
-  const frontLeftY = getWheelY(1, -1);
-  const frontRightY = getWheelY(1, 1);
-  const rearLeftY = getWheelY(-1, -1);
-  const rearRightY = getWheelY(-1, 1);
-  const centerY = computeSupportFloor(nextX, nextZ, probeReachY, 0.8);
-  const wheelAvgY = (frontLeftY + frontRightY + rearLeftY + rearRightY) * 0.25;
-  // The body rides the plane through all four contacts. Allow the front axle to
-  // pull the nose up at a ramp entry instead of truncating it against the centre.
-  const groundSupportY = Math.max(centerY, Math.min(wheelAvgY, centerY + 1.25));
-  const groundY = groundSupportY + 0.02;
 
   v.vy = v.vy || 0;
-  if (groundY > v.y + 0.02) {
-    // Step-up: curbs, sidewalks, plaza slabs and ramp lips lift the car
-    // instantly instead of acting like a wall.
-    v.vy = Math.max(0, v.vy);
-    v.y = groundY;
-  } else if (groundY < v.y) {
-    v.vy -= 19.5 * dt;
-    v.y += v.vy * dt;
-    if (v.y <= groundY) {
-      v.y = groundY;
-      v.vy = 0;
-    }
-  } else {
-    v.vy = 0;
-    v.y = groundY;
-  }
-
-  // 3D Slope Gravity & Hill-Climbing Torque
-  const frontAvgY = (frontLeftY + frontRightY) * 0.5;
-  const rearAvgY = (rearLeftY + rearRightY) * 0.5;
-  const leftAvgY = (frontLeftY + rearLeftY) * 0.5;
-  const rightAvgY = (frontRightY + rearRightY) * 0.5;
-  const slopeForward = (frontAvgY - rearAvgY) / (wheelZ * 2);
-  const slopeSide = (rightAvgY - leftAvgY) / (wheelX * 2);
-  v.speed += -19.5 * slopeForward * dt;
-  const lateralGravityMag = -19.5 * slopeSide * dt;
-  v.velX += sideX * lateralGravityMag;
-  v.velZ += sideZ * lateralGravityMag;
-  if (throttleInput > 0 && slopeForward > 0.05 && !isTipping) {
-    // Counter gravity up to ~40° so drivable ramps are actually drivable.
-    const climbAssist = 19.5 * Math.min(slopeForward, 0.85) * (v.isSupercar ? 1.0 : 0.85);
-    v.speed += climbAssist * dt;
-  }
-
-  // Side-to-Side Roll & Tipping
-  // Negative X rotation raises the nose toward +Z (same convention as the ramps).
-  const rawPitch = -Math.atan(slopeForward);
-  const rawRoll = Math.atan(slopeSide);
-  const accelDelta = (v.speed - prevSpeed) / Math.max(0.008, dt);
-  const targetPitchSway = Math.max(-0.06, Math.min(0.06, -accelDelta * 0.0022));
-  const targetRollSway = Math.max(-0.08, Math.min(0.08, v.steerAngle * (v.speed / 28) * 0.14));
-  v.pitchSway = v.pitchSway || 0;
-  v.rollSway = v.rollSway || 0;
-  // Smooth out suspension pitch & roll sway so braking / handbrake doesn't tilt immediately
-  v.pitchSway += (targetPitchSway - v.pitchSway) * Math.min(1, dt * 5.5);
-  v.rollSway += (targetRollSway - v.rollSway) * Math.min(1, dt * 5.5);
-  const targetPitch = rawPitch;
-  const targetRoll = rawRoll;
   v.pitch = v.pitch || 0;
   v.roll = v.roll || 0;
-  v.pitch += (targetPitch - v.pitch) * Math.min(1, dt * 10);
-  if (Math.abs(v.roll) > 0.78 || Math.abs(rawRoll) > 0.78) {
-    const rollDir = Math.sign(v.roll || rawRoll || 1);
-    v.roll += rollDir * 4.5 * dt;
-    if (v.roll > Math.PI * 2) v.roll -= Math.PI * 2;
-    if (v.roll < -Math.PI * 2) v.roll += Math.PI * 2;
+
+  let groundY = v.y;
+  let roofContact = false;
+
+  if (water.active) {
+    // ---- SINKING -----------------------------------------------------------
+    stepVehicleSinking(v, dt, water);
+    v.pitchSway = (v.pitchSway || 0) * Math.max(0, 1 - dt * 4);
+    v.rollSway = (v.rollSway || 0) * Math.max(0, 1 - dt * 4);
+    groundY = v.y;
+    if (water.deep && hooks.applyPlayerDamage) {
+      hooks.applyPlayerDamage(WATER_DPS * dt, 'DROWNING');
+    }
   } else {
-    v.roll += (targetRoll - v.roll) * Math.min(1, dt * 10);
+    // ---- LAND / BRIDGE DECK ------------------------------------------------
+    const frontLeftY = getWheelY(1, -1);
+    const frontRightY = getWheelY(1, 1);
+    const rearLeftY = getWheelY(-1, -1);
+    const rearRightY = getWheelY(-1, 1);
+    const centerY = computeSupportFloor(nextX, nextZ, probeReachY, v.isBus ? 1.2 : 0.8);
+    const wheelAvgY = (frontLeftY + frontRightY + rearLeftY + rearRightY) * 0.25;
+    // The body rides the plane through all four contacts. Allow the front axle to
+    // pull the nose up at a ramp entry instead of truncating it against the centre.
+    const groundSupportY = Math.max(centerY, Math.min(wheelAvgY, centerY + 1.25));
+
+    // ROLLOVER: when the car is past the tipping point the roof/side becomes the
+    // contact patch, so the body rests ON the ground instead of through it.
+    const bodyOffset = bodySupportOffset(v);
+    groundY = groundSupportY + 0.02 + bodyOffset;
+
+    if (groundY > v.y + 0.02) {
+      // Step-up: curbs, sidewalks, plaza slabs and ramp lips lift the car
+      // instantly instead of acting like a wall.
+      v.vy = Math.max(0, v.vy);
+      v.y = groundY;
+    } else if (groundY < v.y) {
+      v.vy -= 19.5 * dt;
+      v.y += v.vy * dt;
+      if (v.y <= groundY) {
+        v.y = groundY;
+        v.vy = 0;
+      }
+    } else {
+      v.vy = 0;
+      v.y = groundY;
+    }
+
+    // 3D Slope Gravity & Hill-Climbing Torque
+    const frontAvgY = (frontLeftY + frontRightY) * 0.5;
+    const rearAvgY = (rearLeftY + rearRightY) * 0.5;
+    const leftAvgY = (frontLeftY + rearLeftY) * 0.5;
+    const rightAvgY = (frontRightY + rearRightY) * 0.5;
+    const slopeForward = (frontAvgY - rearAvgY) / (wheelZ * 2);
+    const slopeSide = (rightAvgY - leftAvgY) / (wheelX * 2);
+
+    v.speed += -19.5 * slopeForward * dt;
+    const lateralGravityMag = -19.5 * slopeSide * dt;
+    v.velX += sideX * lateralGravityMag;
+    v.velZ += sideZ * lateralGravityMag;
+
+    if (throttleInput > 0 && driveEnabled && slopeForward > 0.05 && !isTipping) {
+      // Counter gravity up to ~40° so drivable ramps are actually drivable.
+      const climbAssist = 19.5 * Math.min(slopeForward, 0.85) * (v.isSupercar ? 1.0 : 0.85);
+      v.speed += climbAssist * dt;
+    }
+
+    // Side-to-Side Roll & Tipping
+    // Negative X rotation raises the nose toward +Z (same convention as the ramps).
+    const rawPitch = -Math.atan(slopeForward);
+    const rawRoll = Math.atan(slopeSide);
+    const accelDelta = (v.speed - prevSpeed) / Math.max(0.008, dt);
+    const targetPitchSway = Math.max(-0.06, Math.min(0.06, -accelDelta * 0.0022));
+    const targetRollSway = Math.max(-0.08, Math.min(0.08, v.steerAngle * (v.speed / 28) * 0.14));
+    v.pitchSway = (v.pitchSway || 0) + (targetPitchSway - (v.pitchSway || 0)) * Math.min(1, dt * 5.5);
+    v.rollSway = (v.rollSway || 0) + (targetRollSway - (v.rollSway || 0)) * Math.min(1, dt * 5.5);
+
+    const grounded = v.y <= groundY + 0.10;
+    roofContact = roofDownFactor(v) > ROOF_DOWN_FACTOR && grounded;
+
+    // Ceiling guard: a flipping body must not punch through an overpass deck.
+    if (v.vy > 0.2 || roofDownFactor(v) > 0.2) {
+      const topY = v.y + bodyTopOffset(v);
+      if (collidesHorizontally(v.x, v.z, topY - 0.25, 0.35, 0.45)) {
+        v.vy = Math.min(v.vy, 0);
+        v.y -= 0.04;
+      }
+    }
+
+    if (roofContact) {
+      // Rest on the roof instead of spinning through the floor.
+      const wrapped = wrapPi(v.roll);
+      const restRoll = wrapped >= 0 ? Math.PI : -Math.PI;
+      v.roll += wrapPi(restRoll - v.roll) * Math.min(1, dt * 3.0);
+      v.pitch += (0 - v.pitch) * Math.min(1, dt * 2.0);
+
+      // Rock it back onto its wheels: SPACE + W while nearly stopped.
+      if (handbrake && throttleInput && Math.abs(v.speed) < ROOF_RIGHT_SPEED) {
+        v._rightTimer = (v._rightTimer || 0) + dt;
+        if (v._rightTimer > 0.35) {
+          v.roll += wrapPi(0 - v.roll) * Math.min(1, dt * 1.9);
+          if (Math.abs(wrapPi(v.roll)) < 0.30) {
+            v.roll = 0;
+            v.pitch = 0;
+            v._rightTimer = 0;
+            v.speed = 0;
+            v.velX = 0;
+            v.velZ = 0;
+            pushFeed('VEHICLE RIGHTED', 'border-l-emerald-400');
+            sfx.shift();
+          }
+        }
+      } else {
+        v._rightTimer = 0;
+      }
+    } else {
+      v._rightTimer = 0;
+      v.pitch += (rawPitch - v.pitch) * Math.min(1, dt * 10);
+      const wrapped = wrapPi(v.roll);
+      if (Math.abs(wrapped) > ROLL_TIP_START || Math.abs(rawRoll) > ROLL_TIP_START) {
+        const rollDir = Math.sign(wrapped || rawRoll || 1);
+        v.roll += rollDir * 4.5 * dt;
+        if (v.roll > Math.PI * 2) v.roll -= Math.PI * 2;
+        if (v.roll < -Math.PI * 2) v.roll += Math.PI * 2;
+      } else {
+        v.roll += (rawRoll - v.roll) * Math.min(1, dt * 10);
+      }
+    }
+
+    // Roof landing impact + scraping friction / sparks / damage.
+    if (roofContact) {
+      const scrapeSpeed = Math.hypot(v.velX, v.velZ);
+      if (!v._roofWasDown) {
+        v._roofWasDown = true;
+        if (scrapeSpeed > 6) {
+          sfx.hit();
+          spawnParticles(v.x, v.y - bodySupportOffset(v) + 0.15, v.z, 0xfbbf24, 10, 5.0);
+          if (hooks.applyPlayerDamage) {
+            hooks.applyPlayerDamage(Math.min(28, (scrapeSpeed - 6) * 1.8), 'ROLLOVER');
+          }
+        }
+        pushFeed('VEHICLE ROLLED — HOLD [SPACE] + [W] TO RIGHT IT', 'border-l-rose-500');
+      }
+      const k = Math.max(0, 1 - ROOF_SCRAPE_DRAG * dt);
+      v.speed *= k;
+      v.velX *= k;
+      v.velZ *= k;
+      if (scrapeSpeed > 2.5) {
+        v._roofScrapeT = (v._roofScrapeT || 0) + dt;
+        sfx.skid(dt);
+        if (v._roofScrapeT > 0.06) {
+          v._roofScrapeT = 0;
+          spawnParticles(
+            v.x + (Math.random() - 0.5) * 1.4,
+            v.y - bodySupportOffset(v) + 0.08,
+            v.z + (Math.random() - 0.5) * 1.4,
+            0xfbbf24, 2, 3.2
+          );
+        }
+        if (scrapeSpeed > 9 && hooks.applyPlayerDamage) {
+          hooks.applyPlayerDamage(Math.min(12, (scrapeSpeed - 9) * 0.9) * dt * 4, 'ROOF SCRAPE');
+        }
+      }
+    } else {
+      v._roofWasDown = false;
+    }
   }
 
   // Traversable Slope & Collision Checks
@@ -1543,15 +2354,27 @@ export function stepVehicleDriving(dt, elapsed) {
     const dzZ = (terrainH(px, pz + 0.4) - terrainH(px, pz - 0.4)) / 0.8;
     return Math.hypot(dzX, dzZ) < 2.2;
   };
-  const ptScale = ((v.carScale || DEFAULT_SCALE) / DEFAULT_SCALE) * (v.isTank ? 1.3 : 1);
+  const ptScale = ((v.carScale || DEFAULT_SCALE) / DEFAULT_SCALE)
+    * (v.isTank ? 1.3 : 1)
+    * (v.isBus ? 2.1 : 1);
+
+  const rolledBody = roofDownFactor(v) > 0.2 || Math.abs(Math.sin(wrapPi(v.roll || 0))) > 0.5;
+  const bodyOffsetNow = bodySupportOffset(v);
+
   const carHit = (px, pz) => {
-    // Probe body starts STEP_HEIGHT above the wheels: anything shorter is
-    // rolled over, never treated as a wall.
-    const probeBottom = v.y + STEP_HEIGHT;
+    // Upright: probe body starts STEP_HEIGHT above the wheels so anything
+    // shorter is rolled over, never treated as a wall.
+    // Rolled: the body hangs BELOW the origin, so probe the whole rolled shell
+    // (this is what gives the roof/side real wall collisions).
+    const probeBottom = rolledBody
+      ? v.y - bodyOffsetNow + 0.12
+      : v.y + STEP_HEIGHT;
+    const probeHeight = rolledBody ? Math.max(1.0, bodyOffsetNow + 0.9) : 1.2;
+
     for (let q = 0; q < CAR_PTS.length; q++) {
       const ptX = px + (cfx * CAR_PTS[q][0] + crx * CAR_PTS[q][1]) * ptScale;
       const ptZ = pz + (cfz * CAR_PTS[q][0] + crz * CAR_PTS[q][1]) * ptScale;
-      if (collidesHorizontally(ptX, ptZ, probeBottom, 1.2, 0.28)) {
+      if (collidesHorizontally(ptX, ptZ, probeBottom, probeHeight, 0.28)) {
         const isStructure = collidesHorizontally(ptX, ptZ, terrainH(ptX, ptZ) + 4.0, 1.3, 0.28);
         if (isStructure || !isTraversableSlope(ptX, ptZ)) {
           return true;
@@ -1596,9 +2419,11 @@ export function stepVehicleDriving(dt, elapsed) {
   v.chassis.rotation.z = v.rollSway;
   v.wheelPivots[0].rotation.y = v.steerAngle;
   v.wheelPivots[1].rotation.y = v.steerAngle;
-  const wheelRot = (v.speed * dt) / 0.38;
+  const wheelRot = (v.speed * dt) / wheelRadius(v);
   v.wheelSpinners.forEach((ws) => { ws.rotation.x += wheelRot; });
-  sfx.updateEngine(true, v.rpm, Boolean(throttleInput), onLimiter);
+
+  sfx.updateEngine(!engineDead, engineDead ? 0 : v.rpm, Boolean(throttleInput) && driveEnabled, onLimiter);
+
   player.x = v.x;
   player.y = v.y + 0.06;
   player.z = v.z;
@@ -1607,6 +2432,7 @@ export function stepVehicleDriving(dt, elapsed) {
   if (v.entryAnim && stepVehicleEntryExitAnim(v, dt)) {
     return;
   }
+
   if (!gameState.thirdPerson) {
     let yawStep = v.yaw - (v.lastCameraYaw === undefined ? v.yaw : v.lastCameraYaw);
     while (yawStep > Math.PI) yawStep -= Math.PI * 2;
@@ -1626,7 +2452,7 @@ export function stepVehicleDriving(dt, elapsed) {
       v.cameraYaw += yawDelta * followBlend;
       v.cameraPitch += (0.25 - v.cameraPitch) * followBlend;
     }
-    const aerialDist = (11.4 * (v.carScale || DEFAULT_SCALE)) + Math.min(5.0, Math.abs(v.speed) * 0.085);
+    const aerialDist = chaseDistance(v) + Math.min(5.0, Math.abs(v.speed) * 0.085);
     const horizontalDist = aerialDist * Math.cos(v.cameraPitch);
     const camX = v.x + Math.sin(v.cameraYaw) * horizontalDist;
     const camZ = v.z + Math.cos(v.cameraYaw) * horizontalDist;
@@ -1636,16 +2462,17 @@ export function stepVehicleDriving(dt, elapsed) {
       2.4
     );
     camera.position.set(camX, camY, camZ);
-    camera.lookAt(v.x, v.y + 0.95, v.z);
+    camera.lookAt(v.x, v.y + chaseLookHeight(v), v.z);
   }
 }
 
 /**
  * Parked cars keep their authored height unless they are clearly floating or a
  * surface has risen under them, so showroom / hideout placements stay intact.
+ * Rolled bodies rest on their roof instead of their wheel plane.
  */
 function settleParkedCar(v, dt) {
-  const rest = computeSupportFloor(v.x, v.z, v.y + 0.65, 0.85) + 0.02;
+  const rest = computeSupportFloor(v.x, v.z, v.y + 0.65, v.isBus ? 1.3 : 0.85) + 0.02 + bodySupportOffset(v);
   v.vy = v.vy || 0;
   if (rest > v.y + 0.08) {
     v.y = rest;
@@ -1667,10 +2494,12 @@ export function suspFrame(dt, t) {
   if (!gameState.inCar) {
     resolveVehicleCollisions(dt);
   }
+
   for (let vi = 0; vi < vehicles.length; vi++) {
     const v = vehicles[vi];
     const ch = v.chassis;
     if (!ch) continue;
+
     const S = v.sus || (v.sus = { hy: 0, hv: 0, p: 0, pv: 0, r: 0, rv: 0, pa: 0, ps: v.speed || 0, lat: 0 });
     const driven = gameState.inCar && gameState.activeCarIndex === vi && !gameState.isPassenger;
     const owner = hooks.mpCarOwner ? hooks.mpCarOwner(vi) : null;
@@ -1697,28 +2526,37 @@ export function suspFrame(dt, t) {
       v.doorRightPivot.rotation.y = -v.doorOpenR * 1.08;
     }
 
-    const acc = (v.speed - S.ps) / Math.max(dt, .001);
+    const acc = (v.speed - S.ps) / Math.max(dt, 0.001);
     S.ps = v.speed;
-    const lat = -(v.steerAngle || 0) * v.speed * Math.abs(v.speed) * .03;
-    const bump = (Math.sin(v.x * 1.7 + v.z * 1.3) * .5 + Math.sin(v.x * .37) * .5) * Math.min(1, Math.abs(v.speed) / 12) * .35;
+    const lat = -(v.steerAngle || 0) * v.speed * Math.abs(v.speed) * 0.03;
+    const bump = (Math.sin(v.x * 1.7 + v.z * 1.3) * 0.5 + Math.sin(v.x * 0.37) * 0.5)
+      * Math.min(1, Math.abs(v.speed) / 12) * 0.35;
     const k = 70, c = 9;
     S.hv += (-k * S.hy - c * S.hv + bump * 30) * dt;
     S.hy += S.hv * dt;
-    S.pv += (-k * .9 * S.p - c * .8 * S.pv - Math.max(-14, Math.min(14, acc)) * .07 * k * .25) * dt;
+    S.pv += (-k * 0.9 * S.p - c * 0.8 * S.pv - Math.max(-14, Math.min(14, acc)) * 0.07 * k * 0.25) * dt;
     S.p += S.pv * dt;
-    S.rv += (-k * .9 * S.r - c * .8 * S.rv + Math.max(-14, Math.min(14, lat)) * .02 * k) * dt;
+    S.rv += (-k * 0.9 * S.r - c * 0.8 * S.rv + Math.max(-14, Math.min(14, lat)) * 0.02 * k) * dt;
     S.r += S.rv * dt;
-    ch.position.y = S.hy * .35;
+    ch.position.y = S.hy * 0.35;
 
     if (!driven && !remoteDriven) {
-      // Water owns floating/sinking bodies — never snap them back to the seabed.
-      if (v._inWater) {
+      // --- Unmanned bodies: water owns them, never snap them to the seabed ---
+      const water = updateVehicleWater(v, dt);
+      if (water.active) {
+        stepVehicleSinking(v, dt, water);
         v.root.position.set(v.x, v.y, v.z);
+        v.root.rotation.order = 'YXZ';
+        v.root.rotation.y = v.yaw;
+        v.root.rotation.x = v.pitch;
+        v.root.rotation.z = v.roll;
         continue;
       }
+
       settleParkedCar(v, dt);
       v.pitch = v.pitch || 0;
       v.roll = v.roll || 0;
+
       const cfx = Math.sin(v.yaw), cfz = Math.cos(v.yaw);
       const crx = Math.cos(v.yaw), crz = -Math.sin(v.yaw);
       const wheelZ = wheelHalfZ(v);
@@ -1734,8 +2572,18 @@ export function suspFrame(dt, t) {
       const lAvg = (fLY + rLY) * 0.5, riAvg = (fRY + rRY) * 0.5;
       const sFwd = (fAvg - rAvg) / (wheelZ * 2);
       const sSd = (riAvg - lAvg) / (wheelX * 2);
-      v.pitch += (-Math.atan(sFwd) - v.pitch) * Math.min(1, dt * 8);
-      v.roll += (Math.atan(sSd) - v.roll) * Math.min(1, dt * 8);
+
+      if (roofDownFactor(v) > ROOF_DOWN_FACTOR) {
+        // A parked rollover stays on its roof.
+        const wrapped = wrapPi(v.roll);
+        const restRoll = wrapped >= 0 ? Math.PI : -Math.PI;
+        v.roll += wrapPi(restRoll - v.roll) * Math.min(1, dt * 2.5);
+        v.pitch += (0 - v.pitch) * Math.min(1, dt * 2.5);
+      } else {
+        v.pitch += (-Math.atan(sFwd) - v.pitch) * Math.min(1, dt * 8);
+        v.roll += (Math.atan(sSd) - v.roll) * Math.min(1, dt * 8);
+      }
+
       // Sync the mesh: collision shoves used to move the body but leave it behind.
       v.root.position.set(v.x, v.y, v.z);
       v.root.rotation.order = 'YXZ';
