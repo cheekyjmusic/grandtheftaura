@@ -1,6 +1,3 @@
-// =============================================================================
-// audio.js — Procedural Web Audio SoundEngine (sfx) with custom audio file overrides from levelData.audioBindings.
-// =============================================================================
 import { levelData } from './levelData.js';
 import { gameState } from './state.js';
 import { playCustomAudio, stopCustomAudio } from './assets.js';
@@ -29,14 +26,12 @@ export class SoundEngine {
     this.music = null;
     this.musicPath = '';
 
-    // Built-in background music playlist state
     this.bgmPlayer = null;
     this.bgmIndex = 0;
     this.bgmVolume = 0.05;
     this.bgmPlayPending = false;
   }
 
-  // ---- custom audio file overrides (levelData.audioBindings) ----
   custom(eventName, vol = 0.9) {
     if (!this.enabled) return false;
     const path = levelData.audioBindings && levelData.audioBindings[eventName];
@@ -56,7 +51,7 @@ export class SoundEngine {
     }
     if (!this.customEngine) {
       this.customEngine = playCustomAudio(path, 0.5, { loop: true });
-      if (!this.customEngine) return false; // not loaded yet -> procedural synth
+      if (!this.customEngine) return false;       
     } else if (this.customEngine.paused) {
       const p = this.customEngine.play();
       if (p && p.catch) p.catch(() => {});
@@ -93,12 +88,10 @@ export class SoundEngine {
     this.bgmPlayer = audio;
   }
 
-  /** Called every frame by main.js: plays bound bgMusic or alternates themesong1.mp3 & themesong2.mp3 quietly. */
   updateMusic() {
     const customPath = levelData.audioBindings && levelData.audioBindings.bgMusic;
     const want = this.enabled && gameState.screen === 'playing';
 
-    // If a custom Studio bgMusic override is bound, use it and pause the default playlist
     if (customPath) {
       if (this.bgmPlayer && !this.bgmPlayer.paused) this.bgmPlayer.pause();
       if (this.music && this.musicPath !== customPath) {
@@ -119,14 +112,12 @@ export class SoundEngine {
       return;
     }
 
-    // Stop any previously bound custom music if unbound
     if (this.music) {
       stopCustomAudio(this.music);
       this.music = null;
       this.musicPath = '';
     }
 
-    // Default quiet background playlist (themesong1.mp3 <-> themesong2.mp3)
     if (want) {
       this._ensureBgmPlayer();
       if (!this.bgmPlayer) return;
@@ -146,7 +137,6 @@ export class SoundEngine {
     }
   }
 
-  /** Studio "Test Sound": plays the bound custom file, or the built-in synth when unbound. */
   previewEvent(eventName) {
     this.unlock();
     const path = levelData.audioBindings && levelData.audioBindings[eventName];
@@ -186,7 +176,6 @@ export class SoundEngine {
       this.ctx.resume().catch(() => {});
     }
 
-    // Retry background music if autoplay was waiting for the first user gesture
     if (this.bgmPlayer && this.bgmPlayer.paused && this.enabled && gameState.screen === 'playing' && !this.bgmPlayPending) {
       this.bgmPlayPending = true;
       const p = this.bgmPlayer.play();
@@ -198,7 +187,6 @@ export class SoundEngine {
       }
     }
 
-    // Build reusable white/pink noise buffer once for footsteps & transient effects
     if (this.ctx && !this.noiseBuffer) {
       const length = Math.floor(this.ctx.sampleRate * 0.25);
       const buffer = this.ctx.createBuffer(1, length, this.ctx.sampleRate);
@@ -282,11 +270,6 @@ export class SoundEngine {
     osc.stop(t + dur);
   }
 
-  /**
-   * Synthesizes a single natural footstep (low heel thud + filtered surface grit).
-   * @param {'concrete'|'grass'|'sand'|'wood'|'metal'} surface
-   * @param {boolean} sprinting
-   */
   footstep(surface = 'concrete', sprinting = false) {
     if (!this.enabled) return;
     if (this.custom('footstep', sprinting ? 0.32 : 0.22)) return;
@@ -296,7 +279,6 @@ export class SoundEngine {
     const t = this.ctx.currentTime;
     this.stepLeft = !this.stepLeft;
 
-    // Subtle alternation between left/right foot + organic micro-variation
     const footBias = this.stepLeft ? 0.95 : 1.05;
     const jitter = 0.93 + Math.random() * 0.14;
     const pitchScale = footBias * jitter;
@@ -328,7 +310,6 @@ export class SoundEngine {
       gritMix = 0.55;
     }
 
-    // 1. Heel / sole impact thud
     const thudOsc = this.ctx.createOscillator();
     const thudGain = this.ctx.createGain();
     thudOsc.type = 'triangle';
@@ -344,7 +325,6 @@ export class SoundEngine {
     thudOsc.start(t);
     thudOsc.stop(t + thudDur + 0.01);
 
-    // 2. Sole scuff / surface texture burst
     const noise = this.ctx.createBufferSource();
     noise.buffer = this.noiseBuffer;
 
@@ -363,17 +343,12 @@ export class SoundEngine {
     filter.connect(noiseGain);
     noiseGain.connect(this.ctx.destination);
 
-    // Random offset inside the cached noise buffer so each step has unique grain
     const maxOffset = Math.max(0, this.noiseBuffer.duration - gritDur - 0.02);
     noise.start(t, Math.random() * maxOffset, gritDur + 0.01);
   }
 
-  /**
-   * Call once per frame while updating the player to trigger rhythmic footsteps.
-   */
   updateFootsteps(dt, moving, sprinting = false, grounded = true, surface = 'concrete') {
     if (!this.enabled || !moving || !grounded) {
-      // Short lead-in so the first step triggers almost immediately when walking resumes
       this.stepTimer = Math.min(this.stepTimer, 0.09);
       return;
     }

@@ -1,17 +1,24 @@
 // =============================================================================
-// state.js — Shared game state, player state, input state, collision registries,
-// terrain/collision math, the I-88 freeway spec and the `hooks` registry.
+// state.js — Grand Theft Aura · SHARED WORLD STATE
+//
+// Leaf-ish module: imports only levelData.js. Everything else imports THIS.
+//
+// -----------------------------------------------------------------------------
+// COLLIDER QUERY NARROWING
+// -----------------------------------------------------------------------------
+// worldKit.js maintains a spatial hash of worldBoxes and publishes it through
+// hooks.queryWorldBoxes. The three hot loops below (computeSupportFloor,
+// collidesHorizontally, hasDetectedMapRegionAt) ask for a CANDIDATE SET and then
+// apply their own exact tests — unchanged. Until the kit installs the hook we
+// fall back to the full array, so this file works standalone.
+//
+// IMPORTANT: queryBoxes() returns a REUSED scratch array. Never hold onto it
+// across another query. The three call sites below are strictly sequential.
 // =============================================================================
 import { terrainHeightOffset } from './levelData.js';
 
 export const noop = () => {};
 
-/**
- * Late-bound callbacks that let LOWER layers call into HIGHER layers without
- * importing them (keeps the import graph strictly top-down / acyclic). Each
- * higher module registers its implementation at the bottom of its own file with
- * Object.assign(hooks, {...}).
- */
 export const hooks = {
   syncEquippedMeshes: noop,
   applyPlayerDamage: noop,
@@ -36,39 +43,52 @@ export const hooks = {
   getRightMountWorldPosition: noop,
   recomputeWorldBounds: noop,
 
-  // ---- multiplayer v2 (registered by js/multiplayer.js; offline defaults keep
-  //      singleplayer identical) ----
+  // --- late-bound by worldRuntime.js (declared so the shape is stable) ------
+  updateWater: noop,
+  resetWaterSystem: noop,
+  getWaterHeightAt: () => null,
+  getWaterDepthAt: () => 0,
+  isSwimming: () => false,
+  swimState: null,
+  buildWorld: noop,
+  worldRuntimeStats: () => null,
+
+  // --- late-bound by worldKit.js / worldStream.js ---------------------------
+  queryWorldBoxes: null,
+  worldStreamRegister: null,
+
+  // --- multiplayer ---------------------------------------------------------
   mpActive: () => false,
   mpIsHost: () => false,
   mpIsGuest: () => false,
   mpLocalId: () => '1',
-  mpTargets: () => [],            // other players: {id,x,y,z,yaw,crouching,inCar,hp,attacking}
-  mpHitPlayer: noop,              // (id, amount, sourceLabel) authority-routed player damage
-  mpAward: noop,                  // (id, cash, itemId?) kill/loot credit
-  mpWorldEvent: noop,             // (ev) apply locally + send/broadcast
-  mpVehicleImpact: noop,          // (targetCarIdx, impulseX, impulseZ, yawImpulse)
-  mpCarEnter: () => true,         // (idx) -> false when locked or pending host grant
-  mpCarExit: noop,                // (idx)
-  mpCarLocked: () => false,       // (idx) locked by someone else
-  mpCarOwner: () => null,         // (idx) -> owner id | null
-  mpNpcLoot: () => 'local',       // (npc) -> 'local' (award now) | 'pending' (host grant)
-  mpGuestNpcFrame: noop,          // (dt, elapsed) guest-side NPC interpolation/pose
-  mpGuestCopFrame: noop,          // (dt, elapsed) guest-side police rendering
-  mpGuestRatFrame: noop,          // (dt, elapsed) guest-side rat rendering
-  mpMeleeCop: noop,               // guest melee vs remote cops
-  mpMeleeRat: noop,               // guest melee vs remote rats
+  mpTargets: () => [],
+  mpHitPlayer: noop,
+  mpAward: noop,
+  mpWorldEvent: noop,
+  mpVehicleImpact: noop,
+  mpCarEnter: () => true,
+  mpCarExit: noop,
+  mpCarLocked: () => false,
+  mpCarOwner: () => null,
+  mpNpcLoot: () => 'local',
+  mpGuestNpcFrame: noop,
+  mpGuestCopFrame: noop,
+  mpGuestRatFrame: noop,
+  mpMeleeCop: noop,
+  mpMeleeRat: noop,
   mpJetLocked: () => false,
-  mpJetDigest: () => null,        // local jet state for the world stream
-  mpJetApplyRemote: noop,         // (data|null) render someone else's jet
-  mpSpawnBomb: noop,              // (x,y,z,vx,vy,vz) networked nuke
+  mpJetDigest: () => null,
+  mpJetApplyRemote: noop,
+  mpSpawnBomb: noop,
   mpFestivalLead: () => 70,
   mpSetFestivalLead: noop,
-  mpAdoptTraffic: noop,           // new host: rebuild traffic route progress from positions
-  mpDrawMap: noop,                // (ctx, X, Y) remote player dots
-  mpShutdown: noop                // graceful leave (host_bye / bye)
+  mpAdoptTraffic: noop,
+  mpDrawMap: noop,
+  mpShutdown: noop
 };
 
-/** Axis-aligned footprint of an upright box/cylinder (half extents) after yaw + scale. */
+/** Rotated-Y AABB footprint of an object. Used by vehicles and props. */
 export function uprightFootprint(obj, halfX, halfZ, height) {
   const sx = Math.abs(obj.scale.x), sy = Math.abs(obj.scale.y), sz = Math.abs(obj.scale.z);
   const c = Math.abs(Math.cos(obj.rotation.y)), s = Math.abs(Math.sin(obj.rotation.y));
@@ -81,10 +101,13 @@ export function uprightFootprint(obj, halfX, halfZ, height) {
   };
 }
 
+// =============================================================================
+// GAME STATE
+// =============================================================================
 export const MAX_HOTDOG_AMMO = 60;
 
 export const gameState = {
-  screen: 'start', // 'start' | 'playing' | 'paused'
+  screen: 'start',
   inventoryOpen: false,
   mapOpen: false,
   settingsOpen: false,
@@ -168,9 +191,9 @@ export const meteorDrop = {
   shockwaveLife: 0
 };
 
-// -----------------------------------------------------------------------------
-// World registries
-// -----------------------------------------------------------------------------
+// =============================================================================
+// WORLD REGISTRIES
+// =============================================================================
 export const worldBoxes = [];
 export const driveableRamps = [];
 export const mapShapes = [];
@@ -189,25 +212,20 @@ export const sausageRefillZones = [];
 export const waterZones = [];
 export const iceZones = [];
 
-// -----------------------------------------------------------------------------
-// I-88 INTERSTATE — single source of truth
-//
-// One continuous carriageway from the southern city limit to the northern
-// metropolis. world.js builds every segment from these numbers so the surface,
-// the colliders and the map overlay can never drift apart:
-//
-//   ground  southEnd .. rampUpStart
-//   ramp    rampUpStart .. rampUpEnd      groundY -> deckY
-//   viaduct deckStart .. deckEnd          (elevated, no at-grade crossings)
-//   ramp    bridgeRampStart .. bridgeRampEnd   deckY -> bridgeY
-//   bridge  bridgeStart .. bridgeEnd      (ocean suspension span)
-//   ramp    rampDownStart .. rampDownEnd  bridgeY -> northY
-//   ground  rampDownEnd .. northEnd
-// -----------------------------------------------------------------------------
+/**
+ * Narrowed candidate solids. worldKit publishes queryBoxes() once its spatial
+ * hash is installed; before that we scan everything (identical results).
+ */
+const boxCandidates = (x, z, r) =>
+  (hooks.queryWorldBoxes ? hooks.queryWorldBoxes(x, z, r) : worldBoxes);
+
+// =============================================================================
+// I-88 INTERSTATE — frozen geometry contract shared by roads, terrain, gameplay
+// =============================================================================
 export const I88 = Object.freeze({
   x: 152,
-  halfW: 11,            // 22 m at-grade carriageway
-  deckHalfW: 10,        // 20 m elevated deck
+  halfW: 11,
+  deckHalfW: 10,
   groundY: 0.06,
   deckY: 5.0,
   bridgeY: 14.0,
@@ -224,21 +242,19 @@ export const I88 = Object.freeze({
   rampDownStart: 364,
   rampDownEnd: 394,
   northEnd: 910,
-  // At-grade connector openings (west/east barrier gaps), z centres
   westOpenings: [-24, 72, 428, 468, 564, 660, 738],
   eastOpenings: [40, 564],
   openingHalf: 10
 });
 
-/** True when (x,z) lies on the I-88 carriageway footprint at any elevation. */
 export function onFreeway(x, z, pad = 0) {
   return Math.abs(x - I88.x) <= I88.halfW + pad
     && z >= I88.southEnd - pad && z <= I88.northEnd + pad;
 }
 
-// -----------------------------------------------------------------------------
-// World bounds
-// -----------------------------------------------------------------------------
+// =============================================================================
+// WORLD BOUNDS
+// =============================================================================
 const WORLD_BOUNDS_PAD = 24;
 const BASE_WORLD_BOUNDS = { minX: -260, maxX: 260, minZ: -260, maxZ: 260 };
 
@@ -249,8 +265,6 @@ export const WORLD_BOUNDS = {
   maxZ: BASE_WORLD_BOUNDS.maxZ
 };
 
-let _boundsSig = '';
-
 export function expandWorldBounds(minX, maxX, minZ, maxZ, pad = WORLD_BOUNDS_PAD) {
   if (Number.isFinite(minX)) WORLD_BOUNDS.minX = Math.min(WORLD_BOUNDS.minX, minX - pad);
   if (Number.isFinite(maxX)) WORLD_BOUNDS.maxX = Math.max(WORLD_BOUNDS.maxX, maxX + pad);
@@ -258,13 +272,13 @@ export function expandWorldBounds(minX, maxX, minZ, maxZ, pad = WORLD_BOUNDS_PAD
   if (Number.isFinite(maxZ)) WORLD_BOUNDS.maxZ = Math.max(WORLD_BOUNDS.maxZ, maxZ + pad);
 }
 
-/** Restore the baseline bounds and force the next sync to recompute. */
 export function resetWorldBounds() {
   WORLD_BOUNDS.minX = BASE_WORLD_BOUNDS.minX;
   WORLD_BOUNDS.maxX = BASE_WORLD_BOUNDS.maxX;
   WORLD_BOUNDS.minZ = BASE_WORLD_BOUNDS.minZ;
   WORLD_BOUNDS.maxZ = BASE_WORLD_BOUNDS.maxZ;
-  _boundsSig = '';
+  _boundsLens.fill(-1);
+  _lastBoundsSync = -Infinity;
 }
 
 export function recomputeWorldBounds() {
@@ -324,7 +338,9 @@ export function recomputeWorldBounds() {
     if (sk.lobbyPad) includePoint(sk.lobbyPad.x, sk.lobbyPad.z);
     if (sk.roofPad) includePoint(sk.roofPad.x, sk.roofPad.z);
   }
-  for (let i = 0; i < sausageRefillZones.length; i++) includePoint(sausageRefillZones[i].x, sausageRefillZones[i].z);
+  for (let i = 0; i < sausageRefillZones.length; i++) {
+    includePoint(sausageRefillZones[i].x, sausageRefillZones[i].z);
+  }
   for (let i = 0; i < worldPickups.length; i++) includePoint(worldPickups[i].x, worldPickups[i].z);
   for (let i = 0; i < smashableCrates.length; i++) includePoint(smashableCrates[i].x, smashableCrates[i].z);
   for (let i = 0; i < hazardBarrels.length; i++) includePoint(hazardBarrels[i].x, hazardBarrels[i].z);
@@ -333,16 +349,46 @@ export function recomputeWorldBounds() {
   WORLD_BOUNDS.maxX = maxX;
   WORLD_BOUNDS.minZ = minZ;
   WORLD_BOUNDS.maxZ = maxZ;
-  _boundsSig = boundsSignature();
+  markBoundsClean();
+  _lastBoundsSync = now();
   return WORLD_BOUNDS;
 }
 
-function boundsSignature() {
-  return `${worldBoxes.length}|${driveableRamps.length}|${mapShapes.length}|${enterableZones.length}|${waterZones.length}|${iceZones.length}|${lampPosts.length}|${buildingLods.length}|${skyscrapers.length}|${sausageRefillZones.length}|${worldPickups.length}|${smashableCrates.length}|${hazardBarrels.length}`;
+// --- change detection --------------------------------------------------------
+// Was a 13-field template string built on EVERY collision query. Now it is 13
+// integer compares against a cached length vector — zero allocation.
+const BOUNDS_SOURCES = [
+  worldBoxes, driveableRamps, mapShapes, enterableZones, waterZones, iceZones,
+  lampPosts, buildingLods, skyscrapers, sausageRefillZones, worldPickups,
+  smashableCrates, hazardBarrels
+];
+const _boundsLens = new Int32Array(BOUNDS_SOURCES.length).fill(-1);
+let _lastBoundsSync = -Infinity;
+const BOUNDS_SYNC_MS = 250;
+
+const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+function boundsChanged() {
+  for (let i = 0; i < BOUNDS_SOURCES.length; i++) {
+    if (BOUNDS_SOURCES[i].length !== _boundsLens[i]) return true;
+  }
+  return false;
+}
+function markBoundsClean() {
+  for (let i = 0; i < BOUNDS_SOURCES.length; i++) _boundsLens[i] = BOUNDS_SOURCES[i].length;
 }
 
+/**
+ * Rate-limited lazy recompute. Streamed floor colliders are always INSIDE
+ * already-registered buildings, so streaming changes lengths without ever
+ * changing the bounds — throttling is a pure win with no behavioural risk.
+ * worldRuntime still calls recomputeWorldBounds() explicitly after the build.
+ */
 function syncWorldBounds() {
-  if (boundsSignature() !== _boundsSig) recomputeWorldBounds();
+  if (!boundsChanged()) return;
+  const t = now();
+  if (t - _lastBoundsSync < BOUNDS_SYNC_MS) return;
+  recomputeWorldBounds();
 }
 
 function hasDetectedMapRegionAt(x, z, pad = 28) {
@@ -360,13 +406,17 @@ function hasDetectedMapRegionAt(x, z, pad = 28) {
     const r = driveableRamps[i];
     if (x >= r.minX - pad && x <= r.maxX + pad && z >= r.minZ - pad && z <= r.maxZ + pad) return true;
   }
-  for (let i = 0; i < worldBoxes.length; i++) {
-    const b = worldBoxes[i];
+  const cands = boxCandidates(x, z, pad);
+  for (let i = 0; i < cands.length; i++) {
+    const b = cands[i];
     if (x >= b.minX - pad && x <= b.maxX + pad && z >= b.minZ - pad && z <= b.maxZ + pad) return true;
   }
   return false;
 }
 
+// =============================================================================
+// WORLD MUTATORS
+// =============================================================================
 export function addWorldBox(minX, maxX, minY, maxY, minZ, maxZ, tag = 'solid', climbable = true) {
   const box = { minX, maxX, minY, maxY, minZ, maxZ, tag, climbable };
   worldBoxes.push(box);
@@ -374,7 +424,6 @@ export function addWorldBox(minX, maxX, minY, maxY, minZ, maxZ, tag = 'solid', c
   return box;
 }
 
-/** Returns the ramp record so callers can move or remove it later. */
 export function addDriveableRamp({ minX, maxX, minZ, maxZ, startY, endY, axis = 'z', dir = 1 }) {
   const ramp = { minX, maxX, minZ, maxZ, startY, endY, axis, dir };
   driveableRamps.push(ramp);
@@ -382,15 +431,21 @@ export function addDriveableRamp({ minX, maxX, minZ, maxZ, startY, endY, axis = 
   return ramp;
 }
 
-export function registerBuildingLod(x, z, lodGroup) {
+/**
+ * Distance-culled detail group.
+ * r/off are optional: a 90 m tower should keep its crown far longer than a
+ * house keeps its chimney. worldStream.adoptBuildingLods() honours them and
+ * falls back to 54 / 66 when they are absent.
+ */
+export function registerBuildingLod(x, z, lodGroup, r = 54, off = null) {
   lodGroup.visible = false;
-  buildingLods.push({ x, z, group: lodGroup, active: false });
+  buildingLods.push({ x, z, group: lodGroup, active: false, r, off });
   expandWorldBounds(x, x, z, z);
 }
 
-// -----------------------------------------------------------------------------
-// UI helpers
-// -----------------------------------------------------------------------------
+// =============================================================================
+// UI HELPERS
+// =============================================================================
 export function flashEdge(cssColor) {
   const el = document.getElementById('screen-flash');
   if (!el) return;
@@ -414,14 +469,13 @@ export function pushFeed(text, borderClass = 'border-l-amber-400') {
 export const keys = {};
 export const inputState = { isDraggingLook: false, isPrimaryFireHeld: false, lastMouseX: 0, lastMouseY: 0 };
 
-// -----------------------------------------------------------------------------
-// Collision / support
-// -----------------------------------------------------------------------------
+// =============================================================================
+// COLLISION QUERIES  (exact tests unchanged — only the candidate set narrows)
+// =============================================================================
 export function computeSupportFloor(x, z, footY, radius) {
   if (footY < -1.0) return sewerFloor(x, z);
 
   const inJungle = x >= 368 && x <= 533 && z >= -180 && z <= 240;
-  // Northern landmass (Los Aura / LAX / speedway) sits on its own 0.18 plinth.
   const inNorth = x >= -250 && x <= 490 && z >= 380 && z <= 930;
   const base = inJungle ? 1.5 : (inNorth ? 0.18 : (x >= 164 ? 0.02 : 0.18));
   let highest = base + terrainHeightOffset(x, z);
@@ -441,8 +495,9 @@ export function computeSupportFloor(x, z, footY, radius) {
     }
   }
 
-  for (let i = 0; i < worldBoxes.length; i++) {
-    const b = worldBoxes[i];
+  const cands = boxCandidates(x, z, radius);
+  for (let i = 0; i < cands.length; i++) {
+    const b = cands[i];
     if (x + radius > b.minX && x - radius < b.maxX && z + radius > b.minZ && z - radius < b.maxZ) {
       if (b.maxY <= footY + 0.46 && b.maxY > highest) highest = b.maxY;
     }
@@ -452,10 +507,11 @@ export function computeSupportFloor(x, z, footY, radius) {
 
 export function collidesHorizontally(nx, nz, footY, bodyH, radius) {
   syncWorldBounds();
+
   if (nx < WORLD_BOUNDS.minX + radius || nx > WORLD_BOUNDS.maxX - radius
     || nz < WORLD_BOUNDS.minZ + radius || nz > WORLD_BOUNDS.maxZ - radius) return true;
 
-  // Aura Hills are bounded unless a built region or the alpine range covers the spot.
+  // Western backcountry is closed unless something has actually been built there.
   if (nx < -196 && nx > -560
     && (nz < -170 + radius || nz > 170 - radius)
     && !(nx >= -700 && nx <= -50 && nz >= 108 && nz <= 320)
@@ -468,8 +524,11 @@ export function collidesHorizontally(nx, nz, footY, bodyH, radius) {
     if (th > -90 && th - footY > 1.0) return true;
   }
 
-  for (let i = 0; i < worldBoxes.length; i++) {
-    const b = worldBoxes[i];
+  // NOTE: hasDetectedMapRegionAt() above already consumed the scratch array.
+  // This query is strictly after it — never nest these two.
+  const cands = boxCandidates(nx, nz, radius);
+  for (let i = 0; i < cands.length; i++) {
+    const b = cands[i];
     if (b.maxY <= footY + 0.42 || b.minY >= footY + bodyH - 0.08) continue;
     if (nx + radius > b.minX && nx - radius < b.maxX && nz + radius > b.minZ && nz - radius < b.maxZ) {
       return true;
@@ -478,16 +537,16 @@ export function collidesHorizontally(nx, nz, footY, bodyH, radius) {
   return false;
 }
 
-// -----------------------------------------------------------------------------
-// Deterministic noise
-// -----------------------------------------------------------------------------
+// =============================================================================
+// DETERMINISTIC RNG  (legacy global stream; worldKit uses per-id hashing)
+// =============================================================================
 export let _seed = 1337;
 export const rnd = () => { _seed = (_seed * 1664525 + 1013904223) >>> 0; return _seed / 4294967296; };
 export const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
 
-// -----------------------------------------------------------------------------
-// Biomes & surface grip
-// -----------------------------------------------------------------------------
+// =============================================================================
+// BIOMES & SURFACE
+// =============================================================================
 export function biomeAt(x, z) {
   if (x >= 368 && x <= 533 && z >= -180 && z <= 240) return 'jungle';
   if (x >= -700 && x <= -50 && z >= 108 && z <= 320) return 'alpine';
@@ -506,7 +565,6 @@ export function isInWater(x, z) {
 export function surfaceGrip(x, z) {
   for (const ic of iceZones) if (Math.hypot(x - ic.x, z - ic.z) < ic.r) return 1.5;
   if (isInWater(x, z)) return 7;
-  // The interstate is paved at every elevation (ground, viaduct, bridge).
   if (onFreeway(x, z, 1)) return 14;
   const b = biomeAt(x, z);
   if (b === 'alpine') return 3.6;
@@ -517,7 +575,7 @@ export function surfaceGrip(x, z) {
 }
 
 // =============================================================================
-// AURA OVERHAUL — terrain fields, winding mountain road, sewer, wanted system
+// NOISE
 // =============================================================================
 export function sstep(a, b, x) {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
@@ -550,6 +608,9 @@ export function ridge(x, z, o) {
   return s;
 }
 
+// =============================================================================
+// PATHS & HEIGHT FIELDS
+// =============================================================================
 export function roadC(z) { const t = -170 - z; return 116 + 64 * Math.sin(t * 0.019) + 24 * Math.sin(t * 0.052 + 1); }
 export function roadH(z) { return 0.2 + Math.min(82, (-170 - z) * 0.16); }
 
@@ -602,7 +663,6 @@ export function hillsH(x, z) {
 
 export function riverX(z) { return roadC(z) - 72 + 14 * Math.sin(z * .04); }
 
-/** Frostpine alpine heightfield — visuals and collision use this exact formula. */
 export function alpineH(x, z) {
   return 0.02 + Math.max(0, 8 + Math.sin(x * 0.02) * 3 + Math.cos(z * 0.03) * 2);
 }
@@ -635,17 +695,23 @@ export function terrainH(x, z) {
   return terrainBaseH(x, z) + terrainHeightOffset(x, z);
 }
 
-// -----------------------------------------------------------------------------
-// Sewer network
-// -----------------------------------------------------------------------------
+// =============================================================================
+// SEWERS
+// =============================================================================
 export const SCX = 20, SCZ = -30, SFY = -9;
 export function sewerFloor() { return SFY; }
 
-/** Default surface manholes; buildSewer() appends any conditional exits. */
 export const manholes = [[-4, 24], [48, -16], [-40, -30], [20, -66]];
-export const sewerLights = [], manholeCovers = [], manholeOpen = [], manholeHoles = [], sRects = [];
+export const sewerLights = [];
+export const manholeCovers = [];
+export const manholeOpen = [];
+export const manholeHoles = [];
+export const sRects = [];
 
-export const aura = { ahCull: null, ahF: null, ahHint: null, hospitalSpawn: null, culls: [], estates: null };
+export const aura = {
+  ahCull: null, ahF: null, ahHint: null,
+  hospitalSpawn: null, culls: [], estates: null
+};
 
 export function sewerOK(x, z, r) {
   for (let i = 0; i < sRects.length; i++) {
@@ -658,9 +724,9 @@ export function sewerOK(x, z, r) {
 export const under = () => player.y < -1.2;
 export const climb = { on: false, dir: 0, t: 0, i: 0 };
 
-// -----------------------------------------------------------------------------
-// Police & wanted level
-// -----------------------------------------------------------------------------
+// =============================================================================
+// WANTED LEVEL
+// =============================================================================
 export const AO = { heat: 0, calm: 0, cops: [], cars: [], spawnT: 0, shotT: 0, lastAtk: 0 };
 export const stars = () => Math.min(5, Math.ceil(AO.heat - .001));
 
@@ -672,13 +738,9 @@ export function crime(a) {
   if (stars() > s0) pushFeed('WANTED LEVEL ' + stars() + ' — POLICE DISPATCHED', 'border-l-blue-500');
 }
 
-// -----------------------------------------------------------------------------
-// World rebuild support
-//
-// buildWorld() is idempotent: it calls this before rebuilding so no stale
-// collider, zone or bound survives from the previous build. NPC/AI state is
-// intentionally left alone — it is owned by the NPC layer, not the world.
-// -----------------------------------------------------------------------------
+// =============================================================================
+// RESET
+// =============================================================================
 export function resetWorldState() {
   worldBoxes.length = 0;
   driveableRamps.length = 0;
@@ -696,12 +758,12 @@ export function resetWorldState() {
   sausageRefillZones.length = 0;
   waterZones.length = 0;
   iceZones.length = 0;
-
   sewerLights.length = 0;
   manholeCovers.length = 0;
   manholeOpen.length = 0;
   manholeHoles.length = 0;
   sRects.length = 0;
+
   manholes.length = 0;
   manholes.push([-4, 24], [48, -16], [-40, -30], [20, -66]);
 
@@ -711,6 +773,10 @@ export function resetWorldState() {
   aura.hospitalSpawn = null;
   aura.culls = [];
   aura.estates = null;
+
+  // Rebuild determinism: the legacy global stream restarts with the world.
+  // (worldKit's per-placement RNG is seeded from hash(id) and is unaffected.)
+  _seed = 1337;
 
   resetWorldBounds();
 }

@@ -1,38 +1,3 @@
-// =============================================================================
-// vehicles.js — Vehicle mesh builders (sports car / supercar / tank / BUS),
-// 6-speed manual gearbox, driving physics, car-to-car collisions, 3D terrain
-// physics, suspension & exhaust flame effects.
-//
-// FIXES IN THIS REVISION
-// -----------------------------------------------------------------------------
-// 1. HEIGHT-AWARE WATER (bridge fix)
-//    isInWater(x,z) is a 2D footprint test, so the Golden Gate deck counted as
-//    water and the car was damped ~1.4/s while crossing it. Water is now a
-//    HEIGHT test: only geometry actually below the surface gets wet. The deck
-//    drives exactly like tarmac (full grip, no drag).
-//
-// 2. REAL WATER BEHAVIOUR — CARS SINK
-//    Off the deck there is no tyre bite: momentum + drag, engine floods at
-//    ~1.15 m, nose drops, body sinks at a terminal rate to the seabed. Occupants
-//    drown below 2.6 m. Bailing out places you at the surface, not the seabed.
-//    Parked/unmanned cars sink too.
-//
-// 3. BUS
-//    8 seats (first rider drives, everyone else rides), slower caps/accel/steer/
-//    brakes, 3-circle footprint, 6 wheels, heavier mass, working doors.
-//
-// 4. ROOF / BODY COLLISION WHEN ROLLED
-//    The body is now an oriented box: a rolled car rests on its roof or side
-//    instead of sinking through the floor, its rolled body blocks walls, it
-//    scrapes/sparks/takes damage, cannot drive, and can be rocked upright with
-//    SPACE + W while stopped. Ceiling guard stops roof punch-through.
-//
-// 5. CAR-TO-CAR COLLISIONS ARE HEIGHT-AWARE
-//    A car on the bridge no longer collides with traffic on the road below.
-//
-// (Previous revisions: swept NPC roadkill, STEP_HEIGHT ledge climbing,
-//  driver + passenger multiplayer occupancy — all retained.)
-// =============================================================================
 import * as THREE from 'three';
 import { levelData } from './levelData.js';
 import {
@@ -46,9 +11,7 @@ import { spawnParticles } from './items.js';
 export const vehicles = [];
 
 export const GEAR_LABELS = ['R', 'N', '1', '2', '3', '4', '5', '6'];
-// Index 0 = Reverse, 1 = Neutral (cap 0 is intentional), 2..7 = forward gears.
 export const GEAR_CAPS_MPH = [36, 0, 39, 66, 95, 125, 154, 180];
-// The bus is deliberately a bit slower than the cars (~65% top end).
 export const BUS_GEAR_CAPS_MPH = [26, 0, 30, 50, 70, 88, 104, 118];
 export const GEAR_RATIO_MULT = [-0.55, 0, 1.0, 0.66, 0.46, 0.34, 0.26, 0.21];
 
@@ -56,35 +19,29 @@ const DEFAULT_SCALE = 1.35;
 const BUS_DEFAULT_SCALE = 1.2;
 export const BUS_SEAT_COUNT = 8;
 
-// Anything shorter than this relative to the car's base is driven over, not into.
 const STEP_HEIGHT = 0.55;
 const NPC_HIT_RADIUS = 0.5;
 const NPC_MIN_SPEED = 1.2;
 const NPC_HIT_COOLDOWN = 900;
 
-// --- Water tuning ------------------------------------------------------------
-const WATER_CONTACT_EPS  = 0.10;  // body must dip this far under to count
-const WATER_AWASH_DEPTH  = 0.75;  // shallow phase: a little wheel bite left
-const WATER_FLOOD_DEPTH  = 1.15;  // engine dies until the car is dry again
-const WATER_DEEP_DEPTH   = 2.60;  // occupants start drowning
-const WATER_SINK_GRAVITY = 5.4;   // effective gravity (weight minus buoyancy)
-const WATER_MAX_SINK_SPD = 3.2;   // terminal sink speed, m/s
-const WATER_DRAG         = 2.4;   // per-second horizontal damping
+const WATER_CONTACT_EPS  = 0.10;          
+const WATER_AWASH_DEPTH  = 0.75;         
+const WATER_FLOOD_DEPTH  = 1.15;          
+const WATER_DEEP_DEPTH   = 2.60;     
+const WATER_SINK_GRAVITY = 5.4;        
+const WATER_MAX_SINK_SPD = 3.2;       
+const WATER_DRAG         = 2.4;      
 const WATER_DPS          = 6;
 
-// --- Rollover / roof contact tuning -----------------------------------------
-const ROLL_TIP_START     = 0.78;  // existing tipping threshold
-const ROLL_CONTACT_BLEND = 0.55;  // radians over which the body takes the weight
-const ROOF_DOWN_FACTOR   = 0.30;  // roof counts as "down" past this
+const ROLL_TIP_START     = 0.78;     
+const ROLL_CONTACT_BLEND = 0.55;          
+const ROOF_DOWN_FACTOR   = 0.30;        
 const ROOF_SCRAPE_DRAG   = 3.6;
-const ROOF_RIGHT_SPEED   = 1.5;   // must be nearly stopped to rock it upright
+const ROOF_RIGHT_SPEED   = 1.5;           
 
 let vehicleUid = 0;
 const carCollisionCooldowns = new Map();
 
-// -----------------------------------------------------------------------------
-// Small maths helpers
-// -----------------------------------------------------------------------------
 function wrapPi(a) {
   let x = a % (Math.PI * 2);
   if (x > Math.PI) x -= Math.PI * 2;
@@ -92,13 +49,6 @@ function wrapPi(a) {
   return x;
 }
 
-/**
- * Live gearbox caps from levelData (Studio tuning used to be ignored entirely).
- * Falls back to the built-in table and repairs malformed saves so a bad value
- * can never produce a divide-by-zero or a forward gear that cannot accelerate.
- * With no argument it resolves the car you are currently driving, so the HUD
- * shows bus gears correctly without any caller changes.
- */
 export function getGearCaps(v = null) {
   let veh = v;
   if (!veh && gameState.inCar && gameState.activeCarIndex >= 0) {
@@ -116,18 +66,15 @@ export function getGearCaps(v = null) {
       out[i] = i >= 2 ? Math.max(6, n) : n;
     }
   }
-  // Forward caps must ascend, otherwise an upshift would lose top speed.
   for (let i = 3; i < out.length; i++) out[i] = Math.max(out[i], out[i - 1] + 1);
   return out;
 }
 
-/** Safe positive tuning multiplier — a malformed save can never NaN the physics. */
 function tune(key, fallback = 1) {
   const n = Number(levelData?.params?.vehicles?.[key]);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-/** Tanks are physically wider/longer than the donor sports-car shell. */
 function footprintScale(v) {
   return (v.carScale || DEFAULT_SCALE) * (v.isTank ? 1.28 : 1);
 }
@@ -145,16 +92,12 @@ function chaseDistance(v) {
 }
 function chaseLookHeight(v) { return v.isBus ? 1.70 : 0.95; }
 
-/** Two circles for cars, three for the long bus body. */
 function footprintLayout(v) {
   const scale = footprintScale(v);
   if (v.isBus) return { d: 2.90 * scale, r: 1.20 * scale, offsets: [1, 0, -1] };
   return { d: 0.95 * scale, r: 0.92 * scale, offsets: [1, -1] };
 }
 
-// -----------------------------------------------------------------------------
-// Body box: roof height, rollover support, roof-down detection
-// -----------------------------------------------------------------------------
 function roofTopLocal(v) {
   if (v.isBus) return 3.05;
   if (v.isTank) return 1.90;
@@ -170,17 +113,11 @@ function bodyHalfLength(v) {
   return (v.isBus ? 4.40 : v.isTank ? 2.90 : 2.30) * s;
 }
 
-/** +1 when the roof points straight down, 0 when the car is on its wheels. */
 function roofDownFactor(v) {
   const up = Math.cos(v.roll || 0) * Math.cos(v.pitch || 0);
   return Math.max(0, -up);
 }
 
-/**
- * How far the body's lowest corner hangs below the origin at this attitude.
- * Zero while the wheels are underneath (so ramps/slopes are unaffected), ramps
- * in past the tipping threshold, and reaches roof height when fully inverted.
- */
 function bodySupportOffset(v) {
   const roll = wrapPi(v.roll || 0);
   const pitch = wrapPi(v.pitch || 0);
@@ -207,7 +144,6 @@ function bodySupportOffset(v) {
   return Math.max(rollOffset, pitchOffset);
 }
 
-/** Highest point of the body above the origin — used for the ceiling guard. */
 function bodyTopOffset(v) {
   const roll = wrapPi(v.roll || 0);
   const ht = roofHeight(v);
@@ -215,9 +151,6 @@ function bodyTopOffset(v) {
   return Math.max(ht * Math.max(0, Math.cos(roll)), hw * Math.abs(Math.sin(roll))) + 0.35;
 }
 
-// -----------------------------------------------------------------------------
-// Water — HEIGHT AWARE. A bridge deck above the surface is DRY.
-// -----------------------------------------------------------------------------
 function waterLevelFallback() {
   const w = levelData?.params?.water;
   const cands = [w?.surfaceY, w?.level, w?.y, w?.height, levelData?.params?.seaLevel, levelData?.seaLevel];
@@ -228,19 +161,15 @@ function waterLevelFallback() {
   return 0;
 }
 
-/** World Y of the water surface here, or null when there is no water at all. */
 export function waterSurfaceY(x, z) {
-  // Preferred: let the real water system answer (waves, tides, volumes).
   if (hooks.waterSurfaceY) {
     const n = Number(hooks.waterSurfaceY(x, z));
     return Number.isFinite(n) ? n : null;
   }
-  // Fallback: legacy 2D zone test gives the footprint, levelData gives height.
   if (!isInWater(x, z)) return null;
   return waterLevelFallback();
 }
 
-/** Per-frame water state for one vehicle. Also drives the parked-car sink path. */
 function updateVehicleWater(v, dt) {
   const w = v.water || (v.water = {
     active: false, wasActive: false, surfaceY: null,
@@ -253,8 +182,6 @@ function updateVehicleWater(v, dt) {
 
   if (surf !== null) {
     contactY = v.y - bodySupportOffset(v);
-    // On the Golden Gate deck the support floor is metres above the surface,
-    // so this stays false and the car drives exactly like tarmac.
     const support = computeSupportFloor(v.x, v.z, v.y + 0.55, v.isBus ? 1.3 : 0.8);
     const standingOnDeck = support > surf + 0.05 && contactY >= support - 0.30;
     active = !standingOnDeck && (contactY < surf - WATER_CONTACT_EPS);
@@ -283,7 +210,6 @@ function updateVehicleWater(v, dt) {
   return w;
 }
 
-/** Shared sink integrator for driven and parked bodies. */
 function stepVehicleSinking(v, dt, w) {
   const offset = bodySupportOffset(v);
   const seabed = computeSupportFloor(v.x, v.z, v.y + 0.35, v.isBus ? 1.3 : 0.9) + offset;
@@ -292,7 +218,6 @@ function stepVehicleSinking(v, dt, w) {
   v.y += v.vy * dt;
   if (v.y <= seabed) { v.y = seabed; v.vy = 0; }
 
-  // Engine bay floods first: nose drops, gentle wallow on the roll axis.
   const roll = wrapPi(v.roll || 0);
   const restRoll = Math.abs(roll) > ROLL_TIP_START ? (roll >= 0 ? Math.PI : -Math.PI) : 0;
   v.pitch = (v.pitch || 0) + (-0.42 - (v.pitch || 0)) * Math.min(1, dt * 1.4);
@@ -306,22 +231,17 @@ function stepVehicleSinking(v, dt, w) {
   if (Math.random() < dt * 14) spawnParticles(v.x, v.y + 0.9, v.z, 0xe0f2fe, 1, 1.2);
 }
 
-// -----------------------------------------------------------------------------
-// Occupancy / seats
-// -----------------------------------------------------------------------------
-// Bus eye anchors (local space): driver front-left, then paired rows behind.
 const BUS_SEAT_ANCHORS = [
-  [-0.62, 1.95, 3.30],  // 0 driver
-  [ 0.66, 1.95, 2.30],  // 1 front right (behind the door)
-  [-0.66, 1.95, 2.30],  // 2
-  [ 0.66, 1.95, 1.20],  // 3
-  [-0.66, 1.95, 1.20],  // 4
-  [ 0.66, 1.95, 0.10],  // 5
-  [-0.66, 1.95, 0.10],  // 6
-  [ 0.66, 1.95, -1.00]  // 7
+  [-0.62, 1.95, 3.30],    
+  [ 0.66, 1.95, 2.30],        
+  [-0.66, 1.95, 2.30],   
+  [ 0.66, 1.95, 1.20],   
+  [-0.66, 1.95, 1.20],   
+  [ 0.66, 1.95, 0.10],   
+  [-0.66, 1.95, 0.10],   
+  [ 0.66, 1.95, -1.00]   
 ];
 
-/** Seats available on this shell. Evaluated live so late flags (isTank) apply. */
 export function seatCapacity(v) {
   if (!v) return 0;
   if (v.isBus) return BUS_SEAT_COUNT;
@@ -334,7 +254,6 @@ function localPlayerId() {
   return (hooks.mpLocalId && hooks.mpLocalId()) || 'local';
 }
 
-/** Local-space eye/camera anchor for a given seat. */
 function seatLocalPos(v, seatIndex) {
   if (v.isBus) {
     const a = BUS_SEAT_ANCHORS[Math.max(0, Math.min(BUS_SEAT_ANCHORS.length - 1, seatIndex))];
@@ -342,16 +261,15 @@ function seatLocalPos(v, seatIndex) {
   }
   const y = v.isSupercar ? 1.02 : 1.30;
   switch (seatIndex) {
-    case 0: return new THREE.Vector3(-0.38, y, 0.12);          // driver (left)
-    case 1: return new THREE.Vector3(0.38, y, 0.12);           // front passenger
-    case 2: return new THREE.Vector3(-0.38, y - 0.06, -0.78);  // rear left
-    default: return new THREE.Vector3(0.38, y - 0.06, -0.78);  // rear right
+    case 0: return new THREE.Vector3(-0.38, y, 0.12);            
+    case 1: return new THREE.Vector3(0.38, y, 0.12);             
+    case 2: return new THREE.Vector3(-0.38, y - 0.06, -0.78);    
+    default: return new THREE.Vector3(0.38, y - 0.06, -0.78);    
   }
 }
 
-/** Which side of the vehicle this occupant's door is on. */
 function seatSideSign(seatIndex, v = null) {
-  if (v && v.isBus) return seatIndex === 0 ? -1 : 1; // driver left, riders right
+  if (v && v.isBus) return seatIndex === 0 ? -1 : 1;     
   return (seatIndex % 2 === 0) ? -1 : 1;
 }
 
@@ -369,7 +287,6 @@ function broadcastSeat(t, v, id, seat) {
   if (hooks.mpWorldEvent) hooks.mpWorldEvent({ t, car: v.uid, id, seat });
 }
 
-/** Net layer can mirror seat traffic from the host with this. */
 export function applyRemoteCarSeatEvent(evt) {
   if (!evt) return;
   const v = vehicles.find((c) => c.uid === evt.car);
@@ -409,11 +326,6 @@ export function getVehicleSeatInfo(idx) {
   };
 }
 
-// -----------------------------------------------------------------------------
-// Paint textures
-// -----------------------------------------------------------------------------
-// Build remapped roughness & clearcoat maps from assets/textures/metal.png
-// so clean paint has a true metallic clearcoat sheen while white scratches look scuffed.
 function createRemappedTexture(defaultFill) {
   const canvas = document.createElement('canvas');
   canvas.width = 64;
@@ -451,12 +363,10 @@ const carScratchBumpTex = texLoader.load('assets/textures/metal.png', (tex) => {
   for (let i = 0; i < rd.length; i += 4) {
     const lum = (rd[i] + rd[i + 1] + rd[i + 2]) / 3;
     const t = lum / 255;
-    // Metallic base: [54..222] -> effective roughness ~0.18 clean, ~0.76 scratched
     const baseVal = Math.round(54 + t * 168);
     rd[i] = baseVal;
     rd[i + 1] = baseVal;
     rd[i + 2] = baseVal;
-    // Clearcoat layer: [34..185] -> crisp gloss on clean paint, dull on scratches
     const coatVal = Math.round(34 + t * 151);
     cd[i] = coatVal;
     cd[i + 1] = coatVal;
@@ -472,9 +382,6 @@ carScratchBumpTex.wrapS = THREE.RepeatWrapping;
 carScratchBumpTex.wrapT = THREE.RepeatWrapping;
 carScratchBumpTex.repeat.set(3, 3);
 
-// -----------------------------------------------------------------------------
-// Sports car / supercar mesh builder
-// -----------------------------------------------------------------------------
 export function buildSportsCarMesh({
   name = 'SPORTS CAR',
   bodyHex = 0xdc2626,
@@ -566,8 +473,6 @@ export function buildSportsCarMesh({
   const doorRearZ = doorFrontZ - doorLen;
   const doorCenterZ = (doorFrontZ + doorRearZ) * 0.5;
 
-  // Split lower body into front nose, rear quarter/trunk, and recessed interior tub
-  // so opening doors reveal the cabin.
   const frontLen = bodyHalfZ - doorFrontZ;
   const lowerFront = new THREE.Mesh(new THREE.BoxGeometry(2.04, lowerH, frontLen), bodyMat);
   lowerFront.userData.studioName = 'Body Front';
@@ -594,7 +499,6 @@ export function buildSportsCarMesh({
   const sideSkirtR = sideSkirtL.clone();
   sideSkirtR.position.x = 1.04;
 
-  // Hood & trunk racing stripes (split around cabin/doorway)
   const stripeFront = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.02, frontLen - 0.04), accentMat);
   stripeFront.position.set(0, lowerY + lowerH / 2 + 0.01, doorFrontZ + frontLen * 0.5);
   const stripeRear = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.02, rearLen - 0.04), accentMat);
@@ -641,7 +545,6 @@ export function buildSportsCarMesh({
   glassRear.rotation.y = Math.PI;
   cabin.add(glassFront, glassRear);
 
-  // Articulated Left (-1) and Right (+1) Doors hinged at the front A-pillar edge
   function buildDoorAssembly(side) {
     const doorPivot = new THREE.Group();
     doorPivot.userData.studioName = side < 0 ? 'Left Door' : 'Right Door';
@@ -691,7 +594,6 @@ export function buildSportsCarMesh({
     seats.push(seat);
   }
 
-  // Rear bench for 4-seat shells so passengers have something to sit on.
   if (!isCoupe && !isSupercar) {
     const bench = new THREE.Group();
     bench.userData.studioName = 'Rear bench';
@@ -747,7 +649,6 @@ export function buildSportsCarMesh({
   const pipeR = pipeL.clone();
   pipeR.position.x = 0.52;
 
-  // Twin Exhaust Flame Cones for Downshift Backfires
   const flameMat = new THREE.MeshBasicMaterial({ color: 0xf97316, transparent: true, opacity: 0.92 });
   const flameCoreMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.95 });
   const flameL = new THREE.Group();
@@ -821,9 +722,6 @@ export function buildSportsCarMesh({
   };
 }
 
-// -----------------------------------------------------------------------------
-// Bus mesh builder — 8 seats, 6 wheels, front right passenger door
-// -----------------------------------------------------------------------------
 export function buildBusMesh({
   name = 'CITY BUS',
   bodyHex = 0xf59e0b,
@@ -888,7 +786,6 @@ export function buildBusMesh({
   const halfLen = 4.35;
   const bodyLen = halfLen * 2;
 
-  // Lower body / skirt
   const skirt = new THREE.Mesh(new THREE.BoxGeometry(2.36, 0.95, bodyLen), bodyMat);
   skirt.userData.studioName = 'Body Lower';
   skirt.position.set(0, 1.05, 0);
@@ -916,7 +813,6 @@ export function buildBusMesh({
   acUnit.userData.studioName = 'Roof AC unit';
   acUnit.position.set(0, 3.08, -1.20);
 
-  // Front / rear caps above the belt line
   const frontCap = new THREE.Mesh(new THREE.BoxGeometry(2.34, 1.24, 0.16), bodyMat);
   frontCap.position.set(0, 2.24, halfLen - 0.05);
   frontCap.castShadow = true;
@@ -930,13 +826,11 @@ export function buildBusMesh({
   rearWindow.position.set(0, 2.26, -halfLen - 0.04);
   rearWindow.rotation.y = Math.PI;
 
-  // Destination blind
   const signMat = makeMat(0xfef3c7, { emissive: 0xfbbf24, emissiveIntensity: 0.85 });
   const destSign = new THREE.Mesh(new THREE.BoxGeometry(1.60, 0.28, 0.06), signMat);
   destSign.userData.studioName = 'Destination sign';
   destSign.position.set(0, 2.76, halfLen + 0.05);
 
-  // Side glazing + pillars
   const sideParts = [];
   for (const side of [-1, 1]) {
     const glassStrip = new THREE.Mesh(new THREE.PlaneGeometry(bodyLen - 1.0, 1.02), glassMat);
@@ -954,7 +848,6 @@ export function buildBusMesh({
     sideParts.push(lowerRail);
   }
 
-  // Doors: right = front passenger entrance, left = driver door
   function buildBusDoor(side, leafCount) {
     const pivot = new THREE.Group();
     pivot.userData.studioName = side < 0 ? 'Driver Door' : 'Passenger Door';
@@ -975,7 +868,6 @@ export function buildBusMesh({
   const doorLeftPivot = buildBusDoor(-1, 1);
   const doorRightPivot = buildBusDoor(1, 2);
 
-  // Interior: seats for every occupant, aisle poles, driver console
   const seats = [];
   BUS_SEAT_ANCHORS.forEach((a, i) => {
     const seat = new THREE.Group();
@@ -1028,7 +920,6 @@ export function buildBusMesh({
     steeringPivot.add(bar);
   }
 
-  // Lamps, bumpers, mirrors
   const hlMat = makeMat(0xfef9c3, { emissive: 0xfef08a, emissiveIntensity: 0.9 });
   const tlMat = makeMat(0xef4444, { emissive: 0xdc2626, emissiveIntensity: 0.65 });
   const amberMat = makeMat(0xf59e0b, { emissive: 0xf59e0b, emissiveIntensity: 0.6 });
@@ -1079,7 +970,6 @@ export function buildBusMesh({
     dashboard, steeringPivot, ...lamps, bumperF, bumperR, exhaust, flameL, flameR
   );
 
-  // Wheels: front axle steers (indices 0/1), rear axle is dual-tyred.
   const tireMat = makeMat(0x111827, { roughness: 0.88, flatShading: false });
   const wheelPivots = [];
   const wheelSpinners = [];
@@ -1122,9 +1012,6 @@ export function buildBusMesh({
   };
 }
 
-// -----------------------------------------------------------------------------
-// Vehicle record registration (shared by car / bus)
-// -----------------------------------------------------------------------------
 function createVehicleRecord(cfg, parts, spawnY) {
   const { name, x, z, yaw } = cfg;
   const carObj = {
@@ -1146,7 +1033,7 @@ function createVehicleRecord(cfg, parts, spawnY) {
     speed: 0,
     velX: 0,
     velZ: 0,
-    gearIndex: 2, // 0='R', 1='N', 2='1', ..., 7='6'
+    gearIndex: 2,      
     rpm: 900,
     steerAngle: 0,
     pitchAngle: 0,
@@ -1175,13 +1062,11 @@ function createVehicleRecord(cfg, parts, spawnY) {
     steeringPivot: parts.steeringPivot,
     wheelPivots: parts.wheelPivots,
     wheelSpinners: parts.wheelSpinners,
-    // --- rollover / water state ---
     water: null,
     _inWater: false,
     _roofWasDown: false,
     _rightTimer: 0,
     _roofScrapeT: 0,
-    // --- occupancy ---
     occupants: [],
     localSeat: -1
   };
@@ -1191,21 +1076,16 @@ function createVehicleRecord(cfg, parts, spawnY) {
 }
 
 export function buildSportsCar(cfg) {
-  // Name/type routing lets a Studio entry called "CITY BUS" spawn as a bus
-  // without touching the world spawner.
   const wantsBus = cfg && (cfg.isBus === true || cfg.type === 'bus' || /\b(bus|coach)\b/i.test(cfg.name || ''));
   if (wantsBus) return buildBus(cfg);
 
   const { x, z, yaw } = cfg;
-  // Rest on the actual surface below the spawn point (showroom marble, speedway
-  // tarmac, desert highway) instead of a hardcoded street height.
   const spawnY = Number.isFinite(cfg.y) ? cfg.y : computeSupportFloor(x, z, 1.2, 0.9) + 0.02;
   const parts = buildSportsCarMesh({ ...cfg, y: spawnY });
   worldRoot.add(parts.root);
   return createVehicleRecord(cfg, parts, spawnY);
 }
 
-/** City bus: 8 seats, first rider drives, everyone else rides along. */
 export function buildBus(cfg = {}) {
   const merged = { name: 'CITY BUS', scale: BUS_DEFAULT_SCALE, ...cfg, isBus: true };
   const { x = 0, z = 0 } = merged;
@@ -1215,14 +1095,12 @@ export function buildBus(cfg = {}) {
   return createVehicleRecord(merged, parts, spawnY);
 }
 
-/** Generic dispatcher for level spawners. */
 export function buildVehicle(cfg = {}) {
   const t = String(cfg.type || '').toLowerCase();
   if (t === 'bus' || cfg.isBus || /\b(bus|coach)\b/i.test(cfg.name || '')) return buildBus(cfg);
   return buildSportsCar(cfg);
 }
 
-/** Drop every vehicle record (used by world rebuilds; meshes go with worldRoot). */
 export function resetVehicles() {
   for (const v of vehicles) {
     if (v.entryAnim) disposeEntryProxy(v.entryAnim);
@@ -1232,7 +1110,6 @@ export function resetVehicles() {
   carCollisionCooldowns.clear();
 }
 
-// Lightweight character proxy shown during third-person enter/exit transitions
 function buildEntryProxyMesh() {
   const pp = levelData?.params?.player || {};
   const toHex = (c, d) => (c === undefined || c === null || c === '')
@@ -1278,11 +1155,9 @@ function disposeEntryProxy(anim) {
   anim.proxy = null;
 }
 
-/** Exit spot beside the occupant's own door (or at the surface if submerged). */
 function computeVehicleExitSpot(v, seatIndex = 0) {
   const sideSign = seatSideSign(seatIndex, v);
 
-  // Submerged: hand the player to the swim system at the surface, not the seabed.
   const surf = waterSurfaceY(v.x, v.z);
   if (surf !== null && v.y - bodySupportOffset(v) < surf - 0.25) {
     const sx = Math.cos(v.yaw) * sideSign;
@@ -1316,7 +1191,6 @@ function computeVehicleExitSpot(v, seatIndex = 0) {
   return { x: v.x, y: Math.max(0.18, v.y + 0.06), z: v.z };
 }
 
-/** Release the local seat, promote the next occupant if the driver left. */
 function releaseLocalSeat(idx, v) {
   if (!v) return;
   const mine = localOccupant(v);
@@ -1328,7 +1202,6 @@ function releaseLocalSeat(idx, v) {
   if (wasDriver) {
     if (hooks.mpCarExit) hooks.mpCarExit(idx);
     broadcastSeat('car_seat_exit', v, mine.id, 0);
-    // Hand the wheel to whoever is still inside.
     const next = v.occupants.slice().sort((a, b) => a.seat - b.seat)[0];
     if (next) {
       next.seat = 0;
@@ -1370,7 +1243,6 @@ function finalizeExitCar(idx, v, exitSpot, silent = false) {
   player.y = exitSpot.y;
   player.z = exitSpot.z;
   player.vy = 0;
-  // Bailing out into water hands the player straight to the swim system.
   const surf = waterSurfaceY(player.x, player.z);
   player.grounded = !(surf !== null && player.y < surf - 0.15);
   player.peakAirY = player.y;
@@ -1389,7 +1261,6 @@ export function getNearestVehicle(maxDist = 5.2) {
     if (v.entryAnim) return;
     if (gameState.inCar && gameState.activeCarIndex === idx) return;
     const freeSeat = firstFreeSeat(v);
-    // A remote-owned car is still enterable while it has a spare seat.
     const locked = hooks.mpCarLocked ? hooks.mpCarLocked(idx) : false;
     if (locked && freeSeat <= 0) return;
     if (freeSeat < 0) return;
@@ -1416,10 +1287,8 @@ export function enterVehicle(idx) {
   const me = localPlayerId();
   const takingDriverSeat = seat === 0;
   if (takingDriverSeat) {
-    // First in claims the wheel through the existing ownership hook.
     if (hooks.mpCarEnter && !hooks.mpCarEnter(idx)) return;
   } else {
-    // Passengers never claim ownership; they only take a spare seat.
     if (hooks.mpCarEnterSeat && !hooks.mpCarEnterSeat(idx, seat)) {
       pushFeed('COULD NOT TAKE A SEAT', 'border-l-rose-500');
       return;
@@ -1568,7 +1437,6 @@ function stepVehicleEntryExitAnim(v, dt) {
   const seatFloorWorld = v.root.localToWorld(seatAnchor.clone().setY(0.24));
 
   if (anim.type === 'enter') {
-    // Pull door shut once the occupant slides inside
     if (rawT >= 0.62) {
       v.doorTargetL = 0;
       v.doorTargetR = 0;
@@ -1582,7 +1450,6 @@ function stepVehicleEntryExitAnim(v, dt) {
       v.sus.hv -= 1.6;
     }
 
-    // Animate third-person entry proxy stepping in and bending knees to sit
     if (anim.proxy) {
       anim.proxy.rig.visible = Boolean(gameState.thirdPerson);
       const stepT = Math.min(1, ease / 0.42);
@@ -1598,7 +1465,6 @@ function stepVehicleEntryExitAnim(v, dt) {
       anim.proxy.legR.rotation.x = -sitT * 1.15;
     }
 
-    // Smooth camera swoop into the seat (FP) or aerial follow cam (TP)
     if (!gameState.thirdPerson) {
       const targetCamPos = seatWorld.clone();
       targetCamPos.y -= duckDip;
@@ -1730,7 +1596,6 @@ export function shiftVehicleGear(delta) {
   }
 }
 
-// Capsule geometry for the car body representation (2 circles, bus uses 3)
 function getCarCircles(v) {
   const { d, r, offsets } = footprintLayout(v);
   const fx = Math.sin(v.yaw);
@@ -1743,10 +1608,6 @@ function getCarCircles(v) {
   }));
 }
 
-/**
- * Swept capsule test: does the vehicle footprint touch (tx,tz) at any point
- * along this frame's motion? Prevents fast cars tunnelling through people.
- */
 function sweptFootprintHit(v, fromX, fromZ, toX, toZ, tx, tz, extraRadius) {
   const { d, r, offsets } = footprintLayout(v);
   const rr = r + extraRadius;
@@ -1771,13 +1632,11 @@ function vehicleMass(v) {
   return v.carScale || DEFAULT_SCALE;
 }
 
-// Car-to-Car Physics, Angular Spin (PIT / T-bone), & AI Traffic Collision Resolution
 function resolveVehicleCollisions(dt) {
   const now = performance.now();
   const numCars = vehicles.length;
   if (numCars < 2) return;
 
-  // Cooldowns are keyed by stable uid so removing a vehicle can't re-map them.
   if (carCollisionCooldowns.size > 256) {
     for (const [key, stamp] of carCollisionCooldowns) {
       if (now - stamp > 4000) carCollisionCooldowns.delete(key);
@@ -1791,7 +1650,6 @@ function resolveVehicleCollisions(dt) {
       const v2 = vehicles[j];
       if (!v2) continue;
 
-      // Height separation: a car on the bridge must not hit traffic below it.
       const y1 = v1.y - bodySupportOffset(v1) * 0.5;
       const y2 = v2.y - bodySupportOffset(v2) * 0.5;
       if (Math.abs(y1 - y2) > 2.4) continue;
@@ -1892,7 +1750,6 @@ function resolveVehicleCollisions(dt) {
           sfx.hit();
           const pCount = Math.min(14, Math.max(4, Math.floor(impactSpeed * 1.5)));
           spawnParticles(contactX, (v1.y + v2.y) * 0.5 + 0.4, contactZ, 0xfbbf24, pCount, 4.5);
-          // Passengers feel the crash too.
           if ((isDriven1 || isDriven2) && impactSpeed > 7.0 && hooks.applyPlayerDamage) {
             hooks.applyPlayerDamage(Math.min(30, (impactSpeed - 7.0) * 1.6), 'VEHICLE COLLISION');
           }
@@ -1910,14 +1767,9 @@ function resolveVehicleCollisions(dt) {
   }
 }
 
-/**
- * Roadkill & prop strikes. Runs AFTER the car has actually moved, sweeping the
- * full footprint along the frame's travel so nothing is tunnelled through.
- */
 function resolveWorldStrikes(v, fromX, fromZ, speedMag) {
   const now = performance.now();
 
-  // --- Street lights ---
   for (const lp of lampPosts) {
     if (lp.state !== 'standing') continue;
     const lpY = lp.pivot ? lp.pivot.position.y : 0.18;
@@ -1930,16 +1782,13 @@ function resolveWorldStrikes(v, fromX, fromZ, speedMag) {
 
   if (speedMag < NPC_MIN_SPEED) return;
 
-  // --- NPCs ---
   for (const npc of npcs) {
     if (!npc.spawned) continue;
     if (npc._carHitT && now - npc._carHitT < NPC_HIT_COOLDOWN) continue;
-    // npc.y is not maintained on pooled/sleeping NPCs — fall back to the mesh.
     const npcY = Number.isFinite(npc.y) ? npc.y : (npc.mesh ? npc.mesh.position.y : 0.18);
     if (Math.abs(v.y - npcY) > 3.0) continue;
     if (!sweptFootprintHit(v, fromX, fromZ, v.x, v.z, npc.x, npc.z, NPC_HIT_RADIUS)) continue;
     npc._carHitT = now;
-    // A sleeper in the road still gets hit — wake it so the ragdoll/flee plays.
     if (npc.asleep) npc.asleep = false;
     if (hooks.damageNpc) hooks.damageNpc(npc, Math.max(18, speedMag * 4.5), v.yaw);
     sfx.hit();
@@ -1947,7 +1796,6 @@ function resolveWorldStrikes(v, fromX, fromZ, speedMag) {
     v.speed *= v.isBus ? 0.96 : 0.85;
   }
 
-  // --- Other players (driver only) ---
   if (hooks.mpActive && hooks.mpActive() && speedMag > 3 && hooks.mpTargets) {
     for (const tp of hooks.mpTargets()) {
       if (tp.inCar) continue;
@@ -1960,7 +1808,6 @@ function resolveWorldStrikes(v, fromX, fromZ, speedMag) {
   }
 }
 
-/** Passenger frame: ride along, free look, no driving authority. */
 function stepPassengerRiding(v, dt, elapsed) {
   const mine = localOccupant(v);
   const seat = mine ? mine.seat : 1;
@@ -1975,13 +1822,11 @@ function stepPassengerRiding(v, dt, elapsed) {
 
   if (v.entryAnim && stepVehicleEntryExitAnim(v, dt)) return;
 
-  // Passengers drown with the bus/car too.
   const w = v.water;
   if (w && w.deep && hooks.applyPlayerDamage) {
     hooks.applyPlayerDamage(WATER_DPS * dt, 'DROWNING');
   }
 
-  // Engine note is audible from inside even though we're not driving.
   const dead = Boolean(w && w.floodLatch);
   sfx.updateEngine(!dead, dead ? 0 : (v.rpm || 900), false, false);
 
@@ -2013,15 +1858,12 @@ function stepPassengerRiding(v, dt, elapsed) {
   }
 }
 
-// Per-frame driving model (6-speed gearbox, grip, collisions, 3D slope physics,
-// side-roll tipping, roof contact and height-aware water).
 export function stepVehicleDriving(dt, elapsed) {
   resolveVehicleCollisions(dt);
   if (!gameState.inCar) return;
   const v = vehicles[gameState.activeCarIndex];
   if (!v) return;
 
-  // Passengers ride along; the driver (local or remote) owns the physics.
   if (gameState.isPassenger || v.localSeat > 0) {
     stepPassengerRiding(v, dt, elapsed);
     return;
@@ -2065,11 +1907,11 @@ export function stepVehicleDriving(dt, elapsed) {
   }
 
   let onLimiter = false;
-  if (gIdx === 1) { // Neutral
+  if (gIdx === 1) {  
     if (throttleInput) v.rpm = Math.min(7900, v.rpm + 6400 * dt);
     else v.rpm = Math.max(880, v.rpm - 4400 * dt);
     v.speed *= Math.max(0, 1 - 0.45 * dt);
-  } else if (gIdx === 0) { // Reverse
+  } else if (gIdx === 0) {  
     const targetRpm = 900 + (Math.abs(v.speed) / Math.max(1, gearCapMps)) * 6600;
     v.rpm += (targetRpm - v.rpm) * Math.min(1, dt * 10);
     if (throttleInput && driveEnabled) {
@@ -2077,7 +1919,7 @@ export function stepVehicleDriving(dt, elapsed) {
     } else {
       v.speed *= Math.max(0, 1 - 1.5 * dt);
     }
-  } else { // Forward Gears 1-6
+  } else {    
     const speedRatio = Math.max(0, v.speed / Math.max(1, gearCapMps));
     const rawRpm = 900 + speedRatio * 6950;
     v.rpm += (Math.min(8000, rawRpm) - v.rpm) * Math.min(1, dt * 11);
@@ -2131,11 +1973,9 @@ export function stepVehicleDriving(dt, elapsed) {
     : isTipping ? 0.8
     : (handbrake ? (v.isSupercar ? 1.35 : 1.8) : (v.isBus ? 5.4 : v.isSupercar ? 8.2 : 6.8));
 
-  // Height-aware surface grip: the bridge deck reads as tarmac, not water.
   const rawGrip = water.active ? 3 : surfaceGrip(v.x, v.z, v.y);
   const gripMul = Math.min(1, rawGrip / 14 + 0.12) * gripMulData;
 
-  // Real water: no tyre bite, momentum only, then drag.
   if (water.active) {
     const drag = WATER_DRAG * (water.awash ? 0.55 : 1);
     const k = Math.max(0, 1 - drag * dt);
@@ -2168,8 +2008,6 @@ export function stepVehicleDriving(dt, elapsed) {
   const wheelZ = wheelHalfZ(v);
   const wheelX = wheelHalfX(v);
 
-  // Ground probes reach above the step height so a curb is found and climbed
-  // rather than driven into.
   const probeReachY = v.y + STEP_HEIGHT + 0.35;
   const getWheelY = (forwardSign, sideSign) => computeSupportFloor(
     nextX + cfx * (forwardSign * wheelZ) + crx * (sideSign * wheelX),
@@ -2186,7 +2024,6 @@ export function stepVehicleDriving(dt, elapsed) {
   let roofContact = false;
 
   if (water.active) {
-    // ---- SINKING -----------------------------------------------------------
     stepVehicleSinking(v, dt, water);
     v.pitchSway = (v.pitchSway || 0) * Math.max(0, 1 - dt * 4);
     v.rollSway = (v.rollSway || 0) * Math.max(0, 1 - dt * 4);
@@ -2195,25 +2032,18 @@ export function stepVehicleDriving(dt, elapsed) {
       hooks.applyPlayerDamage(WATER_DPS * dt, 'DROWNING');
     }
   } else {
-    // ---- LAND / BRIDGE DECK ------------------------------------------------
     const frontLeftY = getWheelY(1, -1);
     const frontRightY = getWheelY(1, 1);
     const rearLeftY = getWheelY(-1, -1);
     const rearRightY = getWheelY(-1, 1);
     const centerY = computeSupportFloor(nextX, nextZ, probeReachY, v.isBus ? 1.2 : 0.8);
     const wheelAvgY = (frontLeftY + frontRightY + rearLeftY + rearRightY) * 0.25;
-    // The body rides the plane through all four contacts. Allow the front axle to
-    // pull the nose up at a ramp entry instead of truncating it against the centre.
     const groundSupportY = Math.max(centerY, Math.min(wheelAvgY, centerY + 1.25));
 
-    // ROLLOVER: when the car is past the tipping point the roof/side becomes the
-    // contact patch, so the body rests ON the ground instead of through it.
     const bodyOffset = bodySupportOffset(v);
     groundY = groundSupportY + 0.02 + bodyOffset;
 
     if (groundY > v.y + 0.02) {
-      // Step-up: curbs, sidewalks, plaza slabs and ramp lips lift the car
-      // instantly instead of acting like a wall.
       v.vy = Math.max(0, v.vy);
       v.y = groundY;
     } else if (groundY < v.y) {
@@ -2228,7 +2058,6 @@ export function stepVehicleDriving(dt, elapsed) {
       v.y = groundY;
     }
 
-    // 3D Slope Gravity & Hill-Climbing Torque
     const frontAvgY = (frontLeftY + frontRightY) * 0.5;
     const rearAvgY = (rearLeftY + rearRightY) * 0.5;
     const leftAvgY = (frontLeftY + rearLeftY) * 0.5;
@@ -2242,13 +2071,10 @@ export function stepVehicleDriving(dt, elapsed) {
     v.velZ += sideZ * lateralGravityMag;
 
     if (throttleInput > 0 && driveEnabled && slopeForward > 0.05 && !isTipping) {
-      // Counter gravity up to ~40° so drivable ramps are actually drivable.
       const climbAssist = 19.5 * Math.min(slopeForward, 0.85) * (v.isSupercar ? 1.0 : 0.85);
       v.speed += climbAssist * dt;
     }
 
-    // Side-to-Side Roll & Tipping
-    // Negative X rotation raises the nose toward +Z (same convention as the ramps).
     const rawPitch = -Math.atan(slopeForward);
     const rawRoll = Math.atan(slopeSide);
     const accelDelta = (v.speed - prevSpeed) / Math.max(0.008, dt);
@@ -2260,7 +2086,6 @@ export function stepVehicleDriving(dt, elapsed) {
     const grounded = v.y <= groundY + 0.10;
     roofContact = roofDownFactor(v) > ROOF_DOWN_FACTOR && grounded;
 
-    // Ceiling guard: a flipping body must not punch through an overpass deck.
     if (v.vy > 0.2 || roofDownFactor(v) > 0.2) {
       const topY = v.y + bodyTopOffset(v);
       if (collidesHorizontally(v.x, v.z, topY - 0.25, 0.35, 0.45)) {
@@ -2270,13 +2095,11 @@ export function stepVehicleDriving(dt, elapsed) {
     }
 
     if (roofContact) {
-      // Rest on the roof instead of spinning through the floor.
       const wrapped = wrapPi(v.roll);
       const restRoll = wrapped >= 0 ? Math.PI : -Math.PI;
       v.roll += wrapPi(restRoll - v.roll) * Math.min(1, dt * 3.0);
       v.pitch += (0 - v.pitch) * Math.min(1, dt * 2.0);
 
-      // Rock it back onto its wheels: SPACE + W while nearly stopped.
       if (handbrake && throttleInput && Math.abs(v.speed) < ROOF_RIGHT_SPEED) {
         v._rightTimer = (v._rightTimer || 0) + dt;
         if (v._rightTimer > 0.35) {
@@ -2309,7 +2132,6 @@ export function stepVehicleDriving(dt, elapsed) {
       }
     }
 
-    // Roof landing impact + scraping friction / sparks / damage.
     if (roofContact) {
       const scrapeSpeed = Math.hypot(v.velX, v.velZ);
       if (!v._roofWasDown) {
@@ -2348,7 +2170,6 @@ export function stepVehicleDriving(dt, elapsed) {
     }
   }
 
-  // Traversable Slope & Collision Checks
   const isTraversableSlope = (px, pz) => {
     const dzX = (terrainH(px + 0.4, pz) - terrainH(px - 0.4, pz)) / 0.8;
     const dzZ = (terrainH(px, pz + 0.4) - terrainH(px, pz - 0.4)) / 0.8;
@@ -2362,10 +2183,6 @@ export function stepVehicleDriving(dt, elapsed) {
   const bodyOffsetNow = bodySupportOffset(v);
 
   const carHit = (px, pz) => {
-    // Upright: probe body starts STEP_HEIGHT above the wheels so anything
-    // shorter is rolled over, never treated as a wall.
-    // Rolled: the body hangs BELOW the origin, so probe the whole rolled shell
-    // (this is what gives the roof/side real wall collisions).
     const probeBottom = rolledBody
       ? v.y - bodyOffsetNow + 0.12
       : v.y + STEP_HEIGHT;
@@ -2406,10 +2223,8 @@ export function stepVehicleDriving(dt, elapsed) {
     }
   }
 
-  // Roadkill / street lights / remote players — swept along the actual travel.
   resolveWorldStrikes(v, fromX, fromZ, Math.abs(prevSpeed));
 
-  // Mesh Transformations
   v.root.position.set(v.x, v.y, v.z);
   v.root.rotation.order = 'YXZ';
   v.root.rotation.y = v.yaw;
@@ -2428,7 +2243,6 @@ export function stepVehicleDriving(dt, elapsed) {
   player.y = v.y + 0.06;
   player.z = v.z;
 
-  // Run enter/exit camera & character transition if active
   if (v.entryAnim && stepVehicleEntryExitAnim(v, dt)) {
     return;
   }
@@ -2466,11 +2280,6 @@ export function stepVehicleDriving(dt, elapsed) {
   }
 }
 
-/**
- * Parked cars keep their authored height unless they are clearly floating or a
- * surface has risen under them, so showroom / hideout placements stay intact.
- * Rolled bodies rest on their roof instead of their wheel plane.
- */
 function settleParkedCar(v, dt) {
   const rest = computeSupportFloor(v.x, v.z, v.y + 0.65, v.isBus ? 1.3 : 0.85) + 0.02 + bodySupportOffset(v);
   v.vy = v.vy || 0;
@@ -2489,7 +2298,6 @@ function settleParkedCar(v, dt) {
   }
 }
 
-// Car suspension & terrain spring physics + door open/close animation
 export function suspFrame(dt, t) {
   if (!gameState.inCar) {
     resolveVehicleCollisions(dt);
@@ -2505,7 +2313,6 @@ export function suspFrame(dt, t) {
     const owner = hooks.mpCarOwner ? hooks.mpCarOwner(vi) : null;
     const remoteDriven = !!owner && owner !== (hooks.mpLocalId ? hooks.mpLocalId() : 'local');
 
-    // Step door open/close angles
     if (v.doorLeftPivot && v.doorRightPivot) {
       if (v.doorAutoCloseTimer > 0) {
         v.doorAutoCloseTimer -= dt;
@@ -2514,7 +2321,6 @@ export function suspFrame(dt, t) {
           v.doorTargetR = 0;
         }
       }
-      // Force doors shut if driving away at speed
       if (!v.entryAnim && Math.abs(v.speed || 0) > 2.5) {
         v.doorTargetL = 0;
         v.doorTargetR = 0;
@@ -2541,7 +2347,6 @@ export function suspFrame(dt, t) {
     ch.position.y = S.hy * 0.35;
 
     if (!driven && !remoteDriven) {
-      // --- Unmanned bodies: water owns them, never snap them to the seabed ---
       const water = updateVehicleWater(v, dt);
       if (water.active) {
         stepVehicleSinking(v, dt, water);
@@ -2574,7 +2379,6 @@ export function suspFrame(dt, t) {
       const sSd = (riAvg - lAvg) / (wheelX * 2);
 
       if (roofDownFactor(v) > ROOF_DOWN_FACTOR) {
-        // A parked rollover stays on its roof.
         const wrapped = wrapPi(v.roll);
         const restRoll = wrapped >= 0 ? Math.PI : -Math.PI;
         v.roll += wrapPi(restRoll - v.roll) * Math.min(1, dt * 2.5);
@@ -2584,7 +2388,6 @@ export function suspFrame(dt, t) {
         v.roll += (Math.atan(sSd) - v.roll) * Math.min(1, dt * 8);
       }
 
-      // Sync the mesh: collision shoves used to move the body but leave it behind.
       v.root.position.set(v.x, v.y, v.z);
       v.root.rotation.order = 'YXZ';
       v.root.rotation.y = v.yaw;

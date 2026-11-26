@@ -1,14 +1,3 @@
-// =============================================================================
-// mobile.js — Touch controls for phones/tablets ONLY.
-// Fixes vs original:
-//  * Device detection: a touchscreen Chromebook (maxTouchPoints > 0 but a fine,
-//    hover-capable pointer exists) is NOT a phone. Touch UI is available there
-//    via the settings toggle, but never auto-enabled, and the compact
-//    'mobile-device' HUD layout is only applied to phone-like devices.
-//  * setHeldKey is source-aware: releasing a touch source can NEVER write
-//    keys[code] = false over a physical keyboard press (the 120ms WASD stomp).
-//  * syncVisibility only releases fire/look that TOUCH actually owns.
-// =============================================================================
 import { gameState, hooks, inputState, keys, pushFeed } from './state.js';
 import { canvas } from './engine.js';
 import { sfx } from './audio.js';
@@ -20,16 +9,16 @@ import { applyLookDelta } from './input.js';
 import { applyJetLookDelta, boardJet, dropNuke, isJetFlying, isNearJet, leaveJet, setJetMobileKey } from './aircraft.js';
 
 const MOBILE_PREF_KEY = 'gtaAura.mobileControls.v1';
-const heldKeys = new Map();          // code -> Set of TOUCH sources only
+const heldKeys = new Map();                 
 const activeActions = new Map();
-let touchCapable = false;            // controls exist (any touchscreen)
-let phoneLike = false;               // compact HUD + auto-enable default
+let touchCapable = false;                
+let phoneLike = false;                    
 let root = null;
 let lookPointer = null;
 let lookX = 0, lookY = 0;
 let stickPointer = null;
 let lastSync = 0;
-let touchFireHeld = false;           // did TOUCH press the fire button?
+let touchFireHeld = false;                 
 
 function setHeldKey(code, down, source) {
   let sources = heldKeys.get(code);
@@ -39,8 +28,6 @@ function setHeldKey(code, down, source) {
     keys[code] = true;
     return;
   }
-  // Releasing: if no touch source ever held this key, DO NOT touch keys[code] —
-  // it may be held by the physical keyboard right now.
   if (!sources) return;
   sources.delete(source);
   if (sources.size) { keys[code] = true; return; }
@@ -181,7 +168,7 @@ function clearJoystick() {
   stickPointer = null;
   for (const code of ['KeyW', 'KeyA', 'KeyS', 'KeyD']) {
     setJetMobileKey(code, false);
-    setHeldKey(code, false, 'stick'); // safe: never clears physical keyboard state
+    setHeldKey(code, false, 'stick');       
   }
   const thumb = document.getElementById('mobile-stick-thumb');
   if (thumb) thumb.style.transform = '';
@@ -239,9 +226,7 @@ export function initMobileControls() {
   const coarse = mm('(pointer: coarse)');
   const anyFine = mm('(any-pointer: fine)');
   const noHover = mm('(hover: none)');
-  // Phone/tablet: coarse primary pointer, nothing that hovers, no fine pointer anywhere.
   phoneLike = coarse && noHover && !anyFine;
-  // Touch-capable laptops (Chromebooks!) get optional controls, never phone treatment.
   touchCapable = hasTouch || coarse;
   let stored = null;
   try { stored = localStorage.getItem(MOBILE_PREF_KEY); } catch (err) { console.warn('[mobile] unable to load touch preference:', err); }

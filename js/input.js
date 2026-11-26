@@ -1,6 +1,3 @@
-// =============================================================================
-// input.js — Keyboard, mouse look, pointer lock, weapon wheel and in-game hotkeys (call initInput() once from main.js).
-// =============================================================================
 import { levelData } from './levelData.js';
 import { MAX_HOTDOG_AMMO, aura, climb, flashEdge, gameState, hooks, inputState, keys, manholeOpen, meteorDrop, npcs, player, pushFeed, sausageRefillZones, under } from './state.js';
 import { canvas } from './engine.js';
@@ -23,7 +20,6 @@ export function applyLookDelta(dx, dy) {
   player.yaw -= dx * mult;
   player.pitch = Math.max(-1.42, Math.min(1.42, player.pitch - dy * mult));
 }
-/** Attach all DOM / window listeners. Call once from main.js (never from Studio). */
 export function initInput() {
 
 document.addEventListener('pointerlockchange', () => {

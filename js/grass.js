@@ -1,13 +1,9 @@
-// =============================================================================
-// grass.js — Forest-only PS3-era instanced grass with static frustum-culled
-//            world chunks, GPU distance clumping, and wind/trample shaders.
-// =============================================================================
 import * as THREE from 'three';
 import { worldRoot, makeMat, camera } from './engine.js';
 import { WORLD_BOUNDS, biomeAt, gameState, isInWater, player, terrainH, worldBoxes } from './state.js';
 
-const CHUNKS_PER_AXIS = 8; // 8x8 static frustum-culled chunks across the map
-const TUFT_SPACING = 1.25; // Lush forest floor spacing
+const CHUNKS_PER_AXIS = 8;        
+const TUFT_SPACING = 1.25;     
 
 const grassChunks = [];
 let sharedGrassMat = null;
@@ -20,7 +16,6 @@ const densityUniform = { value: 1.0 };
 
 const _sampleOut = { y: 0 };
 
-// Deterministic 32-bit integer hash -> [0, 1)
 function hash2D(ix, iz, salt) {
   let h = Math.imul(ix, 374761393) + Math.imul(iz, 668265263) + Math.imul(salt, 1442695041);
   h = (h ^ (h >>> 13)) >>> 0;
@@ -28,7 +23,6 @@ function hash2D(ix, iz, salt) {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
-// Procedural PS3-style alpha-cutout grass tuft card (serrated blades + root AO gradient)
 function buildPs3GrassCardTexture() {
   const c = document.createElement('canvas');
   c.width = 64;
@@ -77,7 +71,6 @@ function buildPs3GrassCardTexture() {
   return tex;
 }
 
-// 3 crossed & slightly tilted quads forming a volumetric PS3 grass tuft
 function createCrossedTuftGeometry() {
   const positions = [];
   const normals = [];
@@ -132,7 +125,6 @@ function createCrossedTuftGeometry() {
   return geo;
 }
 
-// Spatial hash of tree trunks, rocks, and cabins so grass never pokes through forest obstacles
 function buildObstacleBuckets() {
   boxBuckets = new Map();
   const bucketSize = 16;
@@ -184,7 +176,6 @@ function sampleForestGrassPoint(wx, wz, out) {
 
   const y = terrainH(wx, wz);
 
-  // Skip near-vertical cliff faces
   const slopeX = Math.abs(terrainH(wx + 0.75, wz) - terrainH(wx - 0.75, wz));
   const slopeZ = Math.abs(terrainH(wx, wz + 0.75) - terrainH(wx, wz - 0.75));
   if (slopeX > 1.15 || slopeZ > 1.15) return false;
@@ -382,7 +373,6 @@ export function initGrass() {
           matrices[off + 14] = wz;
           matrices[off + 15] = 1;
 
-          // Rich woodland emerald & sun-dappled moss variations
           const cOff = count * 3;
           colors[cOff]     = 0.42 + rSize * 0.18;
           colors[cOff + 1] = 0.74 + rSize * 0.18;

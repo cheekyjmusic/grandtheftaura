@@ -1,7 +1,3 @@
-// =============================================================================
-// water.js — PS3-style water surfaces, seabed bathymetry, buoyancy physics,
-// underwater atmosphere, and player swimming/diving mechanics.
-// =============================================================================
 import * as THREE from 'three';
 import { camera, scene, worldRoot } from './engine.js';
 import {
@@ -11,9 +7,6 @@ import { sfx } from './audio.js';
 import { spawnParticles } from './items.js';
 import { vehicles } from './vehicles.js';
 
-// -----------------------------------------------------------------------------
-// Water Registry & Swim State
-// -----------------------------------------------------------------------------
 export const waterBodies = [];
 export const floatingProps = [];
 
@@ -42,9 +35,6 @@ let underwaterActive = false;
 const UNDERWATER_FOG_COLOR = new THREE.Color(0x074b6e);
 const UNDERWATER_FOG_DENSITY = 0.046;
 
-// -----------------------------------------------------------------------------
-// Analytical PS3 Multi-Wave Function (shared 1:1 between GPU shader & CPU)
-// -----------------------------------------------------------------------------
 export function sampleOceanWave(x, z, time = waterElapsed, scale = 1.0) {
   if (scale <= 0.001) return 0;
   const w1 = Math.sin(x * 0.14 + z * 0.09 + time * 1.85) * 0.14;
@@ -54,26 +44,15 @@ export function sampleOceanWave(x, z, time = waterElapsed, scale = 1.0) {
   return (w1 + w2 + w3 + w4) * scale;
 }
 
-// -----------------------------------------------------------------------------
-// Ocean Bathymetry (Seabed Depth Profile)
-// -----------------------------------------------------------------------------
-/**
- * Returns the physical seabed height Y across the ocean, coves, and strait.
- * Smoothly slopes from ~0.16m along beaches/shores down to -6.8m in deep water.
- */
 export function getOceanBedY(x, z) {
-  // Distance inland from each coastline; positive = further out to sea
   let shoreDist = 999;
 
-  // 1. Sunset Cove northern beach (z = 168) & side shores
   if (x >= 24 && x <= 142 && z >= 166 && z <= 212) {
     shoreDist = Math.min(shoreDist, z - 168.0);
     shoreDist = Math.min(shoreDist, x - 27.5);
     shoreDist = Math.min(shoreDist, 138.5 - x);
   }
 
-  // 2. Central ocean west cliff / Frostpine shoreline (x = -50),
-  //    Emerald Woods north bank (z = 208, x = -50..28), & east desert shore
   if (z >= 208 && z <= 320) {
     if (x < 164) {
       shoreDist = Math.min(shoreDist, x - (-50.5));
@@ -81,13 +60,11 @@ export function getOceanBedY(x, z) {
         shoreDist = Math.min(shoreDist, z - 208.0);
       }
     } else {
-      // East ocean basin (z = 220..320, x = 164..368)
       shoreDist = Math.min(shoreDist, z - 220.0);
       shoreDist = Math.min(shoreDist, 368.5 - x);
     }
   }
 
-  // 3. Ocean strait (z = 320..380, x = -260..500) & Santa Aura Beach (z = 380)
   if (z >= 318 && z <= 382) {
     shoreDist = Math.min(shoreDist, 380.0 - z);
     shoreDist = Math.min(shoreDist, x - (-260.5));
@@ -101,9 +78,6 @@ export function getOceanBedY(x, z) {
   return 0.16 - smooth * 6.96 + microUndulation;
 }
 
-// -----------------------------------------------------------------------------
-// Water Body Queries
-// -----------------------------------------------------------------------------
 export function getWaterBodyAt(x, z) {
   for (let i = waterBodies.length - 1; i >= 0; i--) {
     const wb = waterBodies[i];
@@ -138,9 +112,6 @@ export function isSwimming() {
   return swimState.active;
 }
 
-// -----------------------------------------------------------------------------
-// PS3-Era Stylized Water Shader Material
-// -----------------------------------------------------------------------------
 const waterShaderUniforms = [];
 
 function createPS3WaterMaterial({
@@ -259,9 +230,6 @@ function createPS3WaterMaterial({
   return mat;
 }
 
-// -----------------------------------------------------------------------------
-// Water Surface & Ocean Floor Builders
-// -----------------------------------------------------------------------------
 export function createWaterSurface({
   id = 'water',
   parent = worldRoot,
@@ -335,11 +303,6 @@ export function createWaterSurface({
   return body;
 }
 
-/**
- * Builds the continuous 3D sandy/rocky ocean floor beneath Sunset Cove,
- * the Far-North Ocean, and the Ocean Strait so players can wade down the
- * beach slope and swim/dive over a textured PS3 ocean seabed.
- */
 export function buildOceanSeabed(parent = worldRoot) {
   const grp = new THREE.Group();
   grp.userData.studioName = 'Ocean Seabed';
@@ -401,7 +364,6 @@ export function buildOceanSeabed(parent = worldRoot) {
     return mesh;
   };
 
-  // Seamless seabed patches matching the 4 ocean surface zones
   buildBedPatch(28, 138, 168, 208, 3.0);
   buildBedPatch(-50, 164, 208, 320, 4.5);
   buildBedPatch(164, 368, 220, 320, 4.5);
@@ -410,14 +372,10 @@ export function buildOceanSeabed(parent = worldRoot) {
   return grp;
 }
 
-/** Register a boat, buoy, or floating prop to heave and pitch on the waves. */
 export function registerFloatingProp(object, x, z, baseOffset = 0, pitchScale = 0.85) {
   floatingProps.push({ object, x, z, baseOffset, pitchScale });
 }
 
-// -----------------------------------------------------------------------------
-// Underwater Camera & Fog Atmosphere
-// -----------------------------------------------------------------------------
 function updateUnderwaterAtmosphere(dt, elapsed) {
   const camWaterY = getWaterHeightAt(camera.position.x, camera.position.z, elapsed);
   const cameraUnderwater = camWaterY !== null && camera.position.y < camWaterY - 0.04;
@@ -450,7 +408,6 @@ function updateUnderwaterAtmosphere(dt, elapsed) {
     scene.fog.density = UNDERWATER_FOG_DENSITY;
   }
 
-  // Rising air bubbles when player is submerged
   if (swimState.submerged && Math.random() < dt * 7) {
     spawnParticles(
       player.x + (Math.random() - 0.5) * 0.5,
@@ -463,9 +420,6 @@ function updateUnderwaterAtmosphere(dt, elapsed) {
   }
 }
 
-// -----------------------------------------------------------------------------
-// Player Swimming, Buoyancy & Diving Physics
-// -----------------------------------------------------------------------------
 const _camForward = new THREE.Vector3();
 const _camRight = new THREE.Vector3();
 const _upVec = new THREE.Vector3(0, 1, 0);
@@ -475,7 +429,6 @@ function getCameraSwimVectors() {
   const pitch = _camForward.y;
   _camForward.y = 0;
   if (_camForward.lengthSq() < 1e-5) {
-    // Matches the +Z forward convention used across world.js
     _camForward.set(Math.sin(player.yaw || 0), 0, Math.cos(player.yaw || 0));
   } else {
     _camForward.normalize();
@@ -516,7 +469,6 @@ function updatePlayerSwimming(dt, elapsed) {
   const bedY = wb.bedFn ? wb.bedFn(player.x, player.z) : wb.bedY;
   const totalWaterDepth = Math.max(0, surfaceY - bedY);
 
-  // Restore simulated Y if external ground collision clamped player.y between frames
   if (swimState.active && Math.abs(player.y - swimState.y) > 0.25 && swimState.vy <= 1.5) {
     player.y = swimState.y;
   }
@@ -525,7 +477,6 @@ function updatePlayerSwimming(dt, elapsed) {
   swimState.depth = totalWaterDepth;
   swimState.submersion = submersion;
 
-  // 1. Shallow wading (< 1.12m submersion or shallow stream)
   if (submersion < 1.12 || totalWaterDepth < 1.22) {
     if (swimState.active) {
       exitSwimmingState();
@@ -533,7 +484,6 @@ function updatePlayerSwimming(dt, elapsed) {
     swimState.wading = submersion > 0.15;
     swimState.oxygen = Math.min(swimState.maxOxygen, swimState.oxygen + dt * 24);
 
-    // Follow sloped seabed cleanly while wading in the ocean
     if (wb.isOcean && player.y < bedY + 0.08 && (player.vy || 0) <= 0) {
       player.y = bedY;
       player.grounded = true;
@@ -546,7 +496,6 @@ function updatePlayerSwimming(dt, elapsed) {
     return;
   }
 
-  // 2. Deep Water Swimming & Treading Water
   if (!swimState.active) {
     swimState.active = true;
     swimState.y = player.y;
@@ -577,7 +526,6 @@ function updatePlayerSwimming(dt, elapsed) {
   const diving = Boolean(keys['KeyC'] || keys['ControlLeft'] || keys['ControlRight']);
   const surfacing = Boolean(keys['Space']);
 
-  // Rhythmic PS3 breaststroke / freestyle cadence
   const strokeRate = inputLen > 0.05 ? (sprinting ? 8.5 : 5.4) : 2.2;
   swimState.strokePhase += dt * strokeRate;
   const strokePulse = inputLen > 0.05 ? (0.86 + 0.24 * Math.sin(swimState.strokePhase)) : 1.0;
@@ -588,17 +536,13 @@ function updatePlayerSwimming(dt, elapsed) {
   let vx = (forward.x * moveForward + right.x * moveRight) * swimSpeed + wb.currentX;
   let vz = (forward.z * moveForward + right.z * moveRight) * swimSpeed + wb.currentZ;
 
-  // Vertical buoyancy & diving control
-  const neutralFloatY = surfaceY - 1.18; // keeps head & shoulders above water
+  const neutralFloatY = surfaceY - 1.18;       
   if (diving) {
-    // Dive downward smoothly
     swimState.vy += (-4.6 - swimState.vy) * Math.min(1, dt * 6.0);
   } else if (surfacing) {
     if (swimState.y < neutralFloatY - 0.18) {
-      // Swim up toward the surface
       swimState.vy += (4.8 - swimState.vy) * Math.min(1, dt * 6.0);
     } else {
-      // At surface: hop / climb out onto pier or seawall ledge
       const probeX = player.x + forward.x * 0.85;
       const probeZ = player.z + forward.z * 0.85;
       const blockedAhead = collidesHorizontally(probeX, probeZ, surfaceY - 0.2, surfaceY + 1.2, 0.45);
@@ -616,17 +560,14 @@ function updatePlayerSwimming(dt, elapsed) {
       swimState.vy = Math.max(swimState.vy, 2.2);
     }
   } else if (swimState.y < neutralFloatY - 0.35 && inputLen > 0.1 && Math.abs(pitch) > 0.15) {
-    // Underwater 3D pitch steering when swimming forward
     const targetVy = pitch * moveForward * swimSpeed * 0.85;
     swimState.vy += (targetVy - swimState.vy) * Math.min(1, dt * 4.5);
   } else {
-    // Natural upward buoyancy toward the wave surface
     const buoyancyError = neutralFloatY - swimState.y;
     const springForce = buoyancyError * 11.5 - swimState.vy * 5.2;
     swimState.vy += springForce * dt;
   }
 
-  // Integrate horizontal position with world collision sliding
   const nextX = player.x + vx * dt;
   const nextZ = player.z + vz * dt;
   const bodyLow = swimState.y + 0.25;
@@ -639,7 +580,6 @@ function updatePlayerSwimming(dt, elapsed) {
     player.z = nextZ;
   }
 
-  // Integrate vertical position & clamp against seabed and sky
   swimState.y += swimState.vy * dt;
   const newSurfaceY = wb.surfaceY + sampleOceanWave(player.x, player.z, elapsed, wb.waveScale);
   const newBedY = wb.bedFn ? wb.bedFn(player.x, player.z) : wb.bedY;
@@ -657,7 +597,6 @@ function updatePlayerSwimming(dt, elapsed) {
   player.vy = swimState.vy;
   player.grounded = false;
 
-  // Smoothly face movement direction (+Z forward convention)
   if (inputLen > 0.05) {
     const targetYaw = Math.atan2(vx, vz);
     swimState.yaw = targetYaw;
@@ -666,7 +605,6 @@ function updatePlayerSwimming(dt, elapsed) {
     }
   }
 
-  // Procedural PS3 swim posture on player mesh if exposed
   const pMesh = player.mesh || player.group || player.root;
   if (pMesh) {
     const targetPitch = inputLen > 0.05 ? (diving ? 1.15 : 0.85) : 0.15;
@@ -674,7 +612,6 @@ function updatePlayerSwimming(dt, elapsed) {
     pMesh.rotation.z = Math.sin(swimState.strokePhase) * (inputLen > 0.05 ? 0.16 : 0.04);
   }
 
-  // Oxygen & underwater breath tracking
   swimState.submerged = (player.y + 1.52) < newSurfaceY;
   if (swimState.submerged) {
     swimState.oxygen = Math.max(0, swimState.oxygen - dt * 6.5);
@@ -691,7 +628,6 @@ function updatePlayerSwimming(dt, elapsed) {
     swimState.drownTick = 0;
   }
 
-  // Surface wake & splash foam particles
   if (!swimState.submerged && inputLen > 0.05) {
     const rate = sprinting ? 18 : 10;
     if (Math.random() < dt * rate) {
@@ -707,9 +643,6 @@ function updatePlayerSwimming(dt, elapsed) {
   }
 }
 
-// -----------------------------------------------------------------------------
-// Vehicle Buoyancy & Sinking Physics
-// -----------------------------------------------------------------------------
 function updateVehicleWaterPhysics(dt, elapsed) {
   for (let i = 0; i < vehicles.length; i++) {
     const v = vehicles[i];
@@ -735,12 +668,10 @@ function updateVehicleWaterPhysics(dt, elapsed) {
       if (sfx && typeof sfx.hit === 'function') sfx.hit();
     }
 
-    // Hydrodynamic water resistance slows wheels down rapidly
     if (typeof v.speed === 'number') {
       v.speed *= Math.pow(0.18, dt);
     }
 
-    // Cars float briefly while taking on water, then sink to the seabed
     v._flood = Math.min(1, (v._flood || 0) + dt * (v.isTank ? 0.55 : 0.28));
     const floatTargetY = THREE.MathUtils.lerp(surfaceY - 0.45, bedY, v._flood * v._flood);
 
@@ -748,11 +679,9 @@ function updateVehicleWaterPhysics(dt, elapsed) {
       const sinkRate = v._flood < 0.35 ? 0.45 : 1.85;
       v.y = Math.max(floatTargetY, v.y - sinkRate * dt);
     } else {
-      // Bob gently on waves while still floating
       v.y += (floatTargetY - v.y) * Math.min(1, dt * 4.0);
     }
 
-    // Apply current drift while floating
     if (v._flood < 0.85) {
       v.x += wb.currentX * dt * 0.6;
       v.z += wb.currentZ * dt * 0.6;
@@ -780,9 +709,6 @@ function updateVehicleWaterPhysics(dt, elapsed) {
   }
 }
 
-// -----------------------------------------------------------------------------
-// Floating Boats & Buoys Animation
-// -----------------------------------------------------------------------------
 function updateFloatingProps(elapsed) {
   for (let i = 0; i < floatingProps.length; i++) {
     const fp = floatingProps[i];
@@ -801,9 +727,6 @@ function updateFloatingProps(elapsed) {
   }
 }
 
-// -----------------------------------------------------------------------------
-// Main Per-Frame Update & World Reset
-// -----------------------------------------------------------------------------
 export function updateWater(dt, elapsed) {
   waterElapsed = elapsed;
 
@@ -839,7 +762,6 @@ export function resetWaterSystem() {
   savedSurfaceBg = null;
 }
 
-// Expose water API on hooks for player/HUD/main loop interoperability
 Object.assign(hooks, {
   updateWater,
   resetWaterSystem,

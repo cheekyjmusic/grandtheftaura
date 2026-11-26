@@ -1,8 +1,3 @@
-// =============================================================================
-// aircraft.js — Aura Air bunker, Chapin strike jet, LAX Airliner, flight, weapons and map/HUD integration.
-// Standalone module: initialize once, then replace the main player simulation call
-// with updateAircraft(dt, elapsed). All aircraft state is exported by API; no globals.
-// =============================================================================
 import * as THREE from 'three';
 import { AIRFIELD, AO, addWorldBox, aura, collidesHorizontally, computeSupportFloor, flashEdge, gameState, hillsH, hooks, inputState, keys, meteorDrop, npcs, player, pushFeed, terrainH, worldBoxes } from './state.js';
 import { camera, canvas, scene, worldRoot } from './engine.js';
@@ -50,15 +45,15 @@ const AIRCRAFT_SPECS = {
     id: 'boeing',
     name: 'BOEING AIRLINER',
     gearHeight: BOEING_GEAR,
-    stallSpeed: 11,          // Harder to stall (~40 km/h vs jet's ~79 km/h)
-    rotateSpeed: 22,         // Smooth rotation at ~79 km/h
-    maxSpeed: 92,            // Slower cruise (~331 km/h vs jet's ~504 km/h)
-    afterburnerSpeed: 122,   // TOGA / boost max (~439 km/h)
+    stallSpeed: 11,                   
+    rotateSpeed: 22,              
+    maxSpeed: 92,                    
+    afterburnerSpeed: 122,         
     absMaxSpeed: 145,
     accelRate: 24,
     abAccelRate: 36,
-    stallPitchDrop: 0.14,    // Gentle nose drop near stall
-    stallSinkRate: 4.2,      // Low sink rate near stall
+    stallPitchDrop: 0.14,         
+    stallSinkRate: 4.2,           
     pitchAuthority: 0.85,
     rollAuthority: 1.3,
     yawAuthority: 0.65,
@@ -73,7 +68,6 @@ const AIRCRAFT_SPECS = {
   }
 };
 
-// Reusable scratch math objects to prevent per-frame GC allocations
 const _vForward = new THREE.Vector3();
 const _vLeft = new THREE.Vector3();
 const _vUp = new THREE.Vector3();
@@ -107,7 +101,6 @@ let chute = null;
 let chuteActive = false;
 let netSyncTimer = 0;
 
-// Cached HUD & UI DOM references
 const hudEls = {};
 const hudCache = {
   spd: '', alt: '', agl: '', hdg: '',
@@ -115,24 +108,20 @@ const hudCache = {
   warn: '', warnOp: -1, help: false
 };
 
-// Shared explosion & debris resources
 let sharedExplosionGeo = null;
 let debrisMats = null;
 
-// Pooled cannon tracers
 const TRACER_POOL_SIZE = 10;
 const tracerPool = [];
 let tracerCursor = 0;
 let tracerMat = null;
 
-// Load metallic scratch texture overlay
 const textureLoader = new THREE.TextureLoader();
 const metalScratchTex = textureLoader.load('assets/textures/metal.png');
 metalScratchTex.wrapS = THREE.RepeatWrapping;
 metalScratchTex.wrapT = THREE.RepeatWrapping;
 metalScratchTex.repeat.set(4, 4);
 
-// Jet Shoot Sound handling with Web Audio API & pooled HTML5 Audio fallback
 let jetShootBuffer = null;
 let jetShootAudioRaw = null;
 let isDecodingJetShoot = false;
@@ -417,7 +406,6 @@ function buildBunker() {
   wall(hx0, hx1, hz0, hz1, fy + 11, fy + 12.6);
   box(bunker, earth, -382, fy + 13.1, rz, 46, 1, 40);
 
-  // Batch bunker rocks into instanced meshes
   const hiRocks = [];
   for (let i = 0; i < 12; i++) {
     const z = hz0 + 2 + i * (hz1 - hz0 - 4) / 11;
@@ -538,7 +526,6 @@ function buildJet() {
   jet = new THREE.Group();
   const bladesList = [];
 
-  // Materials enhanced with the metallic scratch texture overlay
   const body = material(0x6f7985, { metalness: 0.8, roughness: 0.3, roughnessMap: metalScratchTex, metalnessMap: metalScratchTex });
   const dark = material(0x2b3038, { metalness: 0.85, roughness: 0.25, roughnessMap: metalScratchTex, metalnessMap: metalScratchTex });
   const red = material(0xd92b2b, { metalness: 0.6, roughness: 0.35, roughnessMap: metalScratchTex, metalnessMap: metalScratchTex });
@@ -594,19 +581,16 @@ function buildBoeing() {
   const glass = material(0x0b192c, { metalness: 0.92, roughness: 0.08, emissive: 0x06101e });
   const tireMat = material(0x15171a, { roughness: 0.9 });
 
-  // Main cylindrical fuselage
   const cabin = new THREE.Mesh(new THREE.CylinderGeometry(1.85, 1.85, 18.5, 20), white);
   cabin.rotation.x = Math.PI / 2;
   cabin.position.set(0, 0.25, 0.2);
   boeing.add(cabin);
 
-  // Belly fairing / lower hull accent
   const belly = new THREE.Mesh(new THREE.CylinderGeometry(1.86, 1.86, 18.2, 20, 1, false, Math.PI * 0.65, Math.PI * 0.7), silver);
   belly.rotation.x = Math.PI / 2;
   belly.position.set(0, 0.24, 0.2);
   boeing.add(belly);
 
-  // Airline cheatline stripes
   const stripeMain = new THREE.Mesh(new THREE.CylinderGeometry(1.87, 1.87, 18.4, 20, 1, true), liveryBlue);
   stripeMain.rotation.x = Math.PI / 2;
   stripeMain.scale.set(1, 1, 0.016);
@@ -619,7 +603,6 @@ function buildBoeing() {
   stripeAccent.position.set(0, -0.04, 0.2);
   boeing.add(stripeAccent);
 
-  // Forward nose section & radome
   const forwardNose = new THREE.Mesh(new THREE.CylinderGeometry(1.12, 1.85, 4.0, 20), white);
   forwardNose.rotation.x = Math.PI / 2;
   forwardNose.position.set(0, 0.12, 11.45);
@@ -630,20 +613,17 @@ function buildBoeing() {
   radome.position.set(0, 0.05, 13.35);
   boeing.add(radome);
 
-  // Cockpit windshield (hidden in 1st-person cockpit view)
   const cockpitGlass = new THREE.Mesh(new THREE.SphereGeometry(1.26, 16, 12), glass);
   cockpitGlass.scale.set(0.96, 0.56, 1.15);
   cockpitGlass.position.set(0, 0.88, 11.4);
   boeing.add(cockpitGlass);
   boeing.userData.can = cockpitGlass;
 
-  // Aft tapered tail cone
   const tailCone = new THREE.Mesh(new THREE.CylinderGeometry(1.85, 0.48, 7.2, 20), white);
   tailCone.rotation.x = Math.PI / 2;
   tailCone.position.set(0, 0.42, -12.65);
   boeing.add(tailCone);
 
-  // Instanced passenger cabin windows along both sides
   const winItems = [];
   for (let i = 0; i < 18; i++) {
     const wz = -7.6 + i * 0.92;
@@ -652,7 +632,6 @@ function buildBoeing() {
   }
   addInstancedBoxes(boeing, glass, winItems);
 
-  // Swept airliner wings + winglets + twin high-bypass turbofan engines
   const mainWingShape = planform([[1.4, 3.8], [13.6, -3.4], [13.6, -5.2], [1.4, -3.5]], 0.28);
   const hStabShape = planform([[0.35, -11.8], [5.2, -14.5], [5.2, -15.6], [0.35, -15.0]], 0.18);
 
@@ -666,16 +645,13 @@ function buildBoeing() {
     wing.position.set(0, -0.42, 0);
     boeing.add(wing);
 
-    // Blended upturned winglet
     const winglet = box(boeing, liveryBlue, s * 13.55, 0.42, -4.35, 0.16, 1.75, 1.35);
     winglet.rotation.z = -s * 0.26;
 
-    // Horizontal stabilizer
     const hStab = new THREE.Mesh(hStabShape(s), wingMat);
     hStab.position.set(0, 0.55, 0);
     boeing.add(hStab);
 
-    // Under-wing engine pylon & high-bypass turbofan pod
     const ex = s * 5.35, ey = -1.42, ez = 1.25;
     box(boeing, silver, ex, -0.82, ez + 0.3, 0.34, 0.95, 2.7);
 
@@ -703,11 +679,9 @@ function buildBoeing() {
     exhaust.position.set(ex, ey, ez - 1.95);
     boeing.add(exhaust);
 
-    // Subtle exhaust flame shimmer on turbofan engines
     attachFlameBlades(boeing, ex, ey, ez - 2.38, 0.55, s > 0 ? 2 : 0, bladesList);
   }
 
-  // Tall Boeing swept vertical stabilizer (tail fin)
   const vFinShape = new THREE.Shape();
   vFinShape.moveTo(0, 0);
   vFinShape.lineTo(3.4, 5.4);
@@ -720,17 +694,14 @@ function buildBoeing() {
   vFin.position.set(-0.12, 1.35, -10.4);
   boeing.add(vFin);
 
-  // Navigation lights (port red, starboard green, tail white)
   box(boeing, basic(0xff2a2a), -13.6, -0.25, -4.1, 0.25, 0.25, 0.35);
   box(boeing, basic(0x22c55e), 13.6, -0.25, -4.1, 0.25, 0.25, 0.35);
   box(boeing, basic(0xffffff), 0, 0.55, -16.25, 0.25, 0.25, 0.3);
 
-  // Retractable tricycle landing gear (height = BOEING_GEAR = 2.6)
   const gear = new THREE.Group();
   boeing.add(gear);
   boeing.userData.gear = gear;
 
-  // Nose landing gear (twin wheels)
   const noseStrut = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 1.8, 8), silver);
   noseStrut.position.set(0, -1.45, 10.6);
   gear.add(noseStrut);
@@ -741,7 +712,6 @@ function buildBoeing() {
     gear.add(nw);
   }
 
-  // Main landing gear bogies (dual wheels per side)
   for (const s of [-1, 1]) {
     const mx = s * 2.85, mz = -1.1;
     const mainStrut = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 1.9, 8), silver);
@@ -1737,7 +1707,6 @@ function updateCrashCamera(dt, elapsed, stepPlayer) {
 export function updateAircraft(dt, elapsed, { stepPlayer = true } = {}) {
   if (!initialized) initAircraft();
 
-  // Verify Boeing spawn against worldBoxes once world geometry is populated
   const boeingAc = aircraftFleet[1];
   if (boeingAc && !boeingAc.spawnVerified && worldBoxes.length > 0 && !(jetState.flying && activeAircraft === boeingAc)) {
     resetAircraft(boeingAc);
@@ -1746,7 +1715,6 @@ export function updateAircraft(dt, elapsed, { stepPlayer = true } = {}) {
   updateBombs(dt);
   for (const beacon of beaconMeshes) beacon.visible = Math.sin(elapsed * 6) > 0;
 
-  // Active parachute simulation following player ejection
   if (chuteActive) {
     if (chute) {
       chute.visible = true;
@@ -1881,7 +1849,6 @@ export function drawAircraftMapOverlay(canvas, centerOnPlayer) {
   const ctx = canvas.getContext('2d'), scale = centerOnPlayer ? 0.65 : 0.38, rx = centerOnPlayer ? player.x : -29, rz = centerOnPlayer ? player.z : -190, X = w => canvas.width / 2 + (w - rx) * scale, Y = w => canvas.height / 2 + (w - rz) * scale;
   ctx.save();
 
-  // Aura Air Bunker runway & hangar
   ctx.fillStyle = 'rgba(55,60,68,.9)';
   ctx.fillRect(X(AIRFIELD.rx0), Y(AIRFIELD.rz - 12), (AIRFIELD.rx1 - AIRFIELD.rx0) * scale, 24 * scale);
   ctx.fillStyle = '#64748b';
@@ -1890,11 +1857,9 @@ export function drawAircraftMapOverlay(canvas, centerOnPlayer) {
   ctx.font = 'bold 10px sans-serif';
   ctx.fillText('AIR BUNKER', X(-535), Y(-131));
 
-  // LAX Airport label
   ctx.fillStyle = '#38bdf8';
   ctx.fillText('LAX', X(365), Y(448));
 
-  // Draw all fleet aircraft markers
   for (const ac of aircraftFleet) {
     if (ac.dead > 0) continue;
     const isFlown = jetState.flying && activeAircraft === ac;

@@ -12,10 +12,7 @@ import { sfx } from './audio.js';
 import { RIGHT_WEAPONS, addLeftItemToBag, freeGeo, spawnParticles } from './items.js';
 import { buildSportsCar, enterVehicle, vehicles } from './vehicles.js';
 
-// SHARED RESOURCE CACHES
-// =============================================================================
 const _boxGeoCache = new Map();
-/** One BoxGeometry per unique dimension triple; `shared` so freeGeo() skips it. */
 function sharedBoxGeo(sx, sy, sz) {
   const key = `${sx.toFixed(3)}|${sy.toFixed(3)}|${sz.toFixed(3)}`;
   let g = _boxGeoCache.get(key);
@@ -59,7 +56,6 @@ function cachedMakeMat(hex, opts) {
   }
   return m;
 }
-/** Stable 0..1 hash — identical on every client, independent of the seeded RNG. */
 function hash01(n) {
   const v = Math.sin(n * 127.1 + 311.7) * 43758.5453;
   return v - Math.floor(v);
@@ -67,14 +63,10 @@ function hash01(n) {
 function hashPick(arr, id, salt) {
   return arr[Math.floor(hash01(id * 7.13 + salt * 31.7) * arr.length) % arr.length];
 }
-/** Box mesh helper used by every builder in this module. */
 function boxMesh(sx, sy, sz, mat) {
   return new THREE.Mesh(sharedBoxGeo(sx, sy, sz), mat);
 }
 
-// =============================================================================
-// CLANS
-// =============================================================================
 export const CLAN_DEFS = {
   neon_vipers: {
     id: 'neon_vipers',
@@ -103,7 +95,6 @@ export const CLAN_DEFS = {
     bandana: 0xf8fafc,
     inTurf: (x, z) => (x >= -126 && x <= -64 && z >= -72 && z <= 18) || (x >= 24 && x <= 126 && z >= -72 && z <= -22)
   },
-  // Northern city turf: Downtown Los Aura blocks + the west bank spine.
   harbor_syndicate: {
     id: 'harbor_syndicate',
     name: 'HARBOR SYNDICATE',
@@ -117,11 +108,7 @@ export const CLAN_DEFS = {
   }
 };
 
-// =============================================================================
-// ROSTER
-// =============================================================================
 export const NPC_ROSTER = [
-  // Civilian Shopkeepers & Guards (Fight back if attacked!)
   { name: 'DEALER VANCE', role: 'stationary', aggro: 'fighter', x: -5.6, z: -53.6, yaw: 0, shirt: 0x0284c7, pants: 0x0f172a, line: '"Take the Aura Apex GT Supercar out for a spin! Downshift [K] to spit exhaust flames!"' },
   { name: 'HOTDOG VENDOR', role: 'stationary', aggro: 'fighter', x: -39.9, z: -41.1, yaw: 0, shirt: 0xdc2626, pants: 0xf8fafc, line: '"Grab the Ballistic Hotdog Shooter in the back! Refill sausages at the vat or Plaza Cart!"' },
   { name: 'BANK TELLER MARCUS', role: 'stationary', aggro: 'passive', x: -1.8, z: -98.3, yaw: 0, shirt: 0x1e3a8a, pants: 0x0f172a, line: '"Welcome to Sunnyvale Reserve Bank. Our vault is open for inspection."' },
@@ -131,17 +118,14 @@ export const NPC_ROSTER = [
   { name: 'DOCKWORKER HANK', role: 'patrol', aggro: 'fighter', x: 33.0, z: 34.0, yaw: 0, shirt: 0x0d9488, pants: 0x1e3a8a, line: '"Careful in the Harbor Yard—the Redrock Scorpions guard those containers!"' },
   { name: 'NEIGHBOR SAM', role: 'patrol', aggro: 'passive', x: -12.0, z: 35.0, yaw: -1.57, shirt: 0x7c3aed, pants: 0x1e293b, line: '"Crouching [C] keeps you low-profile and catches your breath three times faster."' },
   { name: 'COURIER LEO', role: 'patrol', aggro: 'fighter', x: -64.0, z: 16.5, yaw: 1.57, shirt: 0x2563eb, pants: 0x0f172a, line: '"Downtown is Neon Vipers turf—they hunt anyone trespassing on their blocks!"' },
-  // NEON VIPERS CLAN (Downtown Skyscraper District)
   { name: 'VIPER LOOKOUT JAX', role: 'clan', clanId: 'neon_vipers', x: -42.0, z: -86.0, yaw: 0, line: '"NEON VIPER: Who let you into Downtown?! Get him!"' },
   { name: 'VIPER ENFORCER KIRA', role: 'clan', clanId: 'neon_vipers', x: 38.0, z: -88.0, yaw: Math.PI, line: '"NEON VIPER: Spotter confirmed—swarm the intruder!"' },
   { name: 'VIPER RUNNER ZED', role: 'clan', clanId: 'neon_vipers', x: -16.0, z: -122.0, yaw: 1.57, line: '"NEON VIPER: Nobody walks through Viper territory uninvited!"' },
   { name: 'VIPER CAPTAIN NYX', role: 'clan', clanId: 'neon_vipers', x: 46.0, z: -128.0, yaw: -1.57, line: '"NEON VIPER: Lock down the block! Corner them!"' },
-  // REDROCK SCORPIONS CLAN (Harbor Yard & Redrock Desert)
   { name: 'SCORPION GUARD ROCCO', role: 'clan', clanId: 'redrock_scorpions', x: 40.0, z: 40.0, yaw: -1.57, line: '"SCORPION: This harbor yard belongs to the Redrock Scorpions!"' },
   { name: 'SCORPION BRAWLER TAZ', role: 'clan', clanId: 'redrock_scorpions', x: 52.0, z: 52.0, yaw: 3.14, line: '"SCORPION: Intruder spotted by the containers! Beat him down!"' },
   { name: 'SCORPION RAIDER VEX', role: 'clan', clanId: 'redrock_scorpions', x: 246.0, z: 86.0, yaw: -1.57, line: '"SCORPION: You wandered into Redrock desert turf!"' },
   { name: 'SCORPION SCOUT DRAKE', role: 'clan', clanId: 'redrock_scorpions', x: 274.0, z: 96.0, yaw: 0, line: '"SCORPION: Sound the alarm—outsider on Route 66!"' },
-  // IRON JACKALS CLAN (Westside & Brickwood Blocks)
   { name: 'JACKAL PATROL COLE', role: 'clan', clanId: 'iron_jackals', x: -84.0, z: -42.0, yaw: 1.57, line: '"IRON JACKAL: Wrong neighborhood, pal! Get him!"' },
   { name: 'JACKAL BRUISER GRIT', role: 'clan', clanId: 'iron_jackals', x: -88.0, z: -10.0, yaw: 0, line: '"IRON JACKAL: Eyes sharp—someone is sneaking through Westside!"' },
   { name: 'JACKAL SENTRY FANG', role: 'clan', clanId: 'iron_jackals', x: 42.0, z: -38.0, yaw: -1.57, line: '"IRON JACKAL: Brickwood is Jackal territory! Take him out!"' }
@@ -249,7 +233,6 @@ export function damageNpcBase(npc, amount, knockYaw) {
   if (!npc || npc.asleep) return;
   sfx.hit();
   spawnParticles(npc.x, (npc.y || 0.18) + 1.0, npc.z, 0xef4444, 6, 4);
-  // Elder NPCs knock to the ground immediately & shake head in confusion
   if (npc.age === 'elder') {
     npc.hp = 0;
     npc.asleep = true;
@@ -300,7 +283,6 @@ export function damageNpcBase(npc, amount, knockYaw) {
     pushFeed(`${npc.name} WENT TO SLEEP! (Zzz)`, 'border-l-sky-400');
     return;
   }
-  // Passive NPCs square up & fight back when punched!
   if (npc.aggro === 'passive') {
     if (rnd() < 0.85) {
       npc.aggro = 'fighter';
@@ -311,7 +293,6 @@ export function damageNpcBase(npc, amount, knockYaw) {
       npc.fleeTimer = 8;
     }
   } else if (npc.aggro === 'crackhead') {
-    // Twitchy Pete does not fight — he bolts and screams.
     npc.fleeTimer = 10;
     npc.hostile = false;
     pushFeed(`${npc.name} SCREAMED AND BOLTED!`, 'border-l-amber-400');
@@ -339,9 +320,6 @@ export function damageNpcBase(npc, amount, knockYaw) {
 export let activeClanAlertText = '';
 const npcSpawnQueue = [];
 
-// =============================================================================
-// POOLED TARGET LIST / NEAREST RESULT (zero per-frame allocation)
-// =============================================================================
 const _targets = [];
 const _targetPool = [];
 const _nearResult = { tgt: null, dist: Infinity };
@@ -353,7 +331,6 @@ function pooledTarget(i) {
   }
   return t;
 }
-/** mode 'sewer' keeps only remote players who are actually underground. */
 function fillTargets(mode) {
   _targets.length = 0;
   const me = pooledTarget(0);
@@ -391,18 +368,13 @@ function nearestTo(x, z) {
   return _nearResult;
 }
 
-// =============================================================================
-// NPC AI
-// =============================================================================
 export function updateNPCs(dt, elapsed) {
-  // Guests never simulate NPC AI — the host stream drives everything.
   if (hooks.mpIsGuest()) { hooks.mpGuestNpcFrame(dt, elapsed); return; }
   const SPAWN_DIST = 82, DESPAWN_DIST = 130;
   const SEWER_SPAWN = 46, SEWER_DESPAWN = 62;
   const targets = fillTargets('all');
   const playerUnderground = under();
 
-  // --- PLAYER MELEE SWING HIT DETECTION AGAINST REGULAR NPCs ---
   if (player.attackTimer <= 0) {
     player._npcHit = false;
   } else if (!player._npcHit && (1 - player.attackTimer / player.attackDuration) >= 0.35) {
@@ -434,7 +406,6 @@ export function updateNPCs(dt, elapsed) {
     const npc = npcs[i];
     const { tgt, dist: distToPlayer } = nearestTo(npc.x, npc.z);
 
-    // --- spawn / despawn (sewer dwellers only exist while you are down there) ---
     if (npc.sewer) {
       if (!npc.spawned && playerUnderground && distToPlayer < SEWER_SPAWN) {
         if (!npc.queued) { npc.queued = true; npcSpawnQueue.push(npc); }
@@ -455,7 +426,6 @@ export function updateNPCs(dt, elapsed) {
     }
     if (!npc.spawned || !npc.mesh) continue;
 
-    // --- knockback ---
     if (Math.abs(npc.kvx) + Math.abs(npc.kvz) > 0.05) {
       const kx = npc.x + npc.kvx * dt, kz = npc.z + npc.kvz * dt;
       if (!npcMoveBlocked(npc, kx, kz, i)) { npc.x = kx; npc.z = kz; }
@@ -559,9 +529,6 @@ export function updateNPCs(dt, elapsed) {
 
     let moveSpeed = 0;
 
-    // ---------------------------------------------------------------
-    // TWITCHY PETE — sewer crackhead: erratic wander, begs, snatches, bolts.
-    // ---------------------------------------------------------------
     if (npc.aggro === 'crackhead') {
       npc.begTimer -= dt;
       if (npc.fleeTimer > 0) {
@@ -715,7 +682,6 @@ export function updateNPCs(dt, elapsed) {
       }
     }
 
-    // Crackhead twitch layer — constant micro-jitter, head snaps, scratching.
     if (npc.crackhead) {
       const j = Math.sin(elapsed * 23 + npc.id) * Math.cos(elapsed * 17.3 + npc.id * 2);
       if (u.head) {
@@ -772,7 +738,6 @@ function despawnNpc(npc) {
   }
   npc.spawned = false;
 }
-/** Simulated ground height so NPCs ride hills, shelves, boardwalks and roads. */
 function snapNpcGround(npc) {
   const y = computeSupportFloor(npc.x, npc.z, (npc.y || 1) + 0.8, 0.4);
   return Number.isFinite(y) ? y : (npc.y || 0.18);
@@ -782,9 +747,6 @@ function npcMoveBlocked(npc, nx, nz, selfIdx) {
   return npcBlocked(nx, nz, selfIdx);
 }
 
-// =============================================================================
-// ROSTER TABLES
-// =============================================================================
 export const SKINS = [0xf1c8a5, 0xe2a87e, 0xd99b72, 0xb97a57, 0x8d5a3c, 0x6b4129];
 export const HAIRS = [0x1c1917, 0x3b2a1a, 0x6b3f1d, 0xb8860b, 0xc2410c, 0x0f172a];
 const IRIS_COLORS = [0x3b2a1a, 0x1e40af, 0x166534, 0x44403c];
@@ -798,10 +760,6 @@ export function npcHpFor(def, clan) {
   return def.age === 'child' ? 40 : def.age === 'elder' ? 70 : def.age === 'teen' ? 85 : base;
 }
 
-// -----------------------------------------------------------------------------
-// Pre-filtered wall colliders: only boxes that intersect the 0.45–1.8 m band.
-// Re-tested per candidate so in-place minY/maxY mutations stay correct.
-// -----------------------------------------------------------------------------
 let _wallSubset = null;
 let _wallSubsetLen = -1;
 function npcWallBoxes() {
@@ -816,7 +774,6 @@ function npcWallBoxes() {
   return out;
 }
 
-// NPC collision detection with world bounds, wall colliders, and OTHER NPCs
 export function npcBlocked(nx, nz, selfIdx = -1) {
   const B = WORLD_BOUNDS;
   if (B && Number.isFinite(B.minX) && B.maxX > B.minX) {
@@ -827,7 +784,7 @@ export function npcBlocked(nx, nz, selfIdx = -1) {
   const walls = npcWallBoxes();
   for (let b = 0; b < walls.length; b++) {
     const wb = walls[b];
-    if (wb.maxY <= 0.45 || wb.minY >= 1.8) continue; // stale entry (knocked lamp etc.)
+    if (wb.maxY <= 0.45 || wb.minY >= 1.8) continue;      
     if (nx + 0.4 > wb.minX && nx - 0.4 < wb.maxX && nz + 0.4 > wb.minZ && nz - 0.4 < wb.maxZ) return true;
   }
   for (let j = 0; j < npcs.length; j++) {
@@ -840,7 +797,6 @@ export function npcBlocked(nx, nz, selfIdx = -1) {
   return false;
 }
 
-// Attach seated NPC Driver inside traffic or civilian vehicles
 export function attachDriverToVehicle(carGroup, shirtColor = 0x2563eb, pantsColor = 0x0f172a) {
   const driver = buildNpcMeshRaw(shirtColor, pantsColor, null, { age: 'adult' });
   driver.scale.setScalar(0.72);
@@ -856,9 +812,6 @@ export function attachDriverToVehicle(carGroup, shirtColor = 0x2563eb, pantsColo
   return driver;
 }
 
-// =============================================================================
-// FACES
-// =============================================================================
 const faceBasicCache = new Map();
 function faceBasic(hex, transparent = false, opacity = 1) {
   const key = hex + '|' + transparent + '|' + opacity;
@@ -993,7 +946,6 @@ export function buildNpcMeshRaw(shirtC, pantsC, bandC, o = {}) {
   head.castShadow = true;
   head.scale.setScalar(bigHead);
   head.position.y = 0.55 + (hh / 2) * bigHead;
-  // Deterministic appearance: identical on every client and every respawn.
   const style = age === 'child' ? (id % 2 ? 'pigtails' : 'short')
     : age === 'elder' ? (id % 3 === 0 ? 'bald' : 'short')
     : age === 'teen' ? hashPick(TEEN_STYLES, id, 1)
@@ -1052,7 +1004,6 @@ export function buildNpcMeshRaw(shirtC, pantsC, bandC, o = {}) {
     pack.position.set(0, 0.3, -0.17);
     hip.add(pack);
   }
-  // Twitchy Pete's kit: a paper bag in one hand, a foil pipe in the other.
   if (o.crackhead) {
     const bag = bx(0.18, 0.24, 0.14, makeSharedMat(0xa8813f));
     bag.position.set(0, -0.36, 0.05);
@@ -1085,7 +1036,6 @@ export function buildNpcMesh(config = {}) {
   });
 }
 
-// ---------- EXTRA ROSTER: children, teens, elders, adults, muggers, biome locals ----------
 export function makeExtraRoster() {
   const L = [];
   const add = (name, age, aggro, x, z, shirt, pants, line, role = 'patrol') =>
@@ -1120,7 +1070,6 @@ export function makeExtraRoster() {
   return L;
 }
 
-// ---------- NORTHERN CITY: Downtown LA, west bank, boardwalk, LAX, speedway ----------
 export function makeNorthernRoster() {
   const L = [];
   let n = 0;
@@ -1137,7 +1086,6 @@ export function makeNorthernRoster() {
     yaw: hash01(700 + L.length * 2.3) * 6.283, line
   });
 
-  // HARBOR SYNDICATE — Downtown Los Aura + west bank
   clan('SYNDICATE LOOKOUT RICO', -60, 516, '"SYNDICATE: This block pays tribute to us. You don\'t."');
   clan('SYNDICATE ENFORCER BISHOP', -12, 564, '"SYNDICATE: Wilshire belongs to the harbor. Get him!"');
   clan('SYNDICATE RUNNER TALON', 36, 612, '"SYNDICATE: Nobody runs through our concourse uninvited!"');
@@ -1145,13 +1093,11 @@ export function makeNorthernRoster() {
   clan('SYNDICATE SENTRY KOSS', -108, 660, '"SYNDICATE: North end is ours too, tourist."');
   clan('SYNDICATE WHEELMAN DUTCH', -145, 600, '"SYNDICATE: West bank spine is a toll road. Pay up."');
 
-  // West bank civilians
   add('WEST BANK CLERK IMOGEN', 'patrol', 'passive', -195, 480, 0x0ea5e9, 0x1e293b,
     '"The west bank towers have the best lobby views in Los Aura."');
   add('WEST BANK JOGGER PACE', 'patrol', 'passive', -195, 660, 0x22c55e, 0x0f172a,
     '"Four blocks a lap. The syndicate ignores me if I keep moving."');
 
-  // Downtown civilians
   add('NORTH COURIER BREE', 'patrol', 'fighter', 124, 564, 0x2563eb, 0x0f172a,
     '"Arts District drop-off. Please don\'t rob me, I\'m on a clock."');
   add('STREET VENDOR LULA', 'patrol', 'passive', -60, 660, 0xf59e0b, 0x7f1d1d,
@@ -1159,7 +1105,6 @@ export function makeNorthernRoster() {
   add('ANALYST RHYS', 'patrol', 'passive', 36, 516, 0x94a3b8, 0x1e293b,
     '"I work on the forty-second floor. I have not seen daylight in weeks."');
 
-  // Santa Aura beach & boardwalk
   add('BOARDWALK BUSKER REEF', 'patrol', 'passive', -120, 413, 0xf43f5e, 0x1e1b4b,
     '"Any request except the one about the ferris wheel. Everyone asks that."');
   add('PIER TOURIST SANDY', 'patrol', 'passive', -90, 428, 0xfef3c7, 0x0ea5e9,
@@ -1173,7 +1118,6 @@ export function makeNorthernRoster() {
   add('BOARDWALK THUG SLICK', 'patrol', 'thug', -160, 428, 0x3f3f46, 0x111827,
     '"Nice boardwalk. Be a shame if you paid a walking fee."');
 
-  // LAX
   add('GROUND CREW CHIEF HOLLIS', 'stationary', 'fighter', 194, 564, 0xf97316, 0x1e293b,
     '"Curb is for drop-off only. And stay off the apron, it\'s live."');
   add('BAGGAGE HANDLER PIKE', 'patrol', 'passive', 248, 685, 0xfacc15, 0x0f172a,
@@ -1187,7 +1131,6 @@ export function makeNorthernRoster() {
   add('AIRPORT PICKPOCKET FINCH', 'patrol', 'thug', 200, 470, 0x0f766e, 0x111827,
     '"Just looking for my gate. Which one is your wallet at?"', { age: 'teen' });
 
-  // Motor speedway
   add('PIT CREW BOSS GUNNER', 'stationary', 'fighter', -50, 752, 0xef4444, 0x0f172a,
     '"Six gears, downshift into the corner, and stay off my pit wall."');
   add('TRACK MARSHAL FLAGG', 'patrol', 'passive', 30, 790, 0xfacc15, 0x1e293b,
@@ -1199,7 +1142,6 @@ export function makeNorthernRoster() {
   return L;
 }
 
-// ---------- SEWER DWELLER ----------
 export function makeSewerRoster() {
   return [{
     name: 'TWITCHY PETE',
@@ -1218,9 +1160,6 @@ export function makeSewerRoster() {
   }];
 }
 
-// =============================================================================
-// PICKPOCKETING
-// =============================================================================
 export const pp = { npc: null, prog: 0, aware: 0, el: null, labelEl: null, progEl: null, awareEl: null, hinted: false };
 export function ppEnsureUI() {
   if (pp.el) return;
@@ -1248,7 +1187,6 @@ export function lootFor(n, mult = 1) {
 export function updatePickpocket(dt) {
   ppEnsureUI();
   const isGuest = hooks.mpIsGuest();
-  // Guests: picked/pickCool are host-authoritative (arriving via npc_looted events).
   if (!isGuest) {
     for (const n of npcs) {
       if (!n.picked) continue;
@@ -1310,9 +1248,9 @@ export function updatePickpocket(dt) {
       }
       pp.prog = 0; pp.aware = 0;
     } else if (pp.prog >= 1) {
-      const mode = hooks.mpNpcLoot(n); // 'local' (single/host) or 'pending' (guest request)
+      const mode = hooks.mpNpcLoot(n);       
       if (mode === 'pending') {
-        pp.prog = 0; pp.aware = 0; // host grant arrives as npc_looted {by: me, cash, item}
+        pp.prog = 0; pp.aware = 0;          
       } else {
         const cash = lootFor(n);
         gameState.cash += cash;
@@ -1337,12 +1275,11 @@ export function updatePickpocket(dt) {
   pp.awareEl.style.width = `${Math.min(100, pp.aware * 100)}%`;
 }
 
-// ---- damage routing: guests request, host applies (kill credit goes to the killer) ----
 export function damageNpc(n, a, y) {
   if (!n) return;
   if (hooks.mpIsGuest()) {
     hooks.mpWorldEvent({ t: 'npc_hit', id: n.id, a, y });
-    n.stunTimer = 0.45; // cosmetic feedback; host stream owns hp/state
+    n.stunTimer = 0.45;       
     const kf = Math.min(16, 5 + a * 0.09);
     n.kvx = (n.kvx || 0) + Math.sin(y) * kf * 0.5;
     n.kvz = (n.kvz || 0) + Math.cos(y) * kf * 0.5;
@@ -1353,9 +1290,6 @@ export function damageNpc(n, a, y) {
   if (dx * dx + dz * dz < 196) crime(a > 40 ? 0.45 : 0.25);
 }
 
-// =============================================================================
-// POLICE
-// =============================================================================
 export const tmpV = new THREE.Vector3();
 let netCopSeq = 0, netPcarSeq = 0;
 
@@ -1454,7 +1388,7 @@ function removeCopCar(car) {
   if (i !== -1) AO.cars.splice(i, 1);
 }
 export function clearWantedLevel() {
-  if (hooks.mpIsGuest()) return; // heat is host-authoritative; guests receive it via the stream
+  if (hooks.mpIsGuest()) return;          
   AO.heat = 0;
   AO.calm = 0;
   AO.spawnT = 4;
@@ -1491,9 +1425,6 @@ export function hurtCop(c, a, creditId) {
   }
 }
 
-// -----------------------------------------------------------------------------
-// Wanted-stars HUD — five spans built once, recoloured only on change.
-// -----------------------------------------------------------------------------
 let _starsEl = null, _starSpans = null, _lastStarCount = -1, _lastStarFlash = null;
 export function updateWantedHud(t) {
   if (!_starsEl || !_starsEl.isConnected) {
@@ -1529,9 +1460,6 @@ export function updateWantedHud(t) {
   }
 }
 
-// =============================================================================
-// CARJACKING — pull the officer out and take the cruiser
-// =============================================================================
 let _promptEl = null, _keyEl = null, _textEl = null;
 let _lastPromptText = '', _lastPromptShown = null;
 function jackPrompt(active, text) {
@@ -1550,7 +1478,6 @@ function jackPrompt(active, text) {
     _lastPromptText = '';
   }
 }
-/** Nearest patrol cruiser close enough (and slow enough) to yank the door open. */
 function nearestJackableCar(maxDist) {
   if (gameState.inCar || meteorDrop.active || under()) return null;
   if (gameState.screen !== 'playing') return null;
@@ -1566,13 +1493,6 @@ function nearestJackableCar(maxDist) {
   return best;
 }
 
-/**
- * A drivable police cruiser. We take a real vehicle record from vehicles.js
- * (correct uid, seat maths, gearbox defaults, occupancy, physics footprint) and
- * replace the donor sports shell with a black-and-white cruiser body carrying
- * doors, wheels, steering, seats and a working light bar. Because it lives in
- * vehicles[], every existing driving/collision/seat system applies for free.
- */
 function buildDrivableCruiser(x, z, yaw, y) {
   const v = buildSportsCar({
     name: 'POLICE CRUISER', bodyHex: 0x0b1220, accentHex: 0xf1f5f9,
@@ -1615,7 +1535,6 @@ function buildDrivableCruiser(x, z, yaw, y) {
   add(0.28, 0.42, 1.32, carbonM, 0, 0.56, 0.06, false);
   add(0.12, 0.14, 2.7, carbonM, -1.04, 0.34, 0, false);
   add(0.12, 0.14, 2.7, carbonM, 1.04, 0.34, 0, false);
-  // White flank stripe (black-and-white livery)
   add(0.03, 0.20, 2.9, panelM, -1.03, 0.60, -0.1, false);
   add(0.03, 0.20, 2.9, panelM, 1.03, 0.60, -0.1, false);
 
@@ -1666,7 +1585,6 @@ function buildDrivableCruiser(x, z, yaw, y) {
     return pivot;
   }
   const doorL = buildDoor(-1), doorR = buildDoor(1);
-  // Static rear doors (4-door shell; rear passengers use the front animation).
   for (const side of [-1, 1]) {
     add(0.12, lowerH, 1.30, panelM, side * 0.96, lowerY, -1.25);
     const rg = new THREE.Mesh(new THREE.PlaneGeometry(1.18, cabinH * 0.6), glassM);
@@ -1675,14 +1593,12 @@ function buildDrivableCruiser(x, z, yaw, y) {
     chassis.add(rg);
   }
 
-  // Light bar
   add(1.34, 0.10, 0.36, carbonM, 0, 1.76, -0.2, false);
   const lr = boxMesh(0.58, 0.17, 0.32, cachedBasic(0xff1f2f));
   lr.position.set(0.33, 1.87, -0.2);
   const lb = boxMesh(0.58, 0.17, 0.32, cachedBasic(0x2f6bff));
   lb.position.set(-0.33, 1.87, -0.2);
   chassis.add(lr, lb);
-  // Push bar, grille, lights
   add(1.9, 0.12, 0.10, chromeM, 0, 0.58, 2.30);
   add(0.10, 0.50, 0.10, chromeM, -0.6, 0.48, 2.30);
   add(0.10, 0.50, 0.10, chromeM, 0.6, 0.48, 2.30);
@@ -1692,13 +1608,11 @@ function buildDrivableCruiser(x, z, yaw, y) {
   add(0.56, 0.14, 0.08, tailM, -0.64, 0.68, -2.24, false);
   add(0.56, 0.14, 0.08, tailM, 0.64, 0.68, -2.24, false);
   add(1.88, 0.22, 0.14, carbonM, 0, 0.36, -2.23, false);
-  // A-pillar spotlight
   const spot = new THREE.Mesh(sharedCylGeo(0.07, 0.09, 0.12, 10), chromeM);
   spot.rotation.z = Math.PI / 2;
   spot.position.set(-0.92, 1.32, 0.86);
   chassis.add(spot);
 
-  // Interior
   add(1.62, 0.15, 0.42, carbonM, 0, 0.97, 0.76, false);
   const laptop = boxMesh(0.30, 0.20, 0.04, cachedMakeMat(0x22d3ee, { emissive: 0x0891b2, emissiveIntensity: 0.8 }));
   laptop.position.set(0.24, 1.10, 0.62);
@@ -1732,7 +1646,6 @@ function buildDrivableCruiser(x, z, yaw, y) {
   }
   chassis.add(steer);
 
-  // Wheels — identical geometry/offsets to the donor so physics matches exactly.
   const tireGeo = sharedCylGeo(0.38, 0.38, 0.28, 18);
   const rimGeo = sharedCylGeo(0.24, 0.24, 0.295, 14);
   [[-0.98, 0.38, 1.38], [0.98, 0.38, 1.38], [-0.98, 0.38, -1.38], [0.98, 0.38, -1.38]]
@@ -1777,7 +1690,6 @@ function carjackCopCar(car) {
   const cx = car.x, cz = car.z, cyaw = car.yaw;
   const cy = car.mesh.position.y;
   const sideX = Math.cos(cyaw), sideZ = -Math.sin(cyaw);
-  // The officer tumbles out of the driver's side and joins the foot chase.
   const ejected = makeCop(cx - sideX * 2.2, cz - sideZ * 2.2);
   if (ejected) {
     ejected.atk = 0.6;
@@ -1805,7 +1717,6 @@ let _jackKeyBound = false;
 function bindCarjackKey() {
   if (_jackKeyBound) return;
   _jackKeyBound = true;
-  // Capture phase so we claim [F] before the generic interact handler.
   window.addEventListener('keydown', (e) => {
     if (e.code !== 'KeyF' || e.repeat) return;
     const tag = e.target && e.target.tagName;
@@ -1819,11 +1730,7 @@ function bindCarjackKey() {
 }
 bindCarjackKey();
 
-// =============================================================================
-// POLICE FRAME
-// =============================================================================
 export function copFrame(dt, t) {
-  // Stolen cruisers keep their light bars running while you drive them.
   for (let i = 0; i < vehicles.length; i++) {
     const v = vehicles[i];
     if (!v.isPolice || !v.lr || !v.lb) continue;
@@ -1832,7 +1739,6 @@ export function copFrame(dt, t) {
     v.lb.visible = !fl;
   }
 
-  // Guests render host police from the world stream; they never simulate.
   if (hooks.mpIsGuest()) {
     hooks.mpGuestCopFrame(dt, t);
     updateWantedHud(t);
@@ -1868,7 +1774,6 @@ export function copFrame(dt, t) {
     }
   }
 
-  // Calm-down & hiding
   AO.calm += dt;
   let nearestAny = 99;
   for (let i = 0; i < AO.cops.length; i++) {
@@ -1888,7 +1793,6 @@ export function copFrame(dt, t) {
   }
   if (pu) AO.heat = Math.max(0, AO.heat - dt * 0.25);
 
-  // Local melee & projectile damage (guest melee arrives via mpMeleeCop -> cop_hit)
   if (player.attackTimer > 0 && !player._copHit && (1 - player.attackTimer / player.attackDuration) >= 0.42) {
     player._copHit = true;
     const fx = Math.sin(player.yaw + Math.PI), fz = Math.cos(player.yaw + Math.PI);
@@ -1918,7 +1822,6 @@ export function copFrame(dt, t) {
     }
   }
 
-  // --- Foot police ---
   for (let i = AO.cops.length - 1; i >= 0; i--) {
     const c = AO.cops[i];
     const { tgt, dist: d } = nearestTo(c.x, c.z);
@@ -1965,7 +1868,6 @@ export function copFrame(dt, t) {
       hitTarget(tgt, 6, 'OFFICER BATON');
     } else if (d < 18 && d > 2.0 && c.shoot <= 0 && Math.abs(py - c.mesh.position.y) < 4 && !isSearching) {
       c.shoot = 1.6 + Math.random() * 0.8;
-      // Tracer originates at the officer's actual muzzle height, not world y=1.3.
       tracer(
         c.x, c.mesh.position.y + 1.3, c.z,
         tgt.x + (Math.random() - 0.5) * 1.2, tgt.y + 1, tgt.z + (Math.random() - 0.5) * 1.2
@@ -1974,7 +1876,6 @@ export function copFrame(dt, t) {
     }
   }
 
-  // --- Police cars ---
   for (let i = AO.cars.length - 1; i >= 0; i--) {
     const c = AO.cars[i];
     const { tgt, dist: d } = nearestTo(c.x, c.z);
@@ -2012,7 +1913,6 @@ export function copFrame(dt, t) {
         if (v) v.speed *= 0.7;
       }
     }
-    // Any player-driven car (local or remote) can wreck a cruiser
     for (let vi = 0; vi < vehicles.length; vi++) {
       const v = vehicles[vi];
       const drivenLocal = gameState.inCar && gameState.activeCarIndex === vi;
@@ -2031,16 +1931,12 @@ export function copFrame(dt, t) {
     }
   }
 
-  // Carjack prompt (runs after player.js has written its own prompt this frame).
   const jack = nearestJackableCar(3.4);
   jackPrompt(Boolean(jack), 'PULL OFFICER OUT & TAKE CRUISER');
 
   updateWantedHud(t);
 }
 
-// =============================================================================
-// SEWER RATS
-// =============================================================================
 export const rats = [];
 export const ratG = sharedBoxGeo(0.22, 0.16, 0.5);
 export const ratTG = sharedBoxGeo(0.03, 0.03, 0.35);
@@ -2115,7 +2011,6 @@ export function ratFrame(dt, t) {
       sfx.tone(1800, 1200, 0.05, 'square', 0.03);
     }
     const localHit = tgt.local && swing && d < 2.6 && (dx * fx + dz * fz) / d > 0.2;
-    // One wiener, one rat — flag it exactly like copFrame flags w.copHit.
     let hitW = null;
     for (let wi = 0; wi < projectileWieners.length; wi++) {
       const w = projectileWieners[wi];
@@ -2131,5 +2026,4 @@ export function ratFrame(dt, t) {
   }
 }
 
-// Register late-bound implementations for lower layers (see state.js).
 Object.assign(hooks, { damageNpc });

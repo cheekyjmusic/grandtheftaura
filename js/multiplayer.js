@@ -1,17 +1,3 @@
-// =============================================================================
-// multiplayer.js — PROTOCOL v2: host-authoritative world + join-order migration.
-//
-//  * ONE simulation: the host runs NPC AI, police, rats, traffic, festival,
-//    destructibles and projectile damage. Guests interpolate an 8Hz world
-//    stream (rendered ~120ms behind) and send intent events.
-//  * Full digest on join / migration: NPC appearance+state, destroyed world
-//    objects, live dynamic pickups, lamps, manholes, gate/safes, traffic flags,
-//    car locks, police, rats, jet, wanted heat, parade lead, pickup id counter.
-//  * Host migration: on host loss every client elects playerOrder's first
-//    surviving joiner. That client re-registers the canonical ...-HOST PeerJS
-//    id (retrying while the old id drains); everyone else reconnects + resyncs.
-//  * All cross-module calls go through state.js hooks (no import cycles).
-// =============================================================================
 import * as THREE from 'three';
 import { AO, MAX_HOTDOG_AMMO, aura, gameState, hooks, keys, lampPosts, manholeOpen, npcs, player, pushFeed, smashableCrates, hazardBarrels, worldPickups } from './state.js';
 import { scene, worldRoot } from './engine.js';
@@ -23,10 +9,10 @@ import { buildNpcMeshRaw, buildSleepZzzGroup, buildCopMesh, buildCopCarMesh, loo
 import { addLeftItemToBag, buildRightWeaponMesh, destroyCrate, destroyBarrel, freeGeo, getNetSeq, removePickupByNetId, setNetSeq, spawnNetWiener, spawnParticles, spawnWorldPickup } from './items.js';
 import { knockOverLamppostBase } from './world.js';
 
-const INTERP_DELAY = 120;      // ms behind the newest snapshot
-const STREAM_MS = 125;         // 8Hz world stream
-const PLAYER_MS = 50;          // 20Hz player state
-const CAR_MS = 80;             // guest-driven car / jet transforms
+const INTERP_DELAY = 120;           
+const STREAM_MS = 125;            
+const PLAYER_MS = 50;             
+const CAR_MS = 80;                  
 
 export const multiplayer = {
   mode: 'single', peer: null, hostConnection: null, connections: new Map(),
@@ -36,13 +22,13 @@ export const multiplayer = {
   migrating: false, grantBypass: -1, worldVersion: 0, lastDigestReq: 0,
   remoteJet: null, remoteJetBuf: null,
 };
-const npcBuf = new Map();      // id -> {p0,p1,t0,t1,row}
-const carBuf = new Map();      // idx -> {p0,p1,t0,t1,row}
-const remoteCops = new Map();  // netId -> {mesh,buf}
-const remotePcars = new Map(); // netId -> {mesh,lr,lb,buf}
-const ratBuf = new Map();      // i -> {p0,p1,t0,t1,dead}
-const pendingPickups = new Map(); // netId -> rec (guest take requests)
-const hitCooldown = new Map(); // targetId -> last hit time
+const npcBuf = new Map();         
+const carBuf = new Map();         
+const remoteCops = new Map();     
+const remotePcars = new Map();    
+const ratBuf = new Map();         
+const pendingPickups = new Map();       
+const hitCooldown = new Map();      
 let lastStreamVersion = -1;
 
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -124,9 +110,6 @@ function currentState() {
     name: isHost() ? 'HOST' : multiplayer.localId,
   };
 }
-// ---------------------------------------------------------------------------
-// Remote player rigs (interpolated, hidden in cars, weapon + name tag)
-// ---------------------------------------------------------------------------
 function makeNameTag(text) {
   const c = document.createElement('canvas'); c.width = 256; c.height = 64;
   const ctx = c.getContext('2d');
@@ -208,9 +191,6 @@ export function updateRemotePlayers(dt) {
     else if (remote.weapon === 'hotdog_shooter') limbs.tpArmR.rotation.x = -1.48;
   }
 }
-// ---------------------------------------------------------------------------
-// NPC flags + digest
-// ---------------------------------------------------------------------------
 const F_SLEEP = 1, F_HOSTILE = 2, F_MOVING = 4, F_FLEE = 8, F_STUN = 16, F_PICKED = 32, F_SEARCH = 64;
 function npcFlags(n) {
   return (n.asleep ? F_SLEEP : 0) | (n.hostile ? F_HOSTILE : 0) | (n.moving ? F_MOVING : 0) |
@@ -316,9 +296,6 @@ function applyDigest(d) {
   else multiplayer.remoteJet = null;
   (d.players || []).forEach(([id, s]) => { if (id !== multiplayer.localId) feedRemoteState(id, s); });
 }
-// ---------------------------------------------------------------------------
-// World stream (host -> guests, 8Hz)
-// ---------------------------------------------------------------------------
 function buildWorldStream() {
   const anchors = [{ x: player.x, z: player.z }];
   for (const r of multiplayer.remotePlayers.values()) anchors.push({ x: r.x || 0, z: r.z || 0 });
@@ -384,7 +361,6 @@ function applyWorldStream(s) {
     if (!v) continue;
     v.isTraffic = !!traffic;
 
-    // Do not overwrite client-predicted positions of locally driven or owned cars
     const owner = multiplayer.carOwners.get(i);
     if ((gameState.inCar && gameState.activeCarIndex === i) || owner === multiplayer.localId) continue;
 
@@ -408,9 +384,6 @@ function applyWorldStream(s) {
     multiplayer.remoteJetBuf = null;
   }
 }
-// ---------------------------------------------------------------------------
-// Guest NPC frame: culling + interpolation + exact pose replication
-// ---------------------------------------------------------------------------
 function guestNpcFrame(dt, elapsed) {
   const renderT = performance.now() - INTERP_DELAY;
   const SPAWN = 82, DESPAWN = 130;
@@ -477,9 +450,6 @@ function guestNpcFrame(dt, elapsed) {
     n.mesh.rotation.y = n.yaw;
   }
 }
-// ---------------------------------------------------------------------------
-// Guest police + rats rendering
-// ---------------------------------------------------------------------------
 function seedCopBuffers(cops, pcars) {
   for (const rc of remoteCops.values()) { worldRoot.remove(rc.mesh); freeGeo(rc.mesh); }
   remoteCops.clear();
@@ -552,15 +522,12 @@ function guestRatFrame(dt, t) {
     if (!r.dead) r.mesh.position.set(r.x, -9 + .1 + Math.abs(Math.sin(t * 14 + r.ph)) * .04, r.z);
   }
 }
-// ---------------------------------------------------------------------------
-// Guest world interpolation (cars + jet), called from main.js
-// ---------------------------------------------------------------------------
 export function updateRemoteWorld(dt, elapsed) {
   if (!isGuest()) return;
   const renderT = performance.now() - INTERP_DELAY;
   for (const [i, b] of carBuf) {
     if (gameState.inCar && gameState.activeCarIndex === i) continue;
-    if (multiplayer.carOwners.get(i) === multiplayer.localId) continue; // skip locally-owned cars
+    if (multiplayer.carOwners.get(i) === multiplayer.localId) continue;    
     const v = vehicles[i];
     if (!v) continue;
     const p = sampleBuf(b, renderT);
@@ -587,9 +554,6 @@ export function updateRemoteWorld(dt, elapsed) {
     hooks.mpJetApplyRemote(null);
   }
 }
-// ---------------------------------------------------------------------------
-// World events: apply locally (idempotent) + route through the host
-// ---------------------------------------------------------------------------
 function grantPickupRec(rec) {
   if (!rec) return;
   if (rec.type === 'right') {
@@ -616,7 +580,6 @@ function applyWorldEvent(ev) {
       const v = vehicles[ev.idx];
       if (v) {
         const owner = multiplayer.carOwners.get(ev.idx);
-        // Apply impulse if this car is unowned locally or driven by this client
         if (!owner || owner === me || (gameState.inCar && gameState.activeCarIndex === ev.idx)) {
           v.velX = (v.velX || 0) + ev.ix;
           v.velZ = (v.velZ || 0) + ev.iz;
@@ -780,7 +743,6 @@ function mpWorldEvent(ev) {
     sendHost({ type: 'wevt', ev });
   }
 }
-// Host receives a guest event: authority-only handlers, then rebroadcast.
 function hostReceiveEvent(id, ev) {
   ev.by = id;
   switch (ev.t) {
@@ -878,9 +840,6 @@ function hostReceiveEvent(id, ev) {
       }
   }
 }
-// ---------------------------------------------------------------------------
-// Damage / awards / targets / car impacts
-// ---------------------------------------------------------------------------
 function mpHitPlayer(id, amount, source) {
   if (!isActive() || !id) return;
   const now = performance.now();
@@ -943,9 +902,6 @@ function mpMeleeRat() {
     }
   }
 }
-// ---------------------------------------------------------------------------
-// Car / jet locks
-// ---------------------------------------------------------------------------
 function broadcastLocks() { broadcast({ type: 'locks', owners: Array.from(multiplayer.carOwners.entries()) }); }
 function mpCarEnter(idx) {
   if (!isActive()) return true;
@@ -993,9 +949,6 @@ function mpJetRenderRemote() {
   if (!j || j.owner === multiplayer.localId) return false;
   return hooks.mpJetApplyRemote(j);
 }
-// ---------------------------------------------------------------------------
-// Host peer plumbing
-// ---------------------------------------------------------------------------
 function attachHostConnection(conn) {
   const id = String(conn.peer || '').split('-').pop();
   if (!id || id === 'HOST') { conn.close(); return; }
@@ -1136,9 +1089,6 @@ function hostData(id, data) {
       break;
   }
 }
-// ---------------------------------------------------------------------------
-// Guest plumbing + migration
-// ---------------------------------------------------------------------------
 export function mpStartGuest(code) {
   if (!window.Peer) { pushFeed('PEERJS COULD NOT LOAD', 'border-l-rose-500'); return; }
   const roomCodeValue = String(code).trim().toUpperCase();
@@ -1326,9 +1276,6 @@ function mpShutdown() {
     setTimeout(() => mpResetConnectionState(), 100);
   }
 }
-// ---------------------------------------------------------------------------
-// Per-frame send loop
-// ---------------------------------------------------------------------------
 export function sendMultiplayerState(now) {
   if (!isActive()) return;
   if (isHost()) {
@@ -1353,9 +1300,6 @@ export function sendMultiplayerState(now) {
     }
   }
 }
-// ---------------------------------------------------------------------------
-// Map dots for remote players
-// ---------------------------------------------------------------------------
 function mpDrawMap(ctx, X, Y) {
   if (!isActive()) return;
   for (const [id, r] of multiplayer.remotePlayers) {
@@ -1369,9 +1313,6 @@ function mpDrawMap(ctx, X, Y) {
     ctx.stroke();
   }
 }
-// ---------------------------------------------------------------------------
-// Boot + hook registration
-// ---------------------------------------------------------------------------
 export function initMultiplayer() {
   const hostBtn = document.getElementById('btn-host-multiplayer');
   const joinBtn = document.getElementById('btn-join-multiplayer');

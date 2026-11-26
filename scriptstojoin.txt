@@ -1,0 +1,3 @@
+World Files - 
+
+@("js\world.js", "js\worldkit.js", "js\worldRuntime.js", "js\worldStream.js", "js\worldObjects\airport.js", "js\worldObjects\buildings.js", "js\worldObjects\estates.js", "js\worldObjects\index.js", "js\worldObjects\keepouts.js", "js\worldObjects\shell.js", "js\worldObjects\towers.js", "js\worldObjects\worldRoads.js", "js\worldObjects\worldTerrain.js") | ForEach-Object { "`n---$_ start---`n"; Get-Content $_; "`n---$_ end---`n" } | Set-Content worldfiles.txt -Encoding UTF8

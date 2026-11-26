@@ -1,24 +1,3 @@
-// =============================================================================
-// items.js — Right-hand weapons, left-hand items, 3D weapon/item mesh builders,
-// projectiles, crates, barrels and pickups.
-//
-// NEW IN THIS REVISION
-// -----------------------------------------------------------------------------
-// • MACHETE — heavy cleaving melee. Wide 150° arc that hits up to four targets
-//   in one swing, severs crates, detonates barrels and topples lampposts.
-//   Extruded steel blade with a real clipped point, honed edge sliver, fuller,
-//   guard, riveted grip and lanyard pommel.
-// • AK-47 — full-auto 7.62 rifle. 30-round curved magazine, 270-round reserve,
-//   [R] reload with a real 2.1 s cycle, auto-reload on a dry trigger, climbing
-//   recoil, heat-based bloom, right-click aim (tighter spread + zoom), pooled
-//   muzzle flash / point light / ejecting brass, tracer rounds with proper
-//   ballistics and impact FX, and a dedicated ammo readout.
-// • Both weapons share cached geometry + materials (marked `shared` so freeGeo
-//   and world rebuilds never dispose them), so equipping costs no GPU churn.
-// • Projectile loop generalised: one update handles wieners AND rifle rounds.
-//   NPC vertical hit bands now use the NPC's real y instead of a hardcoded
-//   0.18, so shots connect on hills, towers, boardwalks and the jungle shelf.
-// =============================================================================
 import * as THREE from 'three';
 import {
   addWorldBox, climb, flashEdge, gameState, hazardBarrels, hooks, inputState, lampPosts,
@@ -188,12 +167,6 @@ export function spawnParticles(x, y, z, colorHex, count = 10, speed = 5.5) {
   }
 }
 
-// =============================================================================
-// SHARED WEAPON RESOURCES
-// Cached geometry + materials. Everything here is marked `shared` so freeGeo()
-// and the world-rebuild disposal pass leave it alone — equipping a weapon
-// repeatedly never allocates or destroys GPU resources.
-// =============================================================================
 const _geoCache = new Map();
 function sharedGeo(key, make) {
   let g = _geoCache.get(key);
@@ -226,17 +199,14 @@ function part(group, geo, mat, x, y, z, rx = 0, ry = 0, rz = 0, cast = true) {
   return m;
 }
 
-// -----------------------------------------------------------------------------
-// MACHETE — extruded high-carbon blade with a clipped point and honed edge
-// -----------------------------------------------------------------------------
 function macheteBladeGeo() {
   return sharedGeo('macheteBlade', () => {
     const s = new THREE.Shape();
     s.moveTo(0.000, 0.000);
     s.lineTo(0.000, 0.795);
-    s.lineTo(0.030, 0.868);   // clipped point
+    s.lineTo(0.030, 0.868);     
     s.lineTo(0.074, 0.742);
-    s.lineTo(0.099, 0.520);   // belly of the edge
+    s.lineTo(0.099, 0.520);       
     s.lineTo(0.089, 0.205);
     s.lineTo(0.070, 0.020);
     s.closePath();
@@ -245,7 +215,7 @@ function macheteBladeGeo() {
       bevelSize: 0.0035, bevelSegments: 1, curveSegments: 2
     });
     g.translate(0, 0, -0.007);
-    g.rotateY(Math.PI / 2);   // flats face ±X, cutting edge faces forward (-Z)
+    g.rotateY(Math.PI / 2);           
     g.computeVertexNormals();
     return g;
   });
@@ -281,22 +251,16 @@ export function buildMacheteModel() {
 
   part(g, macheteBladeGeo(), steel, 0, 0, 0);
   part(g, macheteEdgeGeo(), hone, 0, 0, 0, 0, 0, 0, false);
-  // Fuller groove down the spine
   part(g, boxGeo(0.017, 0.60, 0.012), dark, 0, 0.40, -0.012, 0, 0, 0, false);
-  // Maker's stamp
   part(g, boxGeo(0.016, 0.030, 0.020), brass, 0, 0.10, -0.038, 0, 0, 0, false);
-  // Guard / bolster
   part(g, boxGeo(0.056, 0.026, 0.112), guard, 0, -0.008, -0.036);
   part(g, boxGeo(0.048, 0.020, 0.090), dark, 0, -0.028, -0.034, 0, 0, 0, false);
-  // Grip with a subtle palm swell
   part(g, boxGeo(0.044, 0.108, 0.078), grip, 0, -0.090, -0.032);
   part(g, boxGeo(0.049, 0.070, 0.082), grip, 0, -0.150, -0.030);
   part(g, boxGeo(0.044, 0.060, 0.074), grip, 0, -0.203, -0.028);
-  // Rivets
   for (const ry of [-0.062, -0.122, -0.182]) {
     part(g, cylGeo(0.008, 0.008, 0.052, 8), brass, 0, ry, -0.032, 0, 0, Math.PI / 2, false);
   }
-  // Pommel + lanyard eye
   part(g, boxGeo(0.050, 0.026, 0.086), guard, 0, -0.238, -0.028);
   const eye = new THREE.Mesh(sharedGeo('mchEye', () => new THREE.TorusGeometry(0.014, 0.004, 6, 12)), guard);
   eye.position.set(0, -0.256, -0.028);
@@ -305,9 +269,6 @@ export function buildMacheteModel() {
   return g;
 }
 
-// -----------------------------------------------------------------------------
-// AK-47 — receiver, curved magazine, wood furniture, gas system, sights
-// -----------------------------------------------------------------------------
 export function buildAK47Model() {
   const g = new THREE.Group();
   const steel = weaponMat('akSteel', 0x2b3138, { texType: 'brushedsteel', repeatX: 3, repeatY: 3, metalness: 0.90, roughness: 0.38, flatShading: false });
@@ -317,39 +278,31 @@ export function buildAK47Model() {
   const mag = weaponMat('akMag', 0x3a4048, { texType: 'corrugated', repeatX: 2, repeatY: 3, metalness: 0.72, roughness: 0.48 });
   const bright = weaponMat('akBright', 0xcbd5e1, { texType: 'brushedsteel', metalness: 0.95, roughness: 0.18, flatShading: false });
 
-  // Receiver + dust cover
   part(g, boxGeo(0.076, 0.086, 0.300), steel, 0, 0.020, -0.020);
   part(g, boxGeo(0.070, 0.034, 0.262), blued, 0, 0.076, -0.024);
   part(g, boxGeo(0.074, 0.010, 0.262), bright, 0, 0.094, -0.024, 0, 0, 0, false);
-  // Rear sight block + tangent leaf
   part(g, boxGeo(0.050, 0.024, 0.036), blued, 0, 0.100, 0.052);
   part(g, boxGeo(0.040, 0.010, 0.020), bright, 0, 0.114, 0.052, 0, 0, 0, false);
-  // Charging handle + selector lever
   part(g, boxGeo(0.030, 0.018, 0.048), bright, 0.050, 0.076, 0.014, 0, 0, 0, false);
   part(g, boxGeo(0.012, 0.052, 0.014), bright, 0.043, 0.034, 0.056, 0, 0, -0.30, false);
-  // Magazine well
   part(g, boxGeo(0.062, 0.040, 0.086), blued, 0, -0.038, -0.056);
 
-  // Curved 30-round magazine — four canted segments, the classic AK silhouette
   for (let i = 0; i < 4; i++) {
     const t = i / 3;
     part(g, boxGeo(0.054, 0.072, 0.080 - t * 0.006), mag,
       0, -0.092 - i * 0.062, -0.058 - i * 0.030, -0.20 * i, 0, 0);
   }
   part(g, boxGeo(0.056, 0.014, 0.072), blued, 0, -0.316, -0.150, -0.60, 0, 0, false);
-  // Magazine ribs
   for (let i = 0; i < 3; i++) {
     part(g, boxGeo(0.058, 0.008, 0.010), bright, 0, -0.116 - i * 0.062, -0.096 - i * 0.030, -0.20 * i, 0, 0, false);
   }
 
-  // Pistol grip + trigger group
   part(g, boxGeo(0.050, 0.130, 0.056), woodDark, 0, -0.078, 0.058, 0.30, 0, 0);
   part(g, boxGeo(0.054, 0.018, 0.060), blued, 0, -0.140, 0.078, 0.30, 0, 0, false);
   part(g, boxGeo(0.040, 0.010, 0.070), blued, 0, -0.048, -0.004, 0, 0, 0, false);
   part(g, boxGeo(0.012, 0.036, 0.012), bright, 0, -0.030, 0.004, 0.25, 0, 0, false);
   part(g, boxGeo(0.040, 0.010, 0.014), blued, 0, -0.062, -0.030, 0, 0, 0, false);
 
-  // Wood handguards (lower + upper) with finger grooves
   part(g, boxGeo(0.064, 0.056, 0.200), wood, 0, 0.018, -0.286);
   part(g, boxGeo(0.056, 0.040, 0.180), wood, 0, 0.076, -0.286);
   for (const gz of [-0.246, -0.300]) {
@@ -358,19 +311,16 @@ export function buildAK47Model() {
   part(g, boxGeo(0.070, 0.020, 0.024), blued, 0, 0.048, -0.196, 0, 0, 0, false);
   part(g, boxGeo(0.070, 0.020, 0.024), blued, 0, 0.048, -0.384, 0, 0, 0, false);
 
-  // Barrel, gas tube, gas block
   part(g, cylGeo(0.017, 0.017, 0.430, 12), blued, 0, 0.046, -0.410, Math.PI / 2, 0, 0);
   part(g, cylGeo(0.013, 0.013, 0.210, 10), steel, 0, 0.086, -0.312, Math.PI / 2, 0, 0, false);
   part(g, boxGeo(0.046, 0.052, 0.050), steel, 0, 0.066, -0.398);
   part(g, cylGeo(0.008, 0.008, 0.300, 6), bright, 0, 0.014, -0.400, Math.PI / 2, 0, 0, false);
 
-  // Front sight tower + post, muzzle brake
   part(g, boxGeo(0.038, 0.052, 0.032), blued, 0, 0.084, -0.556);
   part(g, cylGeo(0.006, 0.006, 0.030, 6), bright, 0, 0.110, -0.556, 0, 0, 0, false);
   part(g, cylGeo(0.024, 0.022, 0.062, 12), steel, 0, 0.046, -0.628, Math.PI / 2, 0, 0);
   part(g, cylGeo(0.019, 0.019, 0.010, 12), blued, 0, 0.046, -0.660, Math.PI / 2, 0, 0, false);
 
-  // Buttstock, tang, buttplate, sling eyes
   part(g, boxGeo(0.050, 0.056, 0.070), steel, 0, 0.014, 0.152);
   part(g, boxGeo(0.056, 0.092, 0.230), wood, 0, -0.004, 0.290, -0.055, 0, 0);
   part(g, boxGeo(0.060, 0.108, 0.022), blued, 0, -0.018, 0.404, -0.055, 0, 0);
@@ -382,9 +332,6 @@ export function buildAK47Model() {
   return g;
 }
 
-// =============================================================================
-// WORLD PICKUPS
-// =============================================================================
 export function buildPickupMesh(type, id) {
   const g = new THREE.Group();
   let color = 0xf59e0b;
@@ -452,11 +399,6 @@ export function buildPickupMesh(type, id) {
   return g;
 }
 
-// Deterministic network ids: every client builds static entities in the same
-// order, so the shared counter produces identical ids everywhere. Dynamic
-// (loot/drop) pickups are allocated by the HOST only; guests receive the id in
-// the event (opts.netId) and never advance their counter for them. On host
-// migration the digest carries the host's counter (setNetSeq).
 let netSeq = 0;
 export function getNetSeq() { return netSeq; }
 export function setNetSeq(v) { netSeq = Math.max(netSeq, v | 0); }
@@ -473,7 +415,6 @@ export function spawnWorldPickup(type, id, x, y, z, opts = {}) {
   return rec;
 }
 
-/** Grant a right-hand weapon (used by loot, Studio tooling and the field cache). */
 export function grantRightWeapon(id, { equip = false, announce = true } = {}) {
   if (!RIGHT_WEAPONS[id]) return false;
   if (!gameState.rightWeapons.includes(id)) gameState.rightWeapons.push(id);
@@ -486,7 +427,6 @@ export function grantRightWeapon(id, { equip = false, announce = true } = {}) {
   return true;
 }
 
-// Smashable wooden crate. pos = floor point under the crate; rot/scale optional (Studio entities).
 export function spawnSmashCrate(x, y, z, loot = null, opts = {}) {
   const holder = new THREE.Group();
   holder.position.set(x, y, z);
@@ -506,7 +446,6 @@ export function spawnSmashCrate(x, y, z, loot = null, opts = {}) {
   return rec;
 }
 
-// Explosive hazard barrel. Same pos/rot/scale convention as crates.
 export function spawnHazardBarrel(x, y, z, opts = {}) {
   const holder = new THREE.Group();
   holder.position.set(x, y, z);
@@ -525,7 +464,6 @@ export function spawnHazardBarrel(x, y, z, opts = {}) {
   return rec;
 }
 
-// ---- Shared destruction helpers (used by melee, projectiles and net events) ----
 export function destroyCrate(rec, spawnLoot) {
   const i = smashableCrates.indexOf(rec);
   if (i < 0) return null;
@@ -560,9 +498,6 @@ export function removePickupByNetId(netId) {
   return rec;
 }
 
-// =============================================================================
-// PROJECTILE MESHES
-// =============================================================================
 function makeWienerMesh() {
   const wGroup = new THREE.Group();
   const wienerMesh = new THREE.Mesh(
@@ -586,7 +521,6 @@ function makeTracerMesh() {
   return g;
 }
 
-/** Visual-only networked projectile (damage is resolved by the host's copy). */
 export function spawnNetWiener(x, y, z, vx, vy, vz, by, kind = 'wiener') {
   const mesh = kind === 'bullet' ? makeTracerMesh() : makeWienerMesh();
   mesh.position.set(x, y, z);
@@ -594,9 +528,6 @@ export function spawnNetWiener(x, y, z, vx, vy, vz, by, kind = 'wiener') {
   projectileWieners.push({ mesh, x, y, z, vx, vy, vz, life: kind === 'bullet' ? 1.8 : 3.2, by, kind, net: true });
 }
 
-// =============================================================================
-// HELD WEAPON MESHES
-// =============================================================================
 export function buildRightWeaponMesh(id) {
   const g = new THREE.Group();
   if (id === 'bat') {
@@ -674,9 +605,6 @@ export function buildLeftItemMesh(id) {
   return g;
 }
 
-// =============================================================================
-// AK-47 — ammo, reload, recoil, muzzle FX, brass, HUD
-// =============================================================================
 export const AK47_MAG_SIZE = 30;
 export const AK47_START_RESERVE = 270;
 const AK47_RELOAD_TIME = 2.1;
@@ -742,7 +670,6 @@ function finishAK47Reload() {
   if (hooks.updateHUD) hooks.updateHUD();
 }
 
-// --- Pooled muzzle flash + light + brass (survive world rebuilds) -------------
 let muzzleRig = null, muzzleLight = null;
 function ensureMuzzleRig() {
   if (!muzzleRig) {
@@ -811,7 +738,6 @@ function stepBrass(dt) {
   }
 }
 
-// --- Ammo readout -------------------------------------------------------------
 const akHud = { el: null, mag: null, res: null, fill: null, hint: null, lastMag: -1, lastRes: -1, lastState: '' };
 function ensureAkHud() {
   if (akHud.el) return;
@@ -918,7 +844,6 @@ function fireAK47Round() {
     life: 1.8, by: hooks.mpLocalId()
   });
 
-  // Muzzle flash + light
   const rig = ensureMuzzleRig();
   rig.visible = true;
   rig.position.copy(_akMuzzle);
@@ -932,7 +857,6 @@ function fireAK47Round() {
   ejectBrass(_akMuzzle.x - _akDir.x * 0.55, _akMuzzle.y + 0.04, _akMuzzle.z - _akDir.z * 0.55, player.yaw);
   if (ak.burst % 6 === 0) spawnParticles(_akMuzzle.x, _akMuzzle.y, _akMuzzle.z, 0x9ca3af, 2, 1.4);
 
-  // Recoil: real climb the player has to fight, plus a visual kick.
   ak.kick = Math.min(2.4, ak.kick + 0.62);
   ak.heat = Math.min(1, ak.heat + 0.11);
   ak.burst++;
@@ -951,9 +875,6 @@ function fireAK47Round() {
   return true;
 }
 
-// =============================================================================
-// MACHETE — wide cleaving arc
-// =============================================================================
 function macheteCleave(w) {
   const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
   const reach = w.reach, reach2 = reach * reach;
@@ -962,7 +883,6 @@ function macheteCleave(w) {
 
   sfx.tone(2500, 780, 0.10, 'sawtooth', 0.030);
 
-  // People — up to `cleave` targets inside a ~150° arc.
   const maxTargets = w.cleave || 3;
   for (let i = 0; i < npcs.length && hits < maxTargets; i++) {
     const npc = npcs[i];
@@ -986,7 +906,6 @@ function macheteCleave(w) {
     ak.kick = Math.min(2.0, ak.kick + 0.35);
   }
 
-  // Crates — the blade goes through the whole stack in one sweep.
   for (let i = smashableCrates.length - 1; i >= 0; i--) {
     const c = smashableCrates[i];
     const dx = c.x - player.x, dz = c.z - player.z;
@@ -1005,7 +924,6 @@ function macheteCleave(w) {
     hits++;
   }
 
-  // Barrels — one stroke sets them off.
   for (let i = hazardBarrels.length - 1; i >= 0; i--) {
     const b = hazardBarrels[i];
     const dx = b.x - player.x, dz = b.z - player.z;
@@ -1018,7 +936,6 @@ function macheteCleave(w) {
     hits++;
   }
 
-  // Lampposts — sheared off at the base.
   for (const lp of lampPosts) {
     if (lp.state !== 'standing') continue;
     const dx = lp.x - player.x, dz = lp.z - player.z;
@@ -1046,7 +963,6 @@ function detonateBarrel(b) {
   pushFeed('HAZARD BARREL DETONATED!', 'border-l-orange-500');
 }
 
-/** Light prop strikes for the other melee weapons (bat / crowbar / pipe / fists). */
 function meleePropStrike(w) {
   const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
   const reach = w.reach, reach2 = reach * reach;
@@ -1075,11 +991,6 @@ function meleePropStrike(w) {
   }
 }
 
-// =============================================================================
-// PER-FRAME WEAPON SYSTEMS
-// Driven from updateProjectileWieners(), which player.js ticks every frame after
-// the camera has been posed — so recoil and aim zoom apply cleanly on top.
-// =============================================================================
 let arsenalAnnounced = false;
 function ensureArsenal() {
   if (gameState.screen !== 'playing') return;
@@ -1104,15 +1015,12 @@ function stepWeaponSystems(dt) {
     || gameState.inventoryOpen || gameState.mapOpen || gameState.settingsOpen
     || meteorDrop.active || player.mantle.active || climb.on;
 
-  // --- melee impact resolution ---
   if (player.attackTimer <= 0) {
     player._cleaveApplied = false;
     player._propStrike = false;
   } else if (!blocked) {
     const progress = 1 - player.attackTimer / Math.max(0.001, player.attackDuration);
     if (w.id === 'machete') {
-      // Fires before the NPC module's own single-target pass so the cleave
-      // owns the whole swing and nothing is damaged twice.
       if (!player._cleaveApplied && progress >= 0.30) {
         player._cleaveApplied = true;
         player._npcHit = true;
@@ -1125,7 +1033,6 @@ function stepWeaponSystems(dt) {
     }
   }
 
-  // --- AK-47 ---
   const wasEquipped = ak.equipped;
   ak.equipped = w.id === 'ak47';
   if (ak.equipped !== wasEquipped) {
@@ -1162,7 +1069,6 @@ function stepWeaponSystems(dt) {
     }
     if (!inputState.isPrimaryFireHeld) ak.burst = 0;
 
-    // Shoulder-aim zoom. Own accumulator so it never fights the base FOV lerp.
     if (!gameState.inCar && !meteorDrop.active) {
       const wantFov = gameState.isAiming ? 46 : 72;
       ak.fov += (wantFov - ak.fov) * Math.min(1, dt * 12);
@@ -1172,7 +1078,6 @@ function stepWeaponSystems(dt) {
       }
       ak.fovActive = true;
     }
-    // Visual recoil kick on top of the already-posed camera.
     if (ak.kick > 0.002) {
       camera.rotation.x += ak.kick * 0.016;
       camera.rotation.z += (Math.random() - 0.5) * ak.kick * 0.008;
@@ -1182,7 +1087,6 @@ function stepWeaponSystems(dt) {
     ak.fov = 72;
   }
 
-  // --- muzzle flash decay ---
   if (muzzleTimer > 0) {
     muzzleTimer -= dt;
     if (muzzleLight) muzzleLight.intensity *= Math.max(0, 1 - dt * 22);
@@ -1195,9 +1099,6 @@ function stepWeaponSystems(dt) {
   updateAkHud();
 }
 
-// =============================================================================
-// PROJECTILES — wieners and rifle rounds share one authoritative loop
-// =============================================================================
 export function fireBallisticWiener() {
   if (gameState.hotdogAmmo <= 0) {
     sfx.uiClick();
@@ -1233,7 +1134,7 @@ export function fireBallisticWiener() {
 export function updateProjectileWieners(dt) {
   stepWeaponSystems(dt);
 
-  const authority = !hooks.mpIsGuest(); // host + singleplayer resolve damage; guests get FX only
+  const authority = !hooks.mpIsGuest();          
   const akDamage = RIGHT_WEAPONS.ak47.damage;
 
   for (let i = projectileWieners.length - 1; i >= 0; i--) {
@@ -1250,7 +1151,6 @@ export function updateProjectileWieners(dt) {
 
     let impacted = false;
 
-    // --- NPCs (vertical band uses the NPC's real height, not a constant) ---
     for (let n = 0; n < npcs.length; n++) {
       const npc = npcs[n];
       if (!npc.spawned || npc.asleep) continue;
@@ -1280,7 +1180,6 @@ export function updateProjectileWieners(dt) {
       break;
     }
 
-    // --- Crates ---
     if (!impacted) {
       for (let c = smashableCrates.length - 1; c >= 0; c--) {
         const cr = smashableCrates[c];
@@ -1319,7 +1218,6 @@ export function updateProjectileWieners(dt) {
       }
     }
 
-    // --- Barrels ---
     if (!impacted) {
       for (let b = hazardBarrels.length - 1; b >= 0; b--) {
         const br = hazardBarrels[b];
@@ -1343,7 +1241,6 @@ export function updateProjectileWieners(dt) {
       }
     }
 
-    // --- Lampposts ---
     if (!impacted) {
       for (const lp of lampPosts) {
         if (lp.state !== 'standing') continue;
@@ -1359,7 +1256,6 @@ export function updateProjectileWieners(dt) {
       }
     }
 
-    // --- Remote players (host resolves; the victim's client applies via 'hit') ---
     if (!impacted && authority) {
       for (const t of hooks.mpTargets()) {
         if (t.inCar) continue;
@@ -1374,7 +1270,6 @@ export function updateProjectileWieners(dt) {
       }
     }
 
-    // --- Ground & static geometry ---
     if (!impacted) {
       if (w.y <= 0.18) {
         impacted = true;
@@ -1414,9 +1309,6 @@ export function updateProjectileWieners(dt) {
   }
 }
 
-// =============================================================================
-// LEFT-HAND ITEMS
-// =============================================================================
 export function useLeftHandItem(slotIndex = gameState.activeLeftSlot) {
   const slot = gameState.leftHotbar[slotIndex];
   if (!slot) return;
@@ -1489,7 +1381,6 @@ export function dropLeftSlot(slotIndex) {
   const fwdZ = -Math.cos(player.yaw);
   const dx = player.x + fwdX * 1.4, dz = player.z + fwdZ * 1.4;
   if (hooks.mpIsGuest()) {
-    // Host allocates the network id and spawns it for everyone (incl. us).
     hooks.mpWorldEvent({ t: 'pickup_drop', type: 'left', id: slot.id, x: dx, y: player.y, z: dz });
   } else {
     const rec = spawnWorldPickup('left', slot.id, dx, player.y, dz);
@@ -1503,7 +1394,6 @@ export function dropLeftSlot(slotIndex) {
   if (gameState.inventoryOpen) hooks.renderInventoryModal();
 }
 
-// Pure visual builders (no registration) used by Studio previews and entity tabs.
 export function buildCrateMesh() {
   const holder = new THREE.Group();
   const mesh = new THREE.Mesh(boxGeo(1.05, 1.05, 1.05), crateMat);

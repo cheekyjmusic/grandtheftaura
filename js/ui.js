@@ -1,6 +1,3 @@
-// =============================================================================
-// ui.js — HUD updates, top-left bars, minimap, modals, save/load JSON and DOM button bindings (call initUI() once from main.js).
-// =============================================================================
 import * as THREE from 'three';
 import { AO, MAX_HOTDOG_AMMO, ahRz, aura, gameState, hooks, inputState, manholes, mapShapes, meteorDrop, npcs, player, pushFeed, riverX, roadC, sausageRefillZones, under } from './state.js';
 import { applyGraphicsTier, canvas, meteorGroup, meteorReticle, renderer, scene } from './engine.js';
@@ -19,7 +16,6 @@ function setDisp(el, v) { if (el && _disp.get(el) !== v) { _disp.set(el, v); el.
 function setAttr(el, k, v) { const m = _attr.get(el) || {}; if (m[k] !== v) { m[k] = v; _attr.set(el, m); el.setAttribute(k, v); } }
 function setWidth(el, v) { if (el && el.__w !== v) { el.__w = v; el.style.width = v; } }
 
-// ---- 1. Real Top-Down Satellite Map Snapshot Generator ----
 let satelliteMapCanvas = null;
 const MAP_WORLD = { minX: -720, maxX: 560, minZ: -600, maxZ: 340 };
 
@@ -77,7 +73,6 @@ export function captureSatelliteSnapshot() {
   }
 }
 
-// ---- 4. Crosshair Hitmarkers ----
 export function triggerHitmarker(isKill = false) {
   let hm = document.getElementById('crosshair-hitmarker');
   if (!hm) {
@@ -110,7 +105,6 @@ export function triggerHitmarker(isKill = false) {
 }
 hooks.triggerHitmarker = triggerHitmarker;
 
-// ---- 3. Animated Cash Delta Popups ----
 let lastCashVal = null;
 function checkCashDelta() {
   const currentCash = gameState.cash;
@@ -138,7 +132,6 @@ function spawnCashPopup(diff) {
   }
 }
 
-// ---- 5. GTA-Style District / Biome Fade-In Banner ----
 let lastZoneName = null;
 function checkZoneChange() {
   const currentZone = gameState.zoneName;
@@ -381,7 +374,6 @@ export function cycleRightWeapon(dir = 1) {
   showWeaponWheel();
 }
 
-// ---- 1 & 2. Satellite Top-Down Render & Rotating Minimap + Perimeter N Marker ----
 export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
   if (!satelliteMapCanvas && renderer && scene) {
     captureSatelliteSnapshot();
@@ -395,7 +387,6 @@ export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
   const scale = centerOnPlayer ? 0.65 : 0.38;
 
   if (centerOnPlayer) {
-    // ROTATING HUD MINIMAP
     const cx = W / 2;
     const cy = H / 2;
 
@@ -447,7 +438,6 @@ export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
 
     ctx.restore();
 
-    // Player cone straight UP at center
     ctx.save();
     ctx.translate(cx, cy);
     ctx.beginPath();
@@ -466,9 +456,8 @@ export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
     ctx.stroke();
     ctx.restore();
 
-    ctx.restore(); // end circular clip
+    ctx.restore();    
 
-    // Perimeter North (N) Indicator
     const R = W / 2 - 11;
     const nAngle = -Math.PI / 2 - player.yaw;
     const nx = cx + Math.cos(nAngle) * R;
@@ -494,7 +483,6 @@ export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
     if (northEl) northEl.style.display = 'none';
 
   } else {
-    // FULL-SCREEN PHONE MAP (NORTH-UP)
     const cx = W / 2;
     const cy = H / 2;
     const refX = -29;
@@ -898,7 +886,6 @@ export function renderMapCanvas(cv, center) {
   hooks.mpDrawMap(ctx, X, Y);
 }
 
-/** Attach all DOM / window listeners. Call once from main.js (never from Studio). */
 export function initUI() {
   buildAuraUI();
 
@@ -998,5 +985,4 @@ export function initUI() {
   };
 }
 
-// Register late-bound implementations for lower layers (see state.js).
 Object.assign(hooks, { updateHUD, cycleRightWeapon, setScreen, openInventoryModal, closeInventoryModal, renderInventoryModal, closeSettingsModal, openMapModal, closeMapModal, triggerHitmarker });

@@ -1,41 +1,3 @@
-// =============================================================================
-// player.js — First/third person rigs, movement, parkour mantling, meteor drop,
-// combat triggers, SWIMMING / WADING / DIVING integration and the per-frame
-// simulation step.
-//
-// WATER UPDATE:
-//   • water.js owns buoyancy, currents and oxygen while swimming — the normal
-//     walk/gravity branch yields to it (no fighting).
-//   • DIVING IS NOW GUARANTEED: player.js feeds the mouse pitch into the swim
-//     sim, force-activates swimming in deep water, and runs a vertical steering
-//     pass AFTER the water tick. Look down + [W] (or hold [C]) descends all the
-//     way to the seabed; look up + [W] / [SPACE] surfaces. The pass REPLACES the
-//     water tick's vertical delta while you command it, so the two systems can
-//     never cancel each other out at the surface.
-//   • Wading respects the real seabed, scales speed with depth and drifts with
-//     the current.
-//   • Full procedural swim animation set: freestyle stroke + flutter kick,
-//     sprint stroke, streamlined dive + dolphin kick, treading-water scull,
-//     wave-synced bob, breathing head turn, first-person stroke arms & roll.
-//   • Oxygen HUD readout, low-O₂ warning, drowning damage, splashdown meteors,
-//     swim-aware camera (follows you underwater), climb-out mantling.
-//
-// COMBAT AUDIO:
-//   • Recorded punch1/2/3.mp3 cycle on every fist swing (replaces the synth
-//     whoosh); hurt.mp3 replaces the synthesized damage grunt.
-//
-// METEOR:
-//   • The flame trail is a real textured plume (assets/textures/flame.png,
-//     887×1774 — narrow tip at the top of the image, wide base at the bottom).
-//     Two crossed additive planes stream BEHIND the velocity vector, stretch
-//     with dive speed and flicker every frame.
-//
-// HARD LANDINGS:
-//   • Falling from roughly twice a house height (~7.6 m) breaks your legs
-//     momentarily: you collapse, writhe, then push yourself up slowly while
-//     shaking your head and pressing a hand to it. Movement, jumping, mantling
-//     and attacks are locked until you are back on your feet.
-// =============================================================================
 import * as THREE from 'three';
 import { levelData } from './levelData.js';
 import { MAX_HOTDOG_AMMO, SFY, WORLD_BOUNDS, aura, aviationBeacons, biomeAt, climb, collidesHorizontally, computeSupportFloor, enterableZones, flashEdge, gameState, hazardBarrels, hooks, inputState, isInWater, keys, lampPosts, manholeCovers, manholeOpen, manholes, meteorDrop, npcs, particleBursts, player, pushFeed, sausageRefillZones, sewerLights, skyscrapers, smashableCrates, surfaceGrip, terrainH, under, worldBoxes, worldPickups } from './state.js';
@@ -55,10 +17,6 @@ function clampMeteorPosition(x, z) {
   };
 }
 
-// =============================================================================
-// RECORDED COMBAT AUDIO — small round-robin HTMLAudio pools so rapid punches
-// overlap cleanly instead of cutting each other off.
-// =============================================================================
 function makeSfxPool(src, size = 3, volume = 0.8) {
   const pool = [];
   for (let i = 0; i < size; i++) {
@@ -75,7 +33,7 @@ function makeSfxPool(src, size = 3, volume = 0.8) {
       a.currentTime = 0;
       const p = a.play();
       if (p && p.catch) p.catch(() => {});
-    } catch (e) { /* autoplay blocked until first gesture — safe to ignore */ }
+    } catch (e) {            }
   };
 }
 const punchSfx = [
@@ -87,12 +45,6 @@ let punchSfxCursor = 0;
 function playPunchSfx() { punchSfx[punchSfxCursor++ % punchSfx.length](); }
 const playHurtSfx = makeSfxPool('assets/audio/hurt.mp3', 2, 0.9);
 
-// =============================================================================
-// METEOR FLAME — textured plume from assets/textures/flame.png (887×1774).
-// Image top = narrow tip, image bottom = wide base. The plane's +Y end carries
-// the tip; the rig is rotated so +Y trails along -Z (behind the velocity), with
-// the wide base hugging the core.
-// =============================================================================
 const flameTexture = loadTexture('assets/textures/flame.png');
 flameTexture.colorSpace = THREE.SRGBColorSpace;
 flameTexture.wrapS = THREE.ClampToEdgeWrapping;
@@ -104,12 +56,12 @@ const flameMat = new THREE.MeshBasicMaterial({
 const meteorFlame = new THREE.Group();
 const meteorFlamePlanes = [];
 {
-  const FW = 2.3, FL = 4.6; // source aspect 887:1774 ≈ 1:2
+  const FW = 2.3, FL = 4.6;      
   const flameGeo = new THREE.PlaneGeometry(FW, FL);
-  flameGeo.translate(0, FL / 2, 0); // wide base at local origin, tip at +Y
+  flameGeo.translate(0, FL / 2, 0);         
   for (const spin of [0, Math.PI / 2]) {
     const wrap = new THREE.Group();
-    wrap.rotation.x = -Math.PI / 2; // +Y (tip) → -Z (trailing behind motion)
+    wrap.rotation.x = -Math.PI / 2;        
     const plane = new THREE.Mesh(flameGeo, flameMat);
     plane.rotation.y = spin;
     plane.renderOrder = 5;
@@ -121,7 +73,6 @@ const meteorFlamePlanes = [];
   meteorGroup.add(meteorFlame);
 }
 
-// Procedural woven cloth textures (shared across clothing materials only)
 const clothTextures = (() => {
   const size = 128;
   const weaveCanvas = document.createElement('canvas');
@@ -137,19 +88,16 @@ const clothTextures = (() => {
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const idx = (y * size + x) * 4;
-      // Tight twill/canvas cross-weave pattern + subtle organic fiber grain
       const warp = Math.sin((x / 4) * Math.PI * 2);
       const weft = Math.sin((y / 4) * Math.PI * 2);
       const twill = Math.sin(((x + y) / 8) * Math.PI * 2) * 0.35;
       const grain = (Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1;
       const thread = (warp * 0.4 + weft * 0.4 + twill) * 0.5 + (grain - 0.5) * 0.18;
-      // Albedo stays bright (222..255) so material.color tints cleanly without darkening
       const albedoVal = Math.max(215, Math.min(255, Math.round(238 + thread * 17)));
       wImg.data[idx] = albedoVal;
       wImg.data[idx + 1] = albedoVal;
       wImg.data[idx + 2] = albedoVal;
       wImg.data[idx + 3] = 255;
-      // Higher-contrast height value for bump/roughness maps
       const bumpVal = Math.max(0, Math.min(255, Math.round(128 + thread * 95)));
       bImg.data[idx] = bumpVal;
       bImg.data[idx + 1] = bumpVal;
@@ -210,7 +158,6 @@ spotLight.visible = false;
 fpLeft.itemMount.add(spotLight);
 fpLeft.itemMount.add(spotLight.target);
 
-// 3rd-Person Articulated Character Rig (Olympic Sprinter & Jump Ready)
 export function buildPlayerRigMesh(params = {}) {
   const toHex = (c, d) => (c === undefined || c === null || c === '') ? d : (typeof c === 'number' ? c : new THREE.Color(c).getHex());
   const bodyColor = toHex(params.bodyColor, 0x1e293b);
@@ -299,11 +246,6 @@ export function syncEquippedMeshes() {
   spotLight.visible = Boolean(gameState.flashlightOn && lSlot && lSlot.id === 'flashlight');
 }
 
-// =============================================================================
-// HARD LANDINGS — broken legs state machine
-// =============================================================================
-// A suburban house wall in world.js is ~3.6–4.0 m; "double the height of the
-// houses" ≈ 7.6 m. Anything past that buckles the legs on touchdown.
 const LEG_BREAK_FALL = 7.6;
 const legBreak = { active: false, t: 0, dur: 3.6, severity: 0.5 };
 function triggerLegBreak(fallDist) {
@@ -326,7 +268,6 @@ function clearLegBreak() {
   legBreak.active = false;
   legBreak.t = 0;
 }
-/** k = how "lying down" the body is (1 = flat on the ground, 0 = standing). */
 function legBreakPose() {
   const t = legBreak.t, d = legBreak.dur;
   const downT = 0.4, riseLen = 1.5, riseStart = d - riseLen;
@@ -337,9 +278,6 @@ function legBreakPose() {
   return { k: 1 - ease, phase: 'rise', riseK: ease };
 }
 
-// =============================================================================
-// SWIMMING — shared helpers
-// =============================================================================
 let wasSwimming = false;
 let swimO2Warned = false;
 let swimDrownT = 0;
@@ -353,7 +291,6 @@ function swimDiveHeld() {
 function swimSprintHeld() {
   return Boolean(keys['ShiftLeft'] || keys['ShiftRight']);
 }
-/** Hard-reset swim posture/state (respawn, teleport, studio rebuild). */
 function clearSwimPosture() {
   swimState.active = false;
   swimState.submerged = false;
@@ -371,13 +308,6 @@ function clearSwimPosture() {
   camera.rotation.z = 0;
 }
 
-/**
- * GUARANTEED DIVE / SURFACE STEERING.
- * Runs immediately AFTER the water tick every frame. While the player commands
- * a vertical direction, this pass REPLACES the water tick's vertical delta
- * (never adds to it), so buoyancy can never pin you to the surface. When idle
- * underwater it holds depth; when idle at the surface it defers to water.js.
- */
 function steerSwimVertical(dt, elapsed, yBeforeWater) {
   if (player.mantle.active || climb.on) return;
   const wb = getWaterBodyAt(player.x, player.z);
@@ -388,7 +318,7 @@ function steerSwimVertical(dt, elapsed, yBeforeWater) {
   const bed = bedRaw !== null ? bedRaw : surf - 6;
   const fwd = Boolean(keys['KeyW'] || keys['ArrowUp']);
   const back = Boolean(keys['KeyS'] || keys['ArrowDown']);
-  const pitch = player.pitch; // negative = looking down in this codebase
+  const pitch = player.pitch;        
   const wantDive = swimDiveHeld() || (fwd && pitch < -0.18) || (back && pitch > 0.35);
   const wantSurface = Boolean(keys['Space']) || (fwd && pitch > 0.18) || (back && pitch < -0.35);
   const waterDy = player.y - yBeforeWater;
@@ -396,7 +326,7 @@ function steerSwimVertical(dt, elapsed, yBeforeWater) {
   if (wantDive && !wantSurface) {
     const speed = swimSprintHeld() ? 4.8 : 3.3;
     swimState.vy += (-speed - swimState.vy) * Math.min(1, dt * 8);
-    dy = swimState.vy * dt; // replace — buoyancy must not fight the dive
+    dy = swimState.vy * dt;         
   } else if (wantSurface && !wantDive) {
     const nearSurface = player.y >= surf - 0.62;
     const target = nearSurface ? 0.6 : 3.1;
@@ -407,26 +337,16 @@ function steerSwimVertical(dt, elapsed, yBeforeWater) {
       swimState.vy = Math.min(swimState.vy, 0.4);
     }
   } else if (swimState.submerged) {
-    // Gliding / treading underwater: hold depth instead of popping back up.
     swimState.vy *= Math.pow(0.2, dt);
     dy = THREE.MathUtils.clamp(waterDy, -0.5 * dt, 0.45 * dt);
   }
   player.y = THREE.MathUtils.clamp(yBeforeWater + dy, bed + 0.32, surf + 0.45);
-  // Submersion is decided by where the head actually is, so oxygen, the HUD,
-  // the underwater camera and the swim animation all agree with what you see.
   const headY = player.y + 1.05;
   swimState.submerged = headY < surf - 0.06;
   if (!swimState.submerged && swimState.vy > 0 && player.y >= surf - 0.62) swimState.vy = 0;
   swimState.pitch = pitch;
 }
 
-/**
- * Third-person swim animation. Every channel is driven by swimState (the real
- * buoyancy sim): strokePhase sets the cadence, swimState.yaw faces the actual
- * velocity INCLUDING current drift, submersion + camera pitch select the body
- * angle so the swimmer points where the mouse aims, and the sampled wave
- * height bobs the body on the swell.
- */
 function animateSwimRig(dt, elapsed) {
   const wb = getWaterBodyAt(player.x, player.z);
   const wave = wb ? sampleOceanWave(player.x, player.z, elapsed, wb.waveScale) : 0;
@@ -434,21 +354,17 @@ function animateSwimRig(dt, elapsed) {
   const moving = swimInputActive();
   const sprinting = moving && swimSprintHeld();
   const lookPitch = THREE.MathUtils.clamp(swimState.pitch || 0, -1, 1);
-  // Descending = mouse pointed down (or optional C). No key needed to dive.
   const descending = swimState.vy < -1.1 || swimDiveHeld();
   const diving = swimState.submerged && descending;
   const ascending = swimState.vy > 1.2 || Boolean(keys['Space']);
   const amp = moving ? (sprinting ? 1.3 : 1.0) : 0.5;
   const blend = Math.min(1, dt * 9);
-  // Rig floats with the swell; -Z is the rig's face, swim yaw is +Z convention.
   tpRig.position.set(
     player.x,
     player.y - 0.12 + wave * 0.5 + Math.sin(ph * 2) * 0.03 * amp,
     player.z
   );
   tpRig.rotation.y = swimState.yaw + Math.PI;
-  // Body angle follows the mouse while submerged: look down → head-down glide,
-  // look up → angled ascent; freestyle at the surface, upright when treading.
   let targetPitch;
   if (diving) targetPitch = -1.66;
   else if (swimState.submerged && moving) targetPitch = THREE.MathUtils.clamp(-1.30 + lookPitch * 0.85, -1.9, -0.55);
@@ -456,15 +372,13 @@ function animateSwimRig(dt, elapsed) {
   else if (moving) targetPitch = -1.34;
   else targetPitch = -0.40;
   tpHip.rotation.x += (targetPitch - tpHip.rotation.x) * blend;
-  tpHip.rotation.z = Math.sin(ph) * 0.17 * amp;          // body roll per stroke
+  tpHip.rotation.z = Math.sin(ph) * 0.17 * amp;              
   tpHip.position.y = 0.90;
   tpHip.scale.y = 1;
   tpTorso.rotation.y = Math.sin(ph) * 0.14 * amp;
-  // Side-breath head turn while stroking at the surface.
   tpHead.rotation.y = (!swimState.submerged && moving) ? Math.sin(ph) * 0.38 : 0;
   tpHead.rotation.x = diving ? 0.25 : 0;
   if (diving) {
-    // Streamlined glide: arms swept forward, unified dolphin kick.
     const kick = Math.sin(ph * 1.4);
     tpArmL.rotation.set(1.95 + kick * 0.12, 0, -0.12);
     tpArmR.rotation.set(1.95 - kick * 0.12, 0, 0.12);
@@ -475,7 +389,6 @@ function animateSwimRig(dt, elapsed) {
     tpKneeL.rotation.x = 0.18 + Math.max(0, -kick) * 0.2;
     tpKneeR.rotation.x = 0.18 + Math.max(0, -kick) * 0.2;
   } else if (moving) {
-    // Freestyle: alternating over-arm recovery, bent catch, flutter kick.
     const l = Math.sin(ph), r = Math.sin(ph + Math.PI);
     tpArmL.rotation.set(1.15 + l * 1.55 * amp, 0, -0.18 - Math.max(0, l) * 0.42);
     tpArmR.rotation.set(1.15 + r * 1.55 * amp, 0, 0.18 + Math.max(0, r) * 0.42);
@@ -486,7 +399,6 @@ function animateSwimRig(dt, elapsed) {
     tpKneeL.rotation.x = 0.12 + Math.max(0, -l) * 0.38;
     tpKneeR.rotation.x = 0.12 + Math.max(0, -r) * 0.38;
   } else {
-    // Treading water: sculling arms + eggbeater legs, gentle swell bob.
     const s = Math.sin(ph * 0.8), c = Math.cos(ph * 0.8);
     tpArmL.rotation.set(0.55 + s * 0.22, 0, -0.95 - c * 0.18);
     tpArmR.rotation.set(0.55 - s * 0.22, 0, 0.95 + c * 0.18);
@@ -498,7 +410,6 @@ function animateSwimRig(dt, elapsed) {
     tpKneeR.rotation.x = 0.55 + Math.max(0, -s) * 0.3;
   }
 }
-/** First-person swim arms: alternating reaches, streamlined glide when diving. */
 function animateSwimFirstPerson() {
   const ph = swimState.strokePhase;
   const descending = swimState.vy < -1.1 || swimDiveHeld();
@@ -518,7 +429,6 @@ function animateSwimFirstPerson() {
   fpLeft.pivot.position.set(-0.30 + l * 0.06, -0.24 + Math.max(0, l) * 0.10, -0.34 - Math.max(0, l) * 0.30);
   fpLeft.pivot.rotation.set(0.45 + l * 0.85, l * 0.12, -l * 0.18);
 }
-/** Oxygen warning, drowning damage and swim effort — tied to the live sim. */
 function updateSwimFeedback(dt) {
   if (swimState.submerged) {
     if (swimState.oxygen <= 0) {
@@ -540,12 +450,8 @@ function updateSwimFeedback(dt) {
   gameState.stamina = Math.max(0, Math.min(100, gameState.stamina + (sprinting ? -7 : 10) * dt));
 }
 
-// =============================================================================
-// Mantling / elevators / combat
-// =============================================================================
 export function findMantleTarget() {
   if (gameState.inCar || player.mantle.active || meteorDrop.active || legBreak.active) return null;
-  // You can mantle out of the water onto piers/ledges, but not from the abyss.
   if (swimState.active && swimState.submerged) return null;
   const fwdX = -Math.sin(player.yaw);
   const fwdZ = -Math.cos(player.yaw);
@@ -609,7 +515,7 @@ export function triggerRightHandAttack() {
   } else {
     if (w.id === 'fists') {
       player.punchCombo = (player.punchCombo + 1) % 2;
-      playPunchSfx(); // recorded punch1/2/3 cycle replaces the synth whoosh
+      playPunchSfx();        
     } else {
       sfx.swing();
     }
@@ -656,13 +562,13 @@ export function applyPlayerDamage(amount, sourceLabel) {
   if (gameState.damageCooldown > 0) return;
   gameState.damageCooldown = 0.45;
   gameState.hp = Math.max(0, gameState.hp - amount);
-  playHurtSfx(); // recorded hurt.mp3 replaces the synthesized damage grunt
+  playHurtSfx();        
   flashEdge('rgba(239, 68, 68, 0.48)');
   pushFeed(`-${Math.round(amount)} HP (${sourceLabel})`, 'border-l-rose-500');
   if (gameState.hp <= 0) {
     if (gameState.inCar) exitCurrentCar(true);
     if (hooks.mpIsGuest()) {
-      hooks.mpWorldEvent({ t: 'died' }); // host clears the shared wanted level
+      hooks.mpWorldEvent({ t: 'died' });       
     } else {
       clearWantedLevel();
       hooks.mpWorldEvent({ t: 'player_died' });
@@ -695,7 +601,6 @@ export function applyPlayerDamage(amount, sourceLabel) {
   }
   hooks.updateHUD();
 }
-// Menu Button Listeners
 export function triggerMeteorLanding() {
   meteorDrop.active = true;
   meteorDrop.timer = 0;
@@ -814,13 +719,9 @@ function stepParticles(dt) {
   }
 }
 
-// =============================================================================
-// MAIN SIMULATION STEP
-// =============================================================================
 export function stepSimulation(dt, elapsed) {
   if (gameState.damageCooldown > 0) gameState.damageCooldown -= dt;
   if (gameState.speedBoostTimer > 0) gameState.speedBoostTimer -= dt;
-  // Health Regeneration
   if (gameState.hp > 0 && gameState.hp < gameState.maxHp) {
     const regenRate = gameState.damageCooldown > 0 ? 0 : 3.5;
     if (regenRate > 0) {
@@ -881,7 +782,6 @@ export function stepSimulation(dt, elapsed) {
     );
     meteorCore.rotation.x += dt * 9.5;
     meteorCore.rotation.y += dt * 7.2;
-    // Textured flame plume: stretches with dive speed, flickers every frame.
     const flamePulse = 1 + Math.sin(elapsed * 31) * 0.12 + Math.random() * 0.08;
     const flameStretch = (fastDive ? 1.8 : 1.15) * flamePulse;
     for (let i = 0; i < meteorFlame.children.length; i++) {
@@ -922,8 +822,6 @@ export function stepSimulation(dt, elapsed) {
       sfx.meteorImpact();
       meteorDrop.cameraShake = 0.72;
       flashEdge('rgba(249, 115, 22, 0.65)');
-      // Ocean splashdown: the swell swallows the crater and the swim sim
-      // takes over on the very next frame.
       const impactWb = getWaterBodyAt(player.x, player.z);
       const impactSurf = impactWb ? getWaterHeightAt(player.x, player.z, elapsed) : null;
       const waterImpact = impactWb && impactSurf !== null && surfaceAtMeteor < impactSurf - 0.25;
@@ -991,7 +889,6 @@ export function stepSimulation(dt, elapsed) {
     gameState.dialogueTimer -= dt;
     if (gameState.dialogueTimer <= 0) document.getElementById('npc-dialogue').style.display = 'none';
   }
-  // Broken-leg recovery clock runs regardless of pose branch.
   if (legBreak.active) {
     legBreak.t += dt;
     if (legBreak.t >= legBreak.dur) {
@@ -999,7 +896,6 @@ export function stepSimulation(dt, elapsed) {
       pushFeed('BACK ON YOUR FEET — WALK IT OFF', 'border-l-emerald-400');
     }
   }
-  // Rapid-fire trigger while Left-Mouse Button is held down!
   if (
     inputState.isPrimaryFireHeld &&
     !gameState.inCar &&
@@ -1043,7 +939,6 @@ export function stepSimulation(dt, elapsed) {
     stepVehicleDriving(dt, elapsed);
   } else {
     sfx.updateEngine(false, 0, false);
-    // Splash-in dip the moment the swim system takes over.
     if (swimState.active && !wasSwimming) {
       player.landingDip = 0.2;
       player.crouching = false;
@@ -1065,12 +960,6 @@ export function stepSimulation(dt, elapsed) {
         player.peakAirY = player.y;
       }
     } else if (swimState.active) {
-      // ------------------------------------------------------------------
-      // DEEP WATER: water.js integrates buoyancy, currents and collision
-      // sliding this frame (via hooks.updateWater); steerSwimVertical in
-      // enhancePerFrame then guarantees dive/surface authority. The walk /
-      // gravity branch fully yields so the systems never fight over y.
-      // ------------------------------------------------------------------
       player.crouching = false;
       player.slideTimer = 0;
       player.airSlideReady = false;
@@ -1082,12 +971,10 @@ export function stepSimulation(dt, elapsed) {
       player.walkCycle = swimState.strokePhase;
     } else {
       const locked = legBreak.active;
-      // Input key checks for Crouch & Jump
       const crouchInput = !locked && Boolean(keys['KeyC'] || keys['ControlLeft']);
       if (!crouchInput) {
         player.crouchJumped = false;
       }
-      // Jump input while crouching -> jump & uncrouch immediately
       if (!locked && keys['Space'] && (player.grounded || player.coyote > 0) && !player.mantle?.active) {
         player.vy = 7.5;
         player.grounded = false;
@@ -1104,7 +991,6 @@ export function stepSimulation(dt, elapsed) {
       }
       const moveFwd = locked ? 0 : (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0) - (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0);
       const moveRight = locked ? 0 : (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0) - (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0);
-      // Sprinting and Stamina Latch
       const shiftHeld = Boolean(keys['ShiftLeft'] || keys['ShiftRight']);
       if (!shiftHeld) {
         player.sprintExhausted = false;
@@ -1117,12 +1003,10 @@ export function stepSimulation(dt, elapsed) {
         }
         player.sprintCycle += dt * 15.5;
       } else {
-        // Crouching replenishes stamina 3x quicker!
         const regenRate = player.crouching ? 48.0 : 16.0;
         gameState.stamina = Math.min(100, gameState.stamina + regenRate * dt);
         player.sprintCycle = 0;
       }
-      // Wading: deeper water = heavier going, down to 0.55x at swim depth.
       const wbHere = getWaterBodyAt(player.x, player.z);
       const waterSurf = wbHere ? getWaterHeightAt(player.x, player.z, elapsed) : null;
       const wadeDepth = (wbHere && waterSurf !== null) ? Math.max(0, waterSurf - player.y) : 0;
@@ -1148,7 +1032,6 @@ export function stepSimulation(dt, elapsed) {
       player.pvx = (player.pvx || 0) + (tvx - (player.pvx || 0)) * Math.min(1, grip * dt);
       player.pvz = (player.pvz || 0) + (tvz - (player.pvz || 0)) * Math.min(1, grip * dt);
       if (locked) { player.pvx = 0; player.pvz = 0; }
-      // Crouch Slide from Air (Jump/Cliff) vs Flat Ground
       const horizSpeed = Math.hypot(player.pvx || 0, player.pvz || 0);
       if (!player.grounded) {
         if (!locked && player.crouching && horizSpeed > 1.8) {
@@ -1185,7 +1068,6 @@ export function stepSimulation(dt, elapsed) {
       const bodyH = player.crouching ? 1.22 : player.height;
       if (!collidesHorizontally(nextX, player.z, player.y, bodyH, player.radius)) player.x = nextX; else player.pvx = 0;
       if (!collidesHorizontally(player.x, nextZ, player.y, bodyH, player.radius)) player.z = nextZ; else player.pvz = 0;
-      // Current drift nudges waders along with the flow (collision-checked).
       if (wbHere && swimState.wading) {
         const driftX = wbHere.currentX * dt * 0.3;
         const driftZ = wbHere.currentZ * dt * 0.3;
@@ -1196,12 +1078,8 @@ export function stepSimulation(dt, elapsed) {
       const inWaterColumn = wbHere !== null && waterSurf !== null && player.y < waterSurf - 0.12;
       player.vy -= 19.5 * dt * (player.vy < 0 ? 1.28 : (keys['Space'] ? 1 : 1.9));
       if (inWaterColumn) {
-        // Buoyant drag: sink gently through the column until the swim system
-        // engages — no plummeting, no surface walking.
         player.vy = Math.max(player.vy, -3.2);
         player.vy *= Math.pow(0.35, dt);
-        // Deep-water safety net: if the swim sim hasn't claimed us yet, engage
-        // it here so you can never be stuck "walking" on the surface film.
         if (!swimState.active && (waterSurf - player.y) > 1.15) {
           swimState.active = true;
           swimState.lastBodyId = wbHere.id;
@@ -1213,19 +1091,15 @@ export function stepSimulation(dt, elapsed) {
       if (!player.grounded && player.y > player.peakAirY) player.peakAirY = player.y;
       let supportY = computeSupportFloor(player.x, player.z, previousY - 0.46, player.radius);
       if (inWaterColumn) {
-        // Below the surface the real floor is the seabed / riverbed, not the
-        // invisible land heightfield — this is what lets you swim out deep.
         const bed = getWaterBedAt(player.x, player.z);
         if (bed !== null && bed < supportY) supportY = bed;
       }
       if (player.y <= supportY && player.vy <= 0) {
         if (!player.grounded) {
           const fallDist = player.peakAirY - supportY;
-          // Water breaks your fall — no impact damage into the swim column.
           if (fallDist > 3.6 && !inWaterColumn) {
             const fallDmg = Math.min(65, (fallDist - 3.6) * 8.5);
             applyPlayerDamage(fallDmg, 'FALL IMPACT');
-            // Twice a house height: the legs buckle on touchdown.
             if (fallDist > LEG_BREAK_FALL && gameState.hp > 0) {
               triggerLegBreak(fallDist);
             }
@@ -1245,9 +1119,6 @@ export function stepSimulation(dt, elapsed) {
     }
     if (player.landingDip > 0) player.landingDip = Math.max(0, player.landingDip - dt * 1.4);
     player.coyote = player.grounded ? 0.12 : Math.max(0, (player.coyote || 0) - dt);
-    // Eye height: treading keeps the head above the swell; diving tucks the
-    // camera down with the body so you actually see the seabed. Broken legs
-    // drop you to the ground and rise again as you push yourself up.
     const lbPose = legBreak.active ? legBreakPose() : null;
     const targetEye = legBreak.active
       ? (0.42 + (1 - lbPose.k) * 1.2)
@@ -1290,7 +1161,6 @@ export function stepSimulation(dt, elapsed) {
     }
     const leftRaise = player.leftUseTimer > 0 ? Math.sin((1 - player.leftUseTimer / 0.32) * Math.PI) * 0.22 : 0;
     if (legBreak.active) {
-      // First-person: the left hand presses to the head while you recover.
       fpRight.pivot.visible = true;
       fpLeft.pivot.visible = true;
       const hurt = lbPose.k;
@@ -1334,7 +1204,6 @@ export function stepSimulation(dt, elapsed) {
       fpRoot.visible = false;
       tpRig.visible = true;
       tpRig.position.set(player.x, player.y + bobY - player.landingDip, player.z);
-      // Rotate playerMesh.rotation.y by + Math.PI (180 degrees) so character faces forward
       tpRig.rotation.y = player.yaw;
       tpHip.rotation.x = 0;
       tpHip.rotation.z = 0;
@@ -1351,7 +1220,6 @@ export function stepSimulation(dt, elapsed) {
       tpKneeL.rotation.x = 0;
       tpKneeR.rotation.x = 0;
       if (legBreak.active) {
-        // Collapse → writhe → slow push-up with a head shake and hand to head.
         const { k, riseK } = lbPose;
         const sev = legBreak.severity;
         tpRig.position.y = player.y + 0.06;
@@ -1363,21 +1231,16 @@ export function stepSimulation(dt, elapsed) {
         tpKneeL.rotation.x = (0.85 + Math.max(0, Math.sin(elapsed * 4.2)) * 0.3 * sev) * k;
         tpLegR.rotation.x = (0.25 - Math.sin(elapsed * 2.7) * 0.10 * sev) * k;
         tpKneeR.rotation.x = (0.45 + Math.max(0, -Math.sin(elapsed * 3.6)) * 0.25 * sev) * k;
-        // Left arm braces against the ground while down.
         tpArmL.rotation.set(0.95 * k, 0, -0.35 * k);
         tpElbowL.rotation.x = 0.45 * k;
-        // Right hand climbs to the head as you rise; head shakes off the pain.
         tpArmR.rotation.set(0.35 * k + 2.45 * riseK, 0, -0.55 * riseK);
         tpElbowR.rotation.x = 0.30 * k + 1.95 * riseK;
         tpHead.rotation.x = 0.4 * k + 0.3 * riseK;
         tpHead.rotation.z = Math.sin(elapsed * 16) * 0.30 * riseK;
         tpHip.scale.y = 1;
       } else if (swimState.active) {
-        // Full procedural swim set, phase-locked to the buoyancy sim and
-        // angled by the mouse pitch so the body points where you look.
         animateSwimRig(dt, elapsed);
       } else if (player.slideTimer > 0) {
-        // Sliding posture animation
         tpHip.rotation.x = -0.48;
         tpLegL.rotation.x = 0.85;
         tpKneeL.rotation.x = 0.12;
@@ -1388,7 +1251,6 @@ export function stepSimulation(dt, elapsed) {
         tpArmR.rotation.x = -0.45;
         tpElbowR.rotation.x = 0.22;
       } else if (!player.grounded) {
-        // 3RD-PERSON JUMP ANIMATION (Rising Leap vs Mid-Air Landing Prep)
         const airBlend = Math.max(-1, Math.min(1, player.vy / 6.5));
         if (airBlend > 0.1) {
           tpHip.rotation.x = -0.14 * airBlend;
@@ -1416,7 +1278,6 @@ export function stepSimulation(dt, elapsed) {
           tpElbowR.rotation.x = 0.35;
         }
       } else if (isSprintingNow) {
-        // 3RD-PERSON OLYMPIC SPRINTER ANIMATION
         const sPhase = player.walkCycle;
         const stride = Math.sin(sPhase);
         const oppStride = Math.sin(sPhase + Math.PI);
@@ -1434,7 +1295,6 @@ export function stepSimulation(dt, elapsed) {
         tpElbowR.rotation.x = 1.52;
       } else {
         const legSwing = movingSpeed ? Math.sin(player.walkCycle) * 0.58 : 0;
-        // Wading: forward lean, balancing arms, higher knee lift through water.
         const wade = swimState.wading && movingSpeed;
         if (wade) tpHip.rotation.x = -0.12;
         tpLegL.rotation.x = legSwing * (wade ? 1.25 : 1);
@@ -1497,7 +1357,6 @@ export function stepSimulation(dt, elapsed) {
       const camZ = player.z + (idealZ - player.z) * ratio;
       let camY = pivotY + (idealY - pivotY) * ratio;
       if (swimState.active) {
-        // Follow the diver underwater — clamp to the seabed, not the surface.
         const bed = getWaterBedAt(camX, camZ);
         camY = Math.max(bed !== null ? bed + 0.3 : 0.3, camY);
       } else {
@@ -1514,8 +1373,6 @@ export function stepSimulation(dt, elapsed) {
       camera.position.set(player.x + shakeX, player.y + player.eyeHeight + bobY + swimBob - player.landingDip + shakeY, player.z);
       camera.rotation.y = player.yaw;
       camera.rotation.x = player.pitch;
-      // Stroke roll + slow underwater sway sell the swim in first person;
-      // broken legs add a pained tilt that eases out as you stand back up.
       camera.rotation.z = swimState.active
         ? Math.sin(swimState.strokePhase) * 0.055 + (swimState.submerged ? Math.sin(elapsed * 1.3) * 0.02 : 0)
         : legBreak.active
@@ -1590,14 +1447,9 @@ export function enhancePerFrame(dt, elapsed) {
     }
   }
   updatePickpocket(dt);
-  // Water tick: world.js may already drive it (guarded once-per-frame); this
-  // call guarantees it runs even if the atmosphere pass didn't. The yaw guard
-  // keeps water.js's +Z-convention swim yaw from spinning the -Z camera.
   const yawBeforeWater = player.yaw;
   const pitchBeforeWater = player.pitch;
   const yBeforeWater = player.y;
-  // Feed the mouse aim into the swim sim BEFORE it integrates — this is what
-  // lets look-down + W actually steer the body under the surface.
   swimState.pitch = player.pitch;
   updateBiomeAtmosphere(dt, elapsed);
   if (typeof hooks.updateWater === 'function') hooks.updateWater(dt, elapsed);
@@ -1672,7 +1524,6 @@ export function auraFrame(dt, t) {
   if (tp) { tp.style.display = msg ? 'block' : 'none'; tp.textContent = msg; }
 }
 hooks.getRightMountWorldPosition = (out) => fpRight.itemMount.getWorldPosition(out);
-/** Push levelData.params into the live game tables (weapon stats, HP, cash, gearbox caps). */
 export function applyLevelParams(data = levelData) {
   const p = data.params;
   for (const id of Object.keys(p.weapons || {})) {
@@ -1688,5 +1539,4 @@ export function applyLevelParams(data = levelData) {
   gameState.cash = p.player.startCash;
   (p.vehicles.gearCapsMph || []).forEach((mph, i) => { if (i < GEAR_CAPS_MPH.length && Number.isFinite(mph)) GEAR_CAPS_MPH[i] = mph; });
 }
-// Register late-bound implementations for lower layers (see state.js).
 Object.assign(hooks, { syncEquippedMeshes, applyPlayerDamage });

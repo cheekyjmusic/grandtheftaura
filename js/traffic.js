@@ -98,14 +98,13 @@ export function updateCityTraffic(dt) {
   const guest = hooks.mpIsGuest();
   for (const vehicle of trafficCars) {
     if (guest) {
-      // Positions come from the host car stream; just spin the wheels.
       vehicle.wheelSpinners.forEach((wheel) => { wheel.rotation.x += ((vehicle.speed || 0) * dt) / 0.38; });
       continue;
     }
     if (!vehicle.isTraffic || (gameState.inCar && vehicles[gameState.activeCarIndex] === vehicle)) continue;
     const idx = vehicles.indexOf(vehicle);
     const owner = hooks.mpCarOwner(idx);
-    if (owner && owner !== hooks.mpLocalId()) continue; // a guest is driving it
+    if (owner && owner !== hooks.mpLocalId()) continue;      
     vehicle.trafficProgress = (vehicle.trafficProgress + vehicle.trafficSpeed * dt) % trafficRouteLength;
     const point = trafficRoutePoint(vehicle.trafficProgress);
     vehicle.x = point.x;
@@ -156,8 +155,6 @@ export function updateCityTraffic(dt) {
     driver.mesh.userData.legR.rotation.x = -step;
   }
 }
-// Host migration: rebuild route progress from the synced positions so traffic
-// continues from where the old host left it (no teleporting cars).
 export function adoptTrafficProgress() {
   for (const vehicle of trafficCars) {
     if (!vehicle.isTraffic) continue;

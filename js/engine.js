@@ -1,8 +1,3 @@
-// =============================================================================
-// engine.js — Three.js scene, camera, renderer (initEngine), lighting, sky,
-// procedural PBR textures, makeMat(), graphics tier controller and the
-// rebuild-safe graphics registries.
-// =============================================================================
 import * as THREE from 'three';
 import { gameState } from './state.js';
 
@@ -13,15 +8,11 @@ export let renderer = null;
 
 export const scene = new THREE.Scene();
 
-// Warm Golden-Hour Sky & Fog
 scene.background = new THREE.Color(0xd6a374);
 scene.fog = new THREE.FogExp2(0xd6a374, 0.0028);
 
 const sunScreenPosition = new THREE.Vector3();
 
-// Sun Offset Vector Constant & Helper for position updates.
-// The shadow-casting light follows the player, but the *direction* stays fixed
-// because the light target moves with it.
 export const SUN_OFFSET = new THREE.Vector3(78, 130, 52);
 
 export const sunTarget = new THREE.Object3D();
@@ -32,16 +23,10 @@ const SHADOW_CELL = 6;
 const sunAnchor = new THREE.Vector3();
 let lastShadowKey = '';
 
-/** Force one shadow-map re-render on the next frame (static shadows otherwise). */
 export function invalidateShadows() {
   if (renderer && renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate = true;
 }
 
-/**
- * Anchor the sun rig to the player. Quantised to a 6 m grid so the baked shadow
- * map is only re-rendered when the anchor actually crosses a cell, instead of
- * every single frame.
- */
 export function updateSunPosition(targetPos) {
   if (targetPos) sunAnchor.set(targetPos.x || 0, targetPos.y || 0, targetPos.z || 0);
   else sunAnchor.set(0, 0, 0);
@@ -53,7 +38,6 @@ export function updateSunPosition(targetPos) {
   sunTarget.position.set(qx, qy, qz);
   sunLight.position.set(qx, qy, qz).add(SUN_OFFSET);
 
-  // A world rebuild swaps worldRoot's children — the old shadow map is invalid.
   const key = `${qx}|${qy}|${qz}|${worldRoot.children.length}`;
   if (key !== lastShadowKey) {
     lastShadowKey = key;
@@ -112,7 +96,6 @@ export const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window
 camera.rotation.order = 'YXZ';
 scene.add(camera);
 
-// Golden-Hour Lighting Rig — Rich High Contrast Depth
 export const hemiLight = new THREE.HemisphereLight(0xffe4bc, 0x2d4a3e, 0.48);
 hemiLight.position.set(0, 110, 0);
 scene.add(hemiLight);
@@ -126,7 +109,6 @@ sunLight.shadow.mapSize.height = 1024;
 sunLight.shadow.camera.near = 10;
 sunLight.shadow.camera.far = 280;
 
-// Tightened Frustum Bounds & Crisp Shadow Bias Settings
 export const sb = 90;
 sunLight.shadow.camera.left = -sb;
 sunLight.shadow.camera.right = sb;
@@ -140,9 +122,6 @@ export const rimLight = new THREE.DirectionalLight(0xffb97a, 0);
 rimLight.position.set(-72, 56, -85);
 scene.add(rimLight);
 
-// Procedural Sky Dome with Horizon Haze Gradient & Sun Glow Scattering.
-// The dome is anchored to the camera every frame so it can never be outrun by
-// the player (the world extends well past the dome radius).
 export const skyGroup = new THREE.Group();
 skyGroup.name = 'Sky';
 
@@ -158,7 +137,6 @@ skyGrad.addColorStop(1.0, '#fef08a');
 sCtx.fillStyle = skyGrad;
 sCtx.fillRect(0, 0, 32, 256);
 
-// Fixed sky-space sun direction (independent of the player-following light).
 const SUN_SKY_DIR = new THREE.Vector3(160, 225, 120);
 
 export const skyShaderMaterial = new THREE.ShaderMaterial({
@@ -220,7 +198,6 @@ skyGroup.add(sunDisc);
 
 export const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffedd5, transparent: true, opacity: 0.82, fog: false });
 
-// Batch every cloud puff into a single InstancedMesh (1 draw call).
 const CLOUD_COUNT = 18;
 const cloudInstancedMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), cloudMat, CLOUD_COUNT * 2);
 {
@@ -251,12 +228,10 @@ skyGroup.add(cloudInstancedMesh);
 skyGroup.visible = true;
 scene.add(skyGroup);
 
-/** Keep the sky dome centred on the viewer so it never clips or gets outrun. */
 export function updateSkyAnchor() {
   skyGroup.position.copy(camera.position);
 }
 
-// PS3-Era Motion Vignette & Camera FOV Kick Controller State
 const prevCamQuat = new THREE.Quaternion();
 const curCamQuat = new THREE.Quaternion();
 let turnSpeedSmooth = 0;
@@ -274,7 +249,6 @@ export function updateSunLensFlare() {
   updateSkyAnchor();
   camera.updateMatrixWorld();
 
-  // ---- Camera Rotation Speed Tracking & Dynamic FOV Kick / Vignette Overlay ----
   camera.getWorldQuaternion(curCamQuat);
   const angleDiff = prevCamQuat.angleTo(curCamQuat);
   prevCamQuat.copy(curCamQuat);
@@ -287,7 +261,6 @@ export function updateSunLensFlare() {
     camera.updateProjectionMatrix();
   }
 
-  // GPU-friendly CSS Edge Vignette Overlay (avoids full-screen backdrop-filter readbacks)
   if (!motionBlurOverlayEl && typeof document !== 'undefined') {
     motionBlurOverlayEl = document.getElementById('ps3-motion-blur');
     if (!motionBlurOverlayEl) {
@@ -308,7 +281,6 @@ export function updateSunLensFlare() {
     }
   }
 
-  // ---- Sun Lens Flare logic (with cached DOM nodes) ----
   if (!cachedFlareEl || !cachedFlareEl.isConnected) {
     cachedFlareEl = typeof document !== 'undefined' ? document.getElementById('sun-lens-flare') : null;
     if (cachedFlareEl) {
@@ -365,25 +337,19 @@ export function updateSunLensFlare() {
   }
 }
 
-// Subtle psychedelic world breathing & liquid shear (zero extra draw calls)
 export function updateWorldWobble(elapsed, intensity = 1.0) {
-  // Reset from current fov/aspect so values never drift over time
   camera.updateProjectionMatrix();
   if (intensity <= 0) return;
 
-  // Dampen slightly while aiming so ranged shots stay accurate
   const amt = (gameState.isAiming ? 0.25 : 1.0) * intensity;
 
-  // Layered incommensurate sine waves for an organic, non-repeating pulse
   const waveA = Math.sin(elapsed * 0.85);
   const waveB = Math.cos(elapsed * 0.68);
   const drift = Math.sin(elapsed * 0.43);
 
-  // ~0.65% counter-phase squash & stretch ("breathing" horizon)
   const scaleX = 1.0 + waveA * 0.0065 * amt;
   const scaleY = 1.0 + waveB * 0.0065 * amt;
 
-  // Gentle diagonal shear wobble (~0.25 degrees)
   const shearX = Math.sin(elapsed * 1.15 + waveB * 0.6) * 0.0045 * amt;
   const shearY = Math.cos(elapsed * 0.92 + drift * 0.6) * 0.0035 * amt;
 
@@ -395,7 +361,6 @@ export function updateWorldWobble(elapsed, intensity = 1.0) {
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
 }
 
-// Fiery Meteor Mesh for Start Menu Entrance
 export const meteorGroup = new THREE.Group();
 meteorGroup.visible = false;
 
@@ -433,7 +398,6 @@ export const meteorInnerFlame = new THREE.Mesh(
 meteorGroup.add(meteorCore, meteorPlasma, meteorInnerFlame);
 scene.add(meteorGroup);
 
-// Ground Impact Aim Reticle for Meteor Landing
 export const meteorReticle = new THREE.Group();
 meteorReticle.visible = false;
 
@@ -458,9 +422,6 @@ retBeam.position.y = 21;
 meteorReticle.add(retOuter, retInner, retBeam);
 scene.add(meteorReticle);
 
-// -----------------------------------------------------------------------------
-// Procedural PBR textures
-// -----------------------------------------------------------------------------
 export function buildTexture(type) {
   const c = document.createElement('canvas');
   c.width = 128;
@@ -662,8 +623,6 @@ export function buildTexture(type) {
   return tex;
 }
 
-// Lazily construct procedural textures on first access so 'low' graphics tier
-// skips startup generation entirely.
 const PROC_TEXTURE_TYPES = [
   'asphalt', 'sidewalk', 'cobblestone', 'marble', 'granite', 'concrete',
   'diamondplate', 'brushedsteel', 'corrugated', 'fabric', 'water', 'sand',
@@ -683,14 +642,6 @@ for (const texType of PROC_TEXTURE_TYPES) {
   });
 }
 
-// -----------------------------------------------------------------------------
-// Graphics registries
-//
-// Materials are tracked through WeakRefs so a world rebuild (which drops and
-// disposes thousands of meshes) does not leave the tier controller walking dead
-// materials forever. Detached-but-cached groups keep their materials alive and
-// are therefore never pruned.
-// -----------------------------------------------------------------------------
 export const registeredMaterials = [];
 export const highDetailObjects = [];
 export let animatedWaterTex = null;
@@ -715,7 +666,6 @@ function trackMaterial(mat, opts, defaultBumpScales) {
   registeredMaterials.push(entry);
 }
 
-/** Drop collected materials and detached high-detail meshes. Cheap; call after a rebuild. */
 export function pruneGraphicsRegistries() {
   for (let i = registeredMaterials.length - 1; i >= 0; i--) {
     if (!registeredMaterials[i].mat) registeredMaterials.splice(i, 1);
@@ -800,9 +750,6 @@ export function makeSharedMat(hex, opts = {}) {
   return mat;
 }
 
-// Shared Real Transparent Glass Material for All Windows.
-// FrontSide halves fragment overdraw; callers place a second flipped pane when
-// the glass must read from both directions.
 export const realWindowGlassMat = new THREE.MeshPhysicalMaterial({
   color: 0xbae6fd,
   roughness: 0.07,
@@ -880,7 +827,6 @@ export function applyGraphicsTier(tier) {
     if (changed) mat.needsUpdate = true;
   }
 
-  // Keep full clearcoat reflections on 'high' while avoiding dual-lobe cost lower down
   const wantGlassClearcoat = isHigh ? 1.0 : 0.0;
   if (realWindowGlassMat.clearcoat !== wantGlassClearcoat) {
     realWindowGlassMat.clearcoat = wantGlassClearcoat;
@@ -915,23 +861,18 @@ export function applyGraphicsTier(tier) {
   }
 }
 
-// ---- Underground atmosphere, UI, minimap ----
 export const AT = { sun: sunLight.intensity, hemi: hemiLight.intensity, bg: scene.background.clone(), on: false };
 
 export const uLight = new THREE.PointLight(0xffe2b0, 22, 18, 2);
 uLight.visible = false;
 scene.add(uLight);
 
-// ----------------------------------------------------------------------------
-// World Root Container
-// ----------------------------------------------------------------------------
 export const worldRoot = new THREE.Group();
 worldRoot.name = 'WorldRoot';
 scene.add(worldRoot);
 
 const viewport = { container: null, observer: null, callbacks: [] };
 
-/** Size of the render area: the canvas' parent in Studio, the whole window in the game. */
 export function getViewportSize() {
   if (viewport.container) {
     return {
@@ -953,7 +894,6 @@ export function resizeRenderer() {
   }
 }
 
-/** Register a resize callback (Studio). Returns an unsubscribe function. */
 export function onViewportResize(cb) {
   viewport.callbacks.push(cb);
   return () => {
@@ -964,12 +904,6 @@ export function onViewportResize(cb) {
 
 let contextHandlersBound = false;
 
-/**
- * Create the WebGL renderer.
- *   initEngine()           -> full-screen canvas on document.body (game).
- *   initEngine({ canvas }) -> render into the given canvas, follow its parent's size (Studio).
- * Safe to call more than once with the same canvas.
- */
 export async function initEngine({ canvas: providedCanvas } = {}) {
   let el = providedCanvas || null;
   if (!el) {

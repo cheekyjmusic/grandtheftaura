@@ -416,7 +416,6 @@ export function updateGuatemalanFestival(dt, elapsed) {
   if (!festival.built) return;
   const guest = hooks.mpIsGuest();
   if (guest) {
-    // Float positions derive from the host-synced parade lead (same pathAt math).
     festival.lead = hooks.mpFestivalLead();
   } else {
     festival.lead += 2 * dt;
@@ -428,7 +427,6 @@ export function updateGuatemalanFestival(dt, elapsed) {
     data.armL.rotation.x = -1.15 + swing * 0.45;
     data.armR.rotation.x = -1.15 - swing * 0.45;
   });
-  // Parade + crowd NPC movement is host-only; guests receive it via the NPC stream.
   if (!guest) {
     for (const npc of festival.parade) {
       if (busy(npc)) continue;
@@ -469,7 +467,6 @@ export function updateGuatemalanFestival(dt, elapsed) {
       npc.mesh.rotation.y = npc.yaw;
     }
   } else {
-    // Guests still wave the flags on their locally-rendered parade meshes.
     for (const npc of festival.parade) {
       if (!npc.mesh || !npc.spawned) continue;
       const data = npc.mesh.userData;
@@ -499,7 +496,6 @@ export function updateGuatemalanFestival(dt, elapsed) {
     }
   }
 }
-// Net hooks: the host streams festival.lead; guests adopt it.
 Object.assign(hooks, {
   mpFestivalLead: () => festival.lead,
   mpSetFestivalLead: (v) => { if (Number.isFinite(v)) festival.lead = v; },

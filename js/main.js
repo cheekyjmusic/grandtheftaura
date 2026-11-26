@@ -1,9 +1,3 @@
-// =============================================================================
-// main.js — GAME entry point (index.html).
-// Boots the engine, loads levelData, builds the static world + data-driven entities,
-// spawns NPCs, wires input/UI and runs the gameplay animation loop.
-// Top of the import hierarchy: nothing imports this file.
-// =============================================================================
 import { levelData } from './levelData.js';
 import { initEngine, scene, camera, renderer, skyGroup, applyGraphicsTier, resizeRenderer, animatedWaterTex, updateSunLensFlare, updateWorldWobble } from './engine.js';
 import { preloadBoundAudio, preloadRegisteredTextures } from './assets.js';
@@ -46,7 +40,7 @@ function animate(now) {
     updateAircraft(dt, elapsed);
     updateCityTraffic(dt);
     updateGuatemalanFestival(dt, elapsed);
-    updateRemoteWorld(dt, elapsed); // guest: interpolate host cars + remote jet
+    updateRemoteWorld(dt, elapsed);        
     minimapTimer += dt;
     if (minimapTimer >= 0.05) {
       minimapTimer = 0;
@@ -94,14 +88,13 @@ async function boot() {
   const loadingStarted = performance.now();
   const loadingScreen = document.getElementById('loading-screen');
   await updateLoadingProgress(5, 'Initializing graphics');
-  await initEngine(); // full-screen canvas (#game-canvas)
+  await initEngine();    
   await updateLoadingProgress(18, 'Loading game data');
   applyLevelParams(levelData);
   preloadRegisteredTextures(levelData);
   preloadBoundAudio(levelData);
   await updateLoadingProgress(30, 'Building Sunnyvale');
 
-  // World: static city/freeway/desert/biomes -> levelData.entities -> Aura Hills overhaul
   buildWorld(levelData, {
     register: true,
     afterStatic: () => applyGraphicsTier('medium')

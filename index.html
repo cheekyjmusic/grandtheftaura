@@ -129,29 +129,20 @@
         </div>
     </div>
     <div id="orientation-lock" aria-live="polite"><div><div class="rotate-icon" aria-hidden="true">&#8635;</div><div class="font-display text-3xl uppercase text-amber-300 mt-4">Rotate to Play</div><p class="text-sm text-slate-300 mt-2">Grand Theft Aura is designed for landscape mode.</p></div></div>
-    <!-- Fullscreen 3D WebGL Canvas -->
     <canvas id="game-canvas"></canvas>
     <div id="ps3-filter" aria-hidden="true"></div>
     <div id="sun-lens-flare" aria-hidden="true"><i class="flare flare-source"></i><i class="flare flare-ghost ghost-a"></i><i class="flare flare-ghost ghost-b"></i><i class="flare flare-ghost ghost-c"></i></div>
 
-    <!-- Hidden File Input for .JSON Save Import -->
     <input type="file" id="save-file-input" accept=".json,application/json" class="hidden" />
 
-    <!-- Damage / Heal / Meteor Impact Screen Edge Vignette -->
     <div id="screen-flash" class="fixed inset-0 opacity-0 z-10"></div>
     <div id="wasted-screen" class="fixed inset-0 z-30 items-center justify-center text-center" role="alert" aria-live="assertive"><div class="px-6"><div class="font-display text-7xl sm:text-9xl uppercase italic tracking-wider text-rose-600">WASTED</div><div id="wasted-cause" class="mt-3 font-tactical text-sm sm:text-lg uppercase tracking-[.28em] text-slate-200"></div><div class="mt-8 font-tactical text-xs uppercase tracking-[.22em] text-slate-400">MEDICAL RESPONSE IN PROGRESS</div></div></div>
 
-    <!-- Non-Intrusive Error Fallback Banner -->
     <div id="error-banner" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 glass-panel-amber px-5 py-3 text-xs text-rose-300 max-w-md text-center"></div>
 
-    <!-- =====================================================================
-         IN-GAME HUD (HIDDEN ON START MENU; VISIBLE DURING ACTIVE PLAY)
-         ===================================================================== -->
     <div id="hud" class="fixed inset-0 z-20 pointer-events-none">
-        <!-- TOP-LEFT: Cash & Sector | Health | Stamina + Prompts & Activity Feed -->
         <div class="fixed top-4 left-4 flex flex-col items-start gap-2">
             <div id="top-status-row" class="flex items-stretch gap-2">
-                <!-- 1. Cash, Sector/Indoor Location & POV -->
                 <div class="glass-panel px-3.5 py-2 flex items-center gap-3">
                     <div class="flex items-baseline gap-0.5 text-emerald-400 font-display text-2xl leading-none">
                         <span>$</span><span id="hud-cash">150</span>
@@ -168,7 +159,6 @@
                     </div>
                 </div>
 
-                <!-- 2. Health Bar -->
                 <div id="hud-hp-card" class="glass-panel px-3 py-2 flex flex-col justify-between min-w-[126px]">
                     <div class="flex items-baseline justify-between gap-2">
                         <span class="text-[9px] font-tactical font-bold uppercase tracking-wider text-emerald-400 leading-none">HEALTH</span>
@@ -179,7 +169,6 @@
                     </div>
                 </div>
 
-                <!-- 3. Stamina Bar -->
                 <div id="hud-stam-card" class="glass-panel px-3 py-2 flex flex-col justify-between min-w-[126px]">
                     <div class="flex items-baseline justify-between gap-2">
                         <span class="text-[9px] font-tactical font-bold uppercase tracking-wider text-sky-400 leading-none">STAMINA</span>
@@ -191,45 +180,36 @@
                 </div>
             </div>
 
-            <!-- Pointer-Lock / Trackpad Hint when cursor unlocked -->
             <div id="lock-hint" class="glass-panel px-3 py-1.5 text-[11px] font-tactical uppercase text-amber-300 border-l-2 border-l-amber-400">
                 CLICK VIEWPORT TO LOCK AIM &bull; OR DRAG TO LOOK
             </div>
 
-            <!-- Contextual Interaction Prompt -->
             <div id="interact-prompt" class="hidden glass-panel-amber px-3.5 py-2 flex items-center gap-2.5">
                 <span id="interact-key" class="px-2 py-0.5 bg-amber-500 text-slate-950 font-display text-xs font-bold">E</span>
                 <span id="interact-text" class="font-tactical text-sm font-bold uppercase text-white">INTERACT</span>
             </div>
 
-            <!-- Parkour Mantle Available Prompt -->
             <div id="mantle-prompt" class="hidden glass-panel px-3 py-1.5 flex items-center gap-2 border-l-2 border-l-sky-400">
                 <span class="px-1.5 py-0.5 bg-sky-400 text-slate-950 font-display text-[11px] font-bold">SPACE</span>
                 <span class="font-tactical text-xs font-bold uppercase text-sky-200">MANTLE LEDGE</span>
             </div>
 
-            <!-- Activity Feed Toasts -->
             <div id="feed-container" class="flex flex-col gap-1 mt-1"></div>
 
-            <!-- Clan Territory & Search Alert Pill -->
             <div id="clan-alert-badge" class="hidden glass-panel px-3 py-1.5 text-[11px] font-tactical font-bold uppercase border-l-2 border-l-rose-500 text-rose-300">
                 CLAN TERRITORY
             </div>
         </div>
 
-        <!-- TOP-CENTER: Orbital Meteor Landing Aim Banner -->
         <div id="meteor-aim-banner" class="hidden fixed top-5 left-1/2 -translate-x-1/2 glass-panel-amber px-5 py-2.5 text-center z-30">
             <div class="text-[10px] font-tactical font-bold uppercase tracking-widest text-amber-400">ORBITAL METEOR DESCENT &bull; STEER LANDING ZONE</div>
             <div class="text-xs font-bold uppercase text-white mt-0.5">AIM WITH MOUSE OR [WASD] &bull; HOLD [SHIFT] TO DIVE FASTER</div>
             <div id="meteor-target-label" class="text-[11px] font-tactical text-sky-300 mt-0.5">TARGET: CENTRAL PLAZA</div>
         </div>
 
-        <!-- TOP-RIGHT: Live Circular Radar Mini-Map + Dual-Hand Status + Sausage Ammo Counter -->
         <div class="fixed top-4 right-4 flex flex-col items-end gap-2">
-            <!-- Circular Radar Mini-Map -->
             <div id="minimap-box" title="Click or press [M] for Full City Map" class="relative w-[178px] h-[178px] glass-panel p-1.5 rounded-full cursor-pointer pointer-events-auto">
                 <canvas id="minimap-canvas" width="164" height="164" class="w-full h-full rounded-full block"></canvas>
-                <!-- Orbiting North Compass Marker -->
                 <div id="minimap-north" class="absolute w-5 h-5 -ml-2.5 -mt-2.5 rounded-full bg-rose-600 text-white font-display text-[10px] flex items-center justify-center border border-white/80 shadow pointer-events-none" style="left: 89px; top: 9px;">
                     N
                 </div>
@@ -238,7 +218,6 @@
                 </div>
             </div>
 
-            <!-- Docked Right-Hand & Left-Hand Equipment Readout -->
             <div id="dual-hand-card" class="w-[196px] glass-panel p-2.5 flex flex-col gap-1.5 mt-1">
                 <div class="flex items-center justify-between border-b border-white/10 pb-1.5">
                     <div class="flex items-center gap-2 min-w-0">
@@ -262,7 +241,6 @@
                 </div>
             </div>
 
-            <!-- COMPACT BALLISTIC HOTDOG SHOOTER SAUSAGE AMMO COUNTER CARD -->
             <div id="ammo-hud-card" class="w-[196px] glass-panel-amber px-2.5 py-2 flex-col gap-1">
                 <div class="flex items-center justify-between">
                     <span class="text-[10px] font-tactical font-bold uppercase text-amber-300">SAUSAGE AMMO</span>
@@ -278,9 +256,7 @@
             </div>
         </div>
 
-        <!-- CENTER: Precision Crosshair, Ballistic Aim Reticle & GTA Radial Weapon Wheel -->
         <div class="fixed inset-0 flex items-center justify-center">
-            <!-- Standard Crosshair -->
             <div id="crosshair" class="relative w-5 h-5 flex items-center justify-center">
                 <div class="w-1 h-1 rounded-full bg-white shadow"></div>
                 <div class="absolute top-0 w-px h-1.5 bg-white/75"></div>
@@ -289,7 +265,6 @@
                 <div class="absolute right-0 h-px w-1.5 bg-white/75"></div>
             </div>
 
-            <!-- Ballistic Hotdog Shooter Toggle-Aim Sight Reticle -->
             <div id="sniper-scope" class="fixed inset-0 items-center justify-center pointer-events-none">
                 <svg viewBox="0 0 240 240" class="w-64 h-64 drop-shadow-lg">
                     <circle cx="120" cy="120" r="88" fill="none" stroke="rgba(245, 158, 11, 0.72)" stroke-width="1.5" stroke-dasharray="10 6" />
@@ -298,7 +273,6 @@
                     <line x1="136" y1="120" x2="215" y2="120" stroke="#f59e0b" stroke-width="1.5" />
                     <line x1="120" y1="25" x2="120" y2="104" stroke="#f59e0b" stroke-width="1.5" />
                     <line x1="120" y1="136" x2="120" y2="215" stroke="#f59e0b" stroke-width="1.5" />
-                    <!-- Ballistic Gravity Drop Ticks for Wieners -->
                     <line x1="112" y1="142" x2="128" y2="142" stroke="#ef4444" stroke-width="1.4" />
                     <text x="134" y="145" fill="#fca5a5" font-size="8" font-family="Chakra Petch" font-weight="700">25M</text>
                     <line x1="114" y1="162" x2="126" y2="162" stroke="#ef4444" stroke-width="1.4" />
@@ -310,7 +284,6 @@
                 </svg>
             </div>
 
-            <!-- GTA-Style Radial Weapon Switcher ([Q] or Scroll Wheel) -->
             <div id="radial-menu" class="absolute w-72 h-72 items-center justify-center">
                 <svg viewBox="0 0 260 260" class="w-full h-full drop-shadow-2xl">
                     <circle cx="130" cy="130" r="118" fill="rgba(9, 12, 18, 0.86)" stroke="rgba(255,255,255,0.16)" stroke-width="1.5" />
@@ -329,13 +302,11 @@
             </div>
         </div>
 
-        <!-- BOTTOM-CENTER SPEECH SUBTITLE FOR NPC INTERACTIONS -->
         <div id="npc-dialogue" class="fixed bottom-24 left-1/2 -translate-x-1/2 glass-panel-amber px-5 py-3 max-w-md text-center">
             <div id="npc-dialogue-name" class="text-[10px] font-tactical font-bold uppercase text-amber-400">CITIZEN</div>
             <div id="npc-dialogue-text" class="text-xs sm:text-sm text-white mt-0.5">"Beautiful day in Sunnyvale!"</div>
         </div>
 
-        <!-- BOTTOM-LEFT: Keybind Strip -->
         <div class="fixed bottom-4 left-4 flex flex-col items-start gap-1.5">
             <div id="watch-keybind-strip" class="glass-panel px-3 py-1 flex items-center gap-2 text-[9px] font-tactical font-bold uppercase text-slate-300">
                 <span>[C] CROUCH</span>
@@ -347,12 +318,10 @@
             </div>
         </div>
 
-        <!-- BOTTOM-CENTER: 5-Slot Left-Hand Utility Hotbar -->
         <div id="onfoot-hotbar" class="fixed bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto">
             <div id="hotbar-container" class="flex items-center gap-1.5"></div>
         </div>
 
-        <!-- BOTTOM-RIGHT: VEHICLE TACHOMETER, TORQUE & SPEEDOMETER HUD -->
         <div id="vehicle-hud" class="fixed bottom-4 right-4 glass-panel-amber p-3.5 flex-col gap-2 w-[326px]">
             <div class="flex items-center justify-between border-b border-white/10 pb-1.5">
                 <span id="veh-name" class="font-display text-xs uppercase text-amber-400 tracking-wider">CRIMSON SPORTS COUPE</span>
@@ -362,7 +331,6 @@
             </div>
 
             <div class="flex items-center justify-between gap-2 my-0.5">
-                <!-- Tachometer Gauge -->
                 <div class="relative w-[112px] h-[112px] flex items-center justify-center">
                     <svg viewBox="0 0 120 120" class="w-full h-full">
                         <circle cx="60" cy="60" r="54" fill="#090d14" stroke="rgba(255,255,255,0.16)" stroke-width="2" />
@@ -377,7 +345,6 @@
                     </svg>
                 </div>
 
-                <!-- Central Gear & Gear Ceiling Indicator -->
                 <div class="flex flex-col items-center justify-center bg-slate-950/90 border border-white/15 px-2.5 py-2 min-w-[66px]">
                     <span class="text-[9px] font-tactical uppercase text-slate-400">GEAR</span>
                     <span id="veh-gear" class="font-display text-3xl text-amber-400 leading-none my-0.5">1</span>
@@ -387,7 +354,6 @@
                     </div>
                 </div>
 
-                <!-- 200 MPH Speedometer Gauge -->
                 <div class="relative w-[112px] h-[112px] flex items-center justify-center">
                     <svg viewBox="0 0 120 120" class="w-full h-full">
                         <circle cx="60" cy="60" r="54" fill="#090d14" stroke="rgba(255,255,255,0.16)" stroke-width="2" />
@@ -411,9 +377,6 @@
         </div>
     </div>
 
-    <!-- =====================================================================
-         START MENU ("GRAND THEFT AURA") OVER LIVE 3D CITY CAMERA
-         ===================================================================== -->
     <div id="start-menu" class="fixed inset-0 z-30 flex items-center justify-between bg-gradient-to-r from-slate-950/88 via-slate-950/55 to-transparent p-6 sm:p-14">
         <div class="max-w-lg w-full flex flex-col justify-between h-full max-h-[640px]">
             <div>
@@ -422,7 +385,6 @@
                 </h1>
             </div>
 
-            <!-- Primary Start Buttons -->
             <div class="flex flex-col gap-3 w-full max-w-xs my-6">
                 <button id="btn-start-play" class="menu-btn-primary py-3.5 px-6 text-left flex items-center justify-between font-display text-xl uppercase cursor-pointer">
                     <span>SINGLEPLAYER</span>
@@ -444,9 +406,6 @@
         </div>
     </div>
 
-    <!-- =====================================================================
-         PAUSE MENU ([TAB] OR [ESC])
-         ===================================================================== -->
     <div id="pause-menu" class="fixed inset-0 z-40 items-center justify-center bg-black/75 backdrop-blur-xs p-4">
         <div class="glass-panel-amber w-full max-w-md p-6">
             <div class="flex items-center justify-between border-b border-white/15 pb-3 mb-5">
@@ -483,9 +442,6 @@
         </div>
     </div>
 
-    <!-- =====================================================================
-         SETTINGS MODAL (SENSITIVITY, LOW/MED/HIGH GRAPHICS, AUDIO)
-         ===================================================================== -->
     <div id="settings-menu" class="fixed inset-0 z-50 items-center justify-center bg-black/80 p-4">
         <div class="glass-panel-amber w-full max-w-lg p-6">
             <div class="flex items-center justify-between border-b border-white/15 pb-3 mb-5">
@@ -565,9 +521,6 @@
         </div>
     </div>
 
-    <!-- =====================================================================
-         INVENTORY & DUAL-HAND LOADOUT MODAL ([E])
-         ===================================================================== -->
     <div id="inventory-menu" class="fixed inset-0 z-40 items-center justify-center bg-black/75 p-4">
         <div class="glass-panel-amber w-full max-w-3xl p-6">
             <div class="flex items-center justify-between border-b border-white/15 pb-3 mb-5">
@@ -616,9 +569,6 @@
         </div>
     </div>
 
-    <!-- =====================================================================
-         FULL CITY MAP MODAL ([M])
-         ===================================================================== -->
     <div id="map-modal" class="fixed inset-0 z-40 items-center justify-center bg-black/80 p-4">
         <div class="glass-panel-amber w-full max-w-xl p-5 flex flex-col items-center">
             <div class="w-full flex items-center justify-between border-b border-white/15 pb-3 mb-4">
@@ -641,7 +591,6 @@
         </div>
     </div>
 
-    <!-- Game entry point (native ES modules, no bundler) -->
     <div id="multiplayer-hud" class="fixed top-4 left-1/2 -translate-x-1/2 z-28 hidden px-3 py-1.5 glass-panel text-[10px] font-tactical font-bold uppercase text-slate-200 pointer-events-none"><span class="text-amber-400">ROOM</span> <span id="mp-room-label">----</span> &bull; <span id="mp-player-count">1 PLAYER</span></div>
 
     <script type="module" src="js/main.js"></script>
