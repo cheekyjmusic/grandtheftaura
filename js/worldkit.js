@@ -1,6 +1,5 @@
 // =============================================================================
 // worldKit.js — Grand Theft Aura · WORLD COMPILER
-//
 // The only module that turns world DATA into world GEOMETRY.
 //
 //   worldData.js      layout rows (what goes where)
