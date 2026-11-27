@@ -2,7 +2,7 @@
 // worldSystems/index.js — SYSTEM REGISTRY & FRAME DISPATCH
 //
 // worldRuntime drives install() from BOOT, in this order:
-//   sewer → estates → hideout → airport → armory → towerLift → atmosphere
+//   sewer → estates → hideout → airport → armory → concertHall → towerLift → atmosphere
 // ESTATES MUST INSTALL BEFORE ARMORY, and towerLift last: each chains onto
 // aura.ahF / aura.ahHint, so the last installer is the first handler called.
 //
@@ -17,11 +17,12 @@ import * as atmosphere from './atmosphere.js';
 import * as edgeBarrier from './edgeBarrier.js';
 import * as towerLift from './towerLift.js';
 import * as hideout from './hideout.js';
+import * as concertHall from './concertHall.js';
 
-export const systems = { sewer, estates, armory, airport, atmosphere, edgeBarrier, towerLift, hideout };
+export const systems = { sewer, estates, armory, airport, atmosphere, edgeBarrier, towerLift, hideout, concertHall };
 
-const TICK = [sewer, estates, armory, airport, atmosphere];
-const ALL = [sewer, estates, armory, airport, atmosphere, edgeBarrier, towerLift, hideout];
+const TICK = [sewer, estates, armory, airport, concertHall, atmosphere];
+const ALL = [sewer, estates, armory, airport, atmosphere, edgeBarrier, towerLift, hideout, concertHall];
 
 export function updateWorldSystems(dt, elapsed) {
   for (const s of TICK) {

@@ -1,3 +1,49 @@
 World Files - 
 
 @("js\world.js", "js\worldkit.js", "js\worldRuntime.js", "js\worldStream.js", "js\worldObjects\airport.js", "js\worldObjects\buildings.js", "js\worldObjects\estates.js", "js\worldObjects\index.js", "js\worldObjects\keepouts.js", "js\worldObjects\shell.js", "js\worldObjects\towers.js", "js\worldObjects\worldRoads.js", "js\worldObjects\worldTerrain.js") | ForEach-Object { "`n---$_ start---`n"; Get-Content $_; "`n---$_ end---`n" } | Set-Content worldfiles.txt -Encoding UTF8
+
+
+Everything - 
+$repoPath = "C:\Users\jorge\source\repos\cheekyjmusic\grandtheftaura"
+$outputFile = Join-Path $repoPath "worldfiles.txt"
+
+$files = @(Get-Item (Join-Path $repoPath "index.html")) + 
+         @(Get-ChildItem -Path $repoPath -Recurse -Include *.js, *.css)
+
+$files | ForEach-Object {
+    $relativePath = $_.FullName.Replace("$repoPath\", "")
+    "`n---$relativePath start---`n"
+    Get-Content $_.FullName
+    "`n---$relativePath end---`n"
+} | Set-Content $outputFile -Encoding UTF8
+
+
+Everything zip -
+$repoPath = "C:\Users\jorge\source\repos\cheekyjmusic\grandtheftaura"
+$outputZip = Join-Path $repoPath "worldfiles.zip"
+$tempDir = Join-Path $env:TEMP "grandtheftaura_temp"
+
+# Clean up any old temp folder or existing zip
+if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+if (Test-Path $outputZip) { Remove-Item $outputZip -Force }
+
+# Gather index.html, .js, and .css files (skipping node_modules and .git)
+$files = @(Get-Item (Join-Path $repoPath "index.html")) + 
+         @(Get-ChildItem -Path $repoPath -Recurse -Include *.js, *.css | 
+           Where-Object { $_.FullName -notmatch '\\(node_modules|\.git)\\' })
+
+# Copy files to a temporary staging folder while keeping relative paths intact
+foreach ($file in $files) {
+    $relativePath = $file.FullName.Substring($repoPath.Length).TrimStart('\')
+    $destPath = Join-Path $tempDir $relativePath
+    $destParent = Split-Path $destPath -Parent
+    
+    if (-not (Test-Path $destParent)) {
+        New-Item -ItemType Directory -Path $destParent -Force | Out-Null
+    }
+    Copy-Item -Path $file.FullName -Destination $destPath
+}
+
+# Create the zip archive and delete the temp folder
+Compress-Archive -Path "$tempDir\*" -DestinationPath $outputZip -Force
+Remove-Item $tempDir -Recurse -Force

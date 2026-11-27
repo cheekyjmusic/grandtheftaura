@@ -66,6 +66,7 @@ import {
 import {
   WORLD, TERRAIN, WATER, ROADS, DISTRICTS, SCATTERS, PLACEMENTS, SYSTEMS, BOOT
 } from './worldData.js';
+import { CONCERT_BUILDERS } from './worldObjects/concertHall.js';
 
 import {
   UNIT_BOX, addRamp, addSolidBox, allPlacements, anchor, beginBuild, buildCompound,
@@ -365,6 +366,7 @@ function registerEverything() {
     ...TOWER_BUILDERS,
     ...ROAD_BUILDERS,
     ...STREET_BUILDERS,
+      ...CONCERT_BUILDERS,
     sewer_network: buildSewer,
     vehicle: buildSportsCar,
     bus: systems.bus?.build || null,
@@ -493,6 +495,7 @@ function runStep(step, ctx) {
       placeRows(expandDistricts(DISTRICTS.filter((d) => DISTRICT_STEP[d.id] === step)));
       placeRows(rowsForStep(PLACEMENT_STEP, PLACEMENTS, step).filter(notYet));
       systems.airport?.install?.({ spec: SYSTEMS.airport });
+              systems.concertHall?.install?.();
       systems.speedway?.install?.({ spec: SYSTEMS.speedway });
       mapShapes.unshift({ x: 120, z: 655, w: 740, d: 550, color: '#4d7c0f', border: '#365314', enterable: false });
       mapShapes.push({ x: 120, z: 299, w: 760, d: 162, color: '#0284c7', border: '#38bdf8', enterable: false });

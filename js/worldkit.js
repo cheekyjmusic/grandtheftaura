@@ -633,16 +633,28 @@ export function footprintClear(cx, cz, w, d, pad = 2.5) {
   return true;
 }
 
+function isCompactSquareSolid(b, sp) {
+  if (sp?.snapYaw !== undefined) return !!sp.snapYaw;
+  const sx = Math.abs(b[1] - b[0]);
+  const sz = Math.abs(b[5] - b[4]);
+  return Math.abs(sx - sz) <= 0.25 && Math.max(sx, sz) <= 3.0;
+}
+
 const yawWarned = new Set();
-function checkYaw(id, ry, solids) {
-  if (!ry || !solids || !solids.length) return true;
+function checkYaw(id, ry, solids, prefabId = id, solidDisabled = false) {
+  if (solidDisabled || !ry || !solids || !solids.length) return true;
   const q = Math.abs(ry / (Math.PI / 2));
   const snapped = Math.abs(q - Math.round(q)) < 1e-4;
-  if (!snapped && !yawWarned.has(id)) {
-    yawWarned.add(id);
-    warn(`"${id}" has solids at a non-90° yaw — collider AABB will be inflated. Snap solids, rotate decor only.`);
+  if (snapped) return true;
+
+  const hasInflatableSolid = solids.some((sp) => !isCompactSquareSolid(solidLocalAABB(sp), sp));
+  if (!hasInflatableSolid) return true;
+
+  if (!yawWarned.has(prefabId)) {
+    yawWarned.add(prefabId);
+    warn(`"${prefabId}" (e.g. "${id}") has elongated solids at a non-90° yaw — collider AABB will be inflated. Snap solids, rotate decor only.`);
   }
-  return snapped;
+  return false;
 }
 
 // =============================================================================
@@ -715,9 +727,10 @@ export function xfInversePoint(xf, p) {
   return [(dx * c - dz * s) / xf.s, dy / xf.s, (dx * s + dz * c) / xf.s];
 }
 
-/** Local AABB -> world AABB (exact at 90° yaw, inflated otherwise). */
-function xfBox(xf, b) {
-  const c = Math.cos(xf.ry), s = Math.sin(xf.ry);
+/** Local AABB -> world AABB (exact at 90° yaw; compact square solids auto-snap). */
+function xfBox(xf, b, snap = false) {
+  const ry = snap ? Math.round(xf.ry / (Math.PI / 2)) * (Math.PI / 2) : xf.ry;
+  const c = Math.cos(ry), s = Math.sin(ry);
   const ex = (Math.abs(b[1] - b[0]) / 2) * xf.s;
   const ez = (Math.abs(b[5] - b[4]) / 2) * xf.s;
   const mx = (b[0] + b[1]) / 2, mz = (b[4] + b[5]) / 2;
@@ -843,9 +856,14 @@ export function compilePrefab(id, xf, out, rng, depth = 0, selectable = false, r
 
   // --- solids (row.solid === false opts the whole placement out) -----------
   if (row?.solid !== false) {
-    for (const sp of spec.solids || []) {
+    const solids = spec.solids || [];
+    if (typeof def.build === 'function' && solids.length) {
+      checkYaw(row?.id || id, xf.ry, solids, id, false);
+    }
+    for (const sp of solids) {
+      const b = solidLocalAABB(sp);
       out.solids.push({
-        b: xfBox(xf, solidLocalAABB(sp)),
+        b: xfBox(xf, b, isCompactSquareSolid(b, sp)),
         tag: sp.tag || 'prefab_solid',
         climb: sp.climb !== false
       });
@@ -936,7 +954,7 @@ export function place(row, parent = worldRoot) {
         return null;
       }
     }
-    checkYaw(id, xf.ry, def?.solids);
+    checkYaw(id, xf.ry, def?.solids, row.prefab, row.solid === false);
 
     seenIds.add(id);
     const rng = rngFor(id);
@@ -1090,7 +1108,7 @@ export function disposeKit() {
     if (m.map && m.map.isCanvasTexture) m.map.dispose();
     m.dispose();
   }
-    ownedMats.length = 0;
+  ownedMats.length = 0;
   matCache.clear();
   PALETTE.clear();
   NAMED_MATERIALS.clear();

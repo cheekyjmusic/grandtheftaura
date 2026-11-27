@@ -328,35 +328,197 @@ export function updateHUD(force) {
   updateHotbar();
 }
 
+function getWeaponWheelBadge(w, owned) {
+  if (!owned) return 'LOCKED';
+  if (w.id === 'ak47') {
+    const mag = Number.isFinite(gameState.ak47Ammo) ? gameState.ak47Ammo : 30;
+    const res = Number.isFinite(gameState.ak47Reserve) ? gameState.ak47Reserve : 270;
+    return `${mag}/${res}`;
+  }
+  if (w.id === 'hotdog_shooter') {
+    return `${gameState.hotdogAmmo}/${MAX_HOTDOG_AMMO}`;
+  }
+  return `DMG ${w.damage}`;
+}
+
+function updateWheelCenterReadout(w, owned) {
+  const nameEl = document.getElementById('wheel-center-name');
+  const dmgEl = document.getElementById('wheel-center-dmg');
+  if (nameEl) nameEl.textContent = w.name;
+  if (dmgEl) {
+    dmgEl.textContent = !owned
+      ? 'NOT IN ARSENAL'
+      : w.id === 'hotdog_shooter'
+        ? `AMMO ${gameState.hotdogAmmo}/${MAX_HOTDOG_AMMO}`
+        : w.id === 'ak47'
+          ? `7.62MM • ${gameState.ak47Ammo ?? 30}/${gameState.ak47Reserve ?? 270}`
+          : `DMG ${w.damage} • ${w.cleave ? 'CLEAVE' : 'MELEE'}`;
+  }
+
+  let statsEl = document.getElementById('wheel-center-stats');
+  if (!statsEl && dmgEl && dmgEl.parentElement) {
+    statsEl = document.createElement('div');
+    statsEl.id = 'wheel-center-stats';
+    statsEl.style.cssText = 'width:96px;margin-top:6px;display:flex;flex-direction:column;gap:4px;';
+    dmgEl.parentElement.appendChild(statsEl);
+  }
+  if (statsEl) {
+    const dmgPct = Math.min(100, Math.round((w.damage / 75) * 100));
+    const ratePct = Math.min(100, Math.round((0.1 / Math.max(0.095, w.cooldown)) * 100));
+    statsEl.innerHTML = `
+      <div style="display:flex;align-items:center;gap:4px;font:700 8px 'Chakra Petch',sans-serif;color:#94a3b8;letter-spacing:.08em">
+        <span style="width:24px;text-align:left">DMG</span>
+        <div style="flex:1;height:3px;background:rgba(255,255,255,.14);overflow:hidden">
+          <div style="height:100%;width:${dmgPct}%;background:linear-gradient(90deg,#f59e0b,#fbbf24)"></div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;font:700 8px 'Chakra Petch',sans-serif;color:#94a3b8;letter-spacing:.08em">
+        <span style="width:24px;text-align:left">SPD</span>
+        <div style="flex:1;height:3px;background:rgba(255,255,255,.14);overflow:hidden">
+          <div style="height:100%;width:${ratePct}%;background:linear-gradient(90deg,#22d3ee,#38bdf8)"></div>
+        </div>
+      </div>
+    `;
+  }
+}
+
 export function showWeaponWheel() {
   const wheel = document.getElementById('radial-menu');
   const nodes = document.getElementById('wheel-nodes');
-  const activeW = RIGHT_WEAPONS[gameState.activeRightWeapon] || RIGHT_WEAPONS.fists;
-  document.getElementById('wheel-center-name').textContent = activeW.name;
-  document.getElementById('wheel-center-dmg').textContent = activeW.id === 'hotdog_shooter'
-    ? `AMMO ${gameState.hotdogAmmo}/${MAX_HOTDOG_AMMO}`
-    : `DMG ${activeW.damage}`;
+  if (!wheel || !nodes) return;
 
-  nodes.innerHTML = '';
-  const list = gameState.rightWeapons;
-  list.forEach((wId, idx) => {
-    const w = RIGHT_WEAPONS[wId];
-    if (!w) return;
-    const ang = -Math.PI / 2 + (idx / list.length) * Math.PI * 2;
-    const r = 86;
-    const cx = 144 + Math.cos(ang) * r;
-    const cy = 144 + Math.sin(ang) * r;
-    const isAct = wId === gameState.activeRightWeapon;
-    const node = document.createElement('div');
-    node.className = `absolute -translate-x-1/2 -translate-y-1/2 w-12 h-12 rounded-full flex flex-col items-center justify-center border ${isAct ? 'bg-amber-500 text-slate-950 border-amber-200 scale-110' : 'bg-slate-900/95 text-slate-200 border-white/20'}`;
-    node.style.left = `${cx}px`;
-    node.style.top = `${cy}px`;
-    node.innerHTML = `${w.svg}<span class="text-[7px] font-tactical font-bold uppercase mt-0.5">${w.name.split(' ')[0]}</span>`;
+  const wasHidden = wheel.style.display === 'none' || !wheel.style.display;
+  const activeW = RIGHT_WEAPONS[gameState.activeRightWeapon] || RIGHT_WEAPONS.fists;
+  updateWheelCenterReadout(activeW, true);
+
+  const size = 380;
+  const cx = size / 2;
+  const cy = size / 2;
+  const outerR = 184;
+  const innerR = 72;
+  const itemR = 128;
+
+  wheel.style.width = `${size}px`;
+  wheel.style.height = `${size}px`;
+
+  const allWeapons = Object.values(RIGHT_WEAPONS);
+  const count = allWeapons.length;
+  const step = (Math.PI * 2) / count;
+  const gap = 0.032;
+
+  let svgSectors = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="position:absolute;inset:0;pointer-events:none;overflow:visible;">`;
+  svgSectors += `<defs>
+    <radialGradient id="gtaWheelGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="35%" stop-color="rgba(10,12,18,0.92)"/>
+      <stop offset="100%" stop-color="rgba(8,10,16,0.84)"/>
+    </radialGradient>
+  </defs>`;
+  svgSectors += `<circle cx="${cx}" cy="${cy}" r="${outerR}" fill="url(#gtaWheelGlow)" stroke="rgba(255,255,255,0.16)" stroke-width="1.5"/>`;
+
+  allWeapons.forEach((w, idx) => {
+    const owned = gameState.rightWeapons.includes(w.id);
+    const isAct = w.id === gameState.activeRightWeapon;
+    const midAng = -Math.PI / 2 + idx * step;
+    const a0 = midAng - step / 2 + gap;
+    const a1 = midAng + step / 2 - gap;
+
+    const x0Out = cx + Math.cos(a0) * outerR;
+    const y0Out = cy + Math.sin(a0) * outerR;
+    const x1Out = cx + Math.cos(a1) * outerR;
+    const y1Out = cy + Math.sin(a1) * outerR;
+    const x1In = cx + Math.cos(a1) * innerR;
+    const y1In = cy + Math.sin(a1) * innerR;
+    const x0In = cx + Math.cos(a0) * innerR;
+    const y0In = cy + Math.sin(a0) * innerR;
+
+    const d = `M ${x0Out.toFixed(1)} ${y0Out.toFixed(1)} A ${outerR} ${outerR} 0 0 1 ${x1Out.toFixed(1)} ${y1Out.toFixed(1)} L ${x1In.toFixed(1)} ${y1In.toFixed(1)} A ${innerR} ${innerR} 0 0 0 ${x0In.toFixed(1)} ${y0In.toFixed(1)} Z`;
+    const fill = isAct
+      ? 'rgba(245, 158, 11, 0.28)'
+      : owned
+        ? 'rgba(30, 41, 59, 0.58)'
+        : 'rgba(15, 23, 42, 0.35)';
+    const stroke = isAct
+      ? '#f59e0b'
+      : owned
+        ? 'rgba(255,255,255,0.12)'
+        : 'rgba(255,255,255,0.05)';
+
+    svgSectors += `<path data-sector="${w.id}" d="${d}" fill="${fill}" stroke="${stroke}" stroke-width="${isAct ? 2 : 1}"/>`;
+    if (isAct) {
+      svgSectors += `<path d="M ${x0Out.toFixed(1)} ${y0Out.toFixed(1)} A ${outerR} ${outerR} 0 0 1 ${x1Out.toFixed(1)} ${y1Out.toFixed(1)}" fill="none" stroke="#fbbf24" stroke-width="3.5"/>`;
+    }
+  });
+
+  svgSectors += `<circle cx="${cx}" cy="${cy}" r="${innerR}" fill="rgba(7,9,14,0.96)" stroke="rgba(245,158,11,0.55)" stroke-width="1.5"/>`;
+  svgSectors += `</svg>`;
+
+  nodes.innerHTML = svgSectors;
+
+  allWeapons.forEach((w, idx) => {
+    const owned = gameState.rightWeapons.includes(w.id);
+    const isAct = w.id === gameState.activeRightWeapon;
+    const ang = -Math.PI / 2 + idx * step;
+    const nx = cx + Math.cos(ang) * itemR;
+    const ny = cy + Math.sin(ang) * itemR;
+
+    const node = document.createElement('button');
+    node.type = 'button';
+    node.className = `gta-wheel-node absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center justify-center px-2 py-1.5 transition-transform duration-100 ${
+      isAct
+        ? 'text-amber-300 scale-110'
+        : owned
+          ? 'text-slate-100 hover:scale-105 cursor-pointer'
+          : 'text-slate-500 opacity-50 cursor-not-allowed'
+    }`;
+    node.style.left = `${nx}px`;
+    node.style.top = `${ny}px`;
+    node.style.background = 'transparent';
+    node.style.border = 'none';
+    node.style.pointerEvents = 'auto';
+
+    const badge = getWeaponWheelBadge(w, owned);
+    node.innerHTML = `
+      <div class="w-8 h-8 flex items-center justify-center ${isAct ? 'text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.75)]' : owned ? 'text-white' : 'text-slate-500'}">${w.svg}</div>
+      <span class="text-[10px] font-display font-bold uppercase tracking-wider leading-tight mt-0.5 whitespace-nowrap">${w.name}</span>
+      <span class="text-[8px] font-tactical font-bold uppercase px-1.5 py-0.2 mt-0.5 ${
+        isAct
+          ? 'bg-amber-400 text-slate-950'
+          : owned
+            ? 'bg-slate-900/90 text-cyan-300 border border-white/10'
+            : 'bg-slate-950/80 text-slate-500'
+      }">${badge}</span>
+    `;
+
+    node.onmouseenter = () => {
+      updateWheelCenterReadout(w, owned);
+      const sec = nodes.querySelector(`[data-sector="${w.id}"]`);
+      if (sec && !isAct && owned) sec.setAttribute('fill', 'rgba(34, 211, 238, 0.22)');
+    };
+    node.onmouseleave = () => {
+      updateWheelCenterReadout(activeW, true);
+      const sec = nodes.querySelector(`[data-sector="${w.id}"]`);
+      if (sec && !isAct && owned) sec.setAttribute('fill', 'rgba(30, 41, 59, 0.58)');
+    };
+    node.onclick = () => {
+      if (!owned) return;
+      gameState.activeRightWeapon = w.id;
+      if (w.id !== 'hotdog_shooter') gameState.isAiming = false;
+      sfx.uiClick();
+      syncEquippedMeshes();
+      updateHUD();
+      showWeaponWheel();
+    };
+
     nodes.appendChild(node);
   });
 
   wheel.style.display = 'flex';
-  gameState.wheelTimer = 1.35;
+  if (wasHidden) {
+    wheel.classList.remove('gta-wheel-open');
+    void wheel.offsetWidth;
+    wheel.classList.add('gta-wheel-open');
+  }
+  gameState.wheelTimer = 1.65;
 }
 
 export function cycleRightWeapon(dir = 1) {
@@ -392,7 +554,7 @@ export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
 
     ctx.save();
     ctx.beginPath();
-    ctx.arc(cx, cy, W / 2, 0, Math.PI * 2);
+    ctx.rect(0, 0, W, H);
     ctx.clip();
 
     ctx.fillStyle = '#0f172a';
@@ -456,21 +618,26 @@ export function renderMapCanvasBase(canvasEl, centerOnPlayer) {
     ctx.stroke();
     ctx.restore();
 
-    ctx.restore();    
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, W - 2, H - 2);
 
-    const R = W / 2 - 11;
+    ctx.restore();
+
+    const half = W / 2 - 12;
     const nAngle = -Math.PI / 2 - player.yaw;
-    const nx = cx + Math.cos(nAngle) * R;
-    const ny = cy + Math.sin(nAngle) * R;
+    const cos = Math.cos(nAngle);
+    const sin = Math.sin(nAngle);
+    const edgeScale = half / Math.max(Math.abs(cos), Math.abs(sin), 0.001);
+    const nx = cx + cos * edgeScale;
+    const ny = cy + sin * edgeScale;
 
     ctx.save();
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
     ctx.strokeStyle = '#ef4444';
     ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(nx, ny, 8.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
+    ctx.fillRect(nx - 8, ny - 8, 16, 16);
+    ctx.strokeRect(nx - 8, ny - 8, 16, 16);
 
     ctx.fillStyle = '#ef4444';
     ctx.font = 'bold 10px "Chakra Petch", sans-serif';
@@ -825,6 +992,28 @@ export function buildAuraUI() {
   const st = document.createElement('style');
   st.textContent = `
     .glass-panel{background:rgba(10,11,15,.92)!important;border:1px solid rgba(255,255,255,.16)!important;border-top:1px solid rgba(245,158,11,.55)!important;border-radius:0!important;box-shadow:0 10px 26px rgba(0,0,0,.72),-1px 0 0 rgba(34,211,238,.18),1px 0 0 rgba(232,121,249,.18)!important}
+    #minimap-box,#minimap-box canvas{border-radius:0!important}
+    #minimap-box{border:1px solid rgba(255,255,255,.22)!important;border-top:2px solid rgba(245,158,11,.75)!important;box-shadow:0 10px 26px rgba(0,0,0,.75)!important;overflow:hidden!important}
+    @keyframes gtaWheelPop {
+      0% { opacity: 0; transform: translate(-50%, -50%) scale(0.52); }
+      70% { opacity: 1; transform: translate(-50%, -50%) scale(1.03); }
+      100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    }
+    #radial-menu {
+      position: fixed !important;
+      top: 50% !important;
+      left: 50% !important;
+      right: auto !important;
+      bottom: auto !important;
+      margin: 0 !important;
+      transform: translate(-50%, -50%) scale(1);
+      transform-origin: center center !important;
+      z-index: 40 !important;
+      pointer-events: auto !important;
+    }
+    #radial-menu.gta-wheel-open {
+      animation: gtaWheelPop 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
     #ao-stars{position:fixed;top:14px;left:50%;transform:translateX(-50%);display:none;gap:4px;font-size:30px;padding:4px 16px;border-radius:0;background:rgba(8,11,17,.82);border:1px solid rgba(255,255,255,.18);text-shadow:0 0 12px currentColor;z-index:25}
     #ao-compass{position:fixed;top:14px;right:208px;padding:6px 14px;font:700 12px 'Chakra Petch',sans-serif;letter-spacing:.15em;color:#e2e8f0;border-radius:0;background:rgba(8,11,17,.82);border:1px solid rgba(255,255,255,.16);z-index:25}
     #ao-vig{position:fixed;inset:0;pointer-events:none;z-index:5;background:radial-gradient(ellipse at center,transparent 58%,rgba(0,0,0,.42) 100%)}

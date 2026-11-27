@@ -121,7 +121,7 @@ export const TERRAIN = [
     w: 364, d: 344, seg: [114, 114], mode: 'hills', name: 'Aura Hills terrain' },
 
   // Los Aura northland.
-  { id: 'gnd/northland', prefab: 'terrain_plane', at: [120, 0.18, 655], w: 740, d: 550,
+  { id: 'gnd/northland', prefab: 'terrain_plane', at: [120, 0.18, 669], w: 740, d: 522,
     seg: [185, 138], surface: 'grass', color: 0x5a9a4e, repeat: [72, 60], roughness: 0.94 }
 ];
 
@@ -613,12 +613,11 @@ export const PLACEMENTS = [
   umb('bw/umbrella_5', [65, 392], 0xec4899),
   umb('bw/umbrella_6', [105, 390], 0xf97316),
 
-  { id: 'la/concert', prefab: 'concert_hall', at: [-84, 588], baseY: 0.30, sign: 'WALT AURA CONCERT HALL',
-    shells: [
-      { w: 14, h: 15, d: 0.55, at: [-3.5, 10.5, 4.5], rot: [0.32, 0.25, -0.28] },
-      { w: 15, h: 17, d: 0.55, at: [3.8, 11.5, 2.0], rot: [-0.25, -0.35, 0.30] },
-      { w: 13, h: 14, d: 0.55, at: [0.0, 10.0, -4.8], rot: [-0.35, 0.15, -0.20] },
-      { w: 11, h: 12, d: 0.55, at: [-6.5, 8.8, -2.5], rot: [0.20, 0.45, 0.34] }] },
+  { id: 'la/concert', prefab: 'concert_hall', at: [-84, 588],
+    w: 32, d: 32, h: 16.0, baseY: 0.32, cullR: 115,
+    name: 'WALT AURA CONCERT HALL',
+    marquee: 'TONIGHT · AURA PHILHARMONIC · 8PM' },
+
   { id: 'la/arena', prefab: 'arena', at: [60, 492], r: 14.5, h: 14.0, baseY: 0.30,
     sign: 'AURA ARENA • LOS AURA LIVE', led: 0xa855f7 },
   { id: 'la/bank', prefab: 'shop_bank', at: [12, 492] },

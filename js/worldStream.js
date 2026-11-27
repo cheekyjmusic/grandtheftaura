@@ -16,6 +16,9 @@
 //     scanning only the bucket would never unload it.
 //   • Load/unload budget with urgent bypass, so streaming never hitches and
 //     never drops the floor out from under the player.
+//   • BOOT PRE-WARM — prewarmLods() temporarily reveals every cached cell
+//     group, compiles all shader programs and uploads all textures BEFORE
+//     the loading screen hides, so first approach never hitches.
 //
 // CELL MODES
 //   'stream'  group parented on load, detached on unload; colliders follow.
@@ -50,7 +53,6 @@ let opts = {
   defaultOff: 66,
   parent: worldRoot
 };
-
 let revealAll = false;
 let stats = { loads: 0, unloads: 0, compiled: 0, active: 0 };
 
@@ -103,7 +105,6 @@ export function initWorldStream(o = {}) {
 export function registerCell(cell) {
   if (!cell || !cell.id) return null;
   if (cells.has(cell.id)) unregisterCell(cell.id);
-
   const c = {
     y: 0, band: 0, off: 0, active: false, cached: false,
     boxes: [], group: null, priority: 0, ...cell
@@ -210,7 +211,6 @@ function buildFromPrefab(c) {
   // Parametric prefabs (tower floors) receive their dimensions through the row.
   compilePrefab(c.prefab, xf, out, rngFor(c.id), 0, true,
     { w: c.w, d: c.d, ry: c.ry, s: c.s });
-
   const g = new THREE.Group();
   g.userData.studioName = `stream:${c.id}`;
   g.userData.studioSelectable = false;
@@ -234,7 +234,6 @@ function buildFromPrefab(c) {
 
 function activate(c) {
   if (c.active) return;
-
   if (c.mode === 'lod' || c.mode === 'inverse') {
     if (c.group) c.group.visible = true;
     if (c.legacyRef) c.legacyRef.active = true;
@@ -274,7 +273,6 @@ function activate(c) {
   if (!c.group) buildFromPrefab(c);
   if (c.group && !c.group.parent) opts.parent.add(c.group);
   if (c.group) c.group.visible = true;
-
   if (c._pendingSolids) {
     c.boxes = c._pendingSolids.map((s) =>
       addSolidBox(s.b[0], s.b[1], s.b[2], s.b[3], s.b[4], s.b[5], s.tag, s.climb));
@@ -284,7 +282,6 @@ function activate(c) {
     c.boxes = c.boxes.map((b) =>
       addSolidBox(b.minX, b.maxX, b.minY, b.maxY, b.minZ, b.maxZ, b.tag, b.climbable));
   }
-
   c.cached = true;
   c.active = true;
   active.add(c);
@@ -293,7 +290,6 @@ function activate(c) {
 
 function deactivate(c, destroy = false) {
   if (!c.active && !destroy) return;
-
   if (c.mode === 'lod' || c.mode === 'inverse') {
     if (c.group) c.group.visible = false;
     if (c.legacyRef) c.legacyRef.active = false;
@@ -302,7 +298,6 @@ function deactivate(c, destroy = false) {
     stats.unloads++;
     return;
   }
-
   if (c.legacy === 'skyscraper') {
     const sk = c.sk;
     if (sk.interiorGroup) { opts.parent.remove(sk.interiorGroup); sk.interiorGroup = null; }
@@ -316,7 +311,6 @@ function deactivate(c, destroy = false) {
     removeSolidBoxes(c.boxes);
     if (destroy && c.group) { c.group = null; c.cached = false; c._pendingSolids = null; }
   }
-
   c.active = false;
   active.delete(c);
   stats.unloads++;
@@ -398,6 +392,58 @@ export function primeCell(id) {
 }
 
 // -----------------------------------------------------------------------------
+// Boot pre-warm — compile every shader permutation & upload every texture
+// BEFORE the loading screen hides. Visibility / parenting are restored exactly,
+// and NO colliders or activation state are touched, so gameplay is unaffected.
+// -----------------------------------------------------------------------------
+export function prewarmLods(renderer, scene, camera) {
+  if (!renderer || !scene || !camera) return { groups: 0, textures: 0 };
+  const touched = [];
+  const parent = opts.parent || worldRoot;
+
+  // Reveal (and temporarily re-parent) every cached cell group so
+  // renderer.compile() sees its materials. Unbuilt lazy cells are skipped:
+  // they reuse the same cached palette materials, which are compiled here
+  // anyway via the already-built world — no new programs appear on approach.
+  for (const c of cells.values()) {
+    const g = c.group;
+    if (!g) continue;
+    touched.push({ g, parent: g.parent, visible: g.visible });
+    if (!g.parent) parent.add(g);
+    if (!g.visible) g.visible = true;
+  }
+
+  let textures = 0;
+  try {
+    renderer.compile(scene, camera);
+    const seen = new Set();
+    const slots = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap',
+      'emissiveMap', 'bumpMap', 'alphaMap', 'lightMap', 'specularMap'];
+    scene.traverse((o) => {
+      const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+      for (const m of mats) {
+        if (!m) continue;
+        for (const s of slots) {
+          const t = m[s];
+          if (t && t.isTexture && !t.isRenderTargetTexture && !seen.has(t) && t.image) {
+            seen.add(t);
+            try { renderer.initTexture(t); textures++; } catch (e) { /* upload best-effort */ }
+          }
+        }
+      }
+    });
+  } finally {
+    // Restore EXACT prior state — detached groups detach again, hidden groups
+    // hide again. The streamer's active set / colliders were never modified.
+    for (const r of touched) {
+      if (!r.parent && r.g.parent) r.g.parent.remove(r.g);
+      r.g.visible = r.visible;
+    }
+  }
+  return { groups: touched.length, textures };
+}
+
+// -----------------------------------------------------------------------------
 // Studio / debug / teardown
 // -----------------------------------------------------------------------------
 export function revealAllCells() {
@@ -450,5 +496,5 @@ export default {
   initWorldStream, registerCell, unregisterCell, updateWorldStream, primeCell,
   adoptKitCells, adoptBuildingLods, adoptAuraCulls, adoptSkyscraperInteriors,
   registerTowerFloors, revealAllCells, restoreCulling, resetWorldStream,
-  streamStats, getCell, activeCells
+  streamStats, getCell, activeCells, prewarmLods
 };

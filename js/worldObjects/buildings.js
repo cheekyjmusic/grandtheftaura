@@ -562,24 +562,6 @@ export function buildHideout(row) {
   return { object: g, boxes, anchors: { pad: [cx + 1, 0.14, cz] } };
 }
 
-export function buildConcertHall(row) {
-  const [x, z] = row.at, y = row.baseY ?? 0.30;
-  const g = new THREE.Group();
-  g.position.set(x, y, z);
-  g.userData.studioName = row.sign || 'Concert hall';
-  worldRoot.add(g);
-  const steel = resolveMat('steel');
-  makeBox(g, 24, 6.5, 22, 0, 3.25, 0, M(0xf8fafc, { texType: 'marble' }), { cast: true });
-  for (const s of row.shells || []) {
-    makeBox(g, s.w, s.h, s.d, s.at[0], s.at[1], s.at[2], steel,
-      { cast: true, rx: s.rot[0], ry: s.rot[1], rz: s.rot[2] });
-  }
-  neon(g, row.sign || 'CONCERT HALL', 0, 5.2, 11.2, '#0f172a', '#38bdf8', 11.5, 1.15);
-  const box = addSolidBox(x - 12, x + 12, y, y + 6.7, z - 11, z + 11, 'concert_hall', false);
-  mapRect(x, z, 24, 22, '#e2e8f0', '#38bdf8', false);
-  return { object: g, boxes: [box] };
-}
-
 export function buildArena(row) {
   const [x, z] = row.at, r = row.r ?? 14.5, h = row.h ?? 14.0, y = row.baseY ?? 0.30;
   const g = new THREE.Group();
@@ -690,7 +672,6 @@ export const BUILDING_BUILDERS = {
   mesa: buildMesa,
   temple: buildTemple,
   hideout: buildHideout,
-  concert_hall: buildConcertHall,
   arena: buildArena,
   hangar: buildHangar,
   theme_building: buildThemeBuilding,

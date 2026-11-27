@@ -50,6 +50,7 @@ export const hooks = {
   getWaterDepthAt: () => 0,
   isSwimming: () => false,
   swimState: null,
+  setWaterQuality: noop,
   buildWorld: noop,
   worldRuntimeStats: () => null,
 
@@ -150,6 +151,8 @@ export const player = {
   y: 0.18,
   z: 18.5,
   vy: 0,
+  pvx: 0,
+  pvz: 0,
   radius: 0.42,
   height: 1.75,
   eyeHeight: 1.62,
@@ -157,6 +160,7 @@ export const player = {
   yaw: 0.22,
   pitch: -0.02,
   grounded: true,
+  coyote: 0,
   peakAirY: 0.18,
   landingDip: 0,
   sprintCycle: 0,
@@ -473,7 +477,7 @@ export const inputState = { isDraggingLook: false, isPrimaryFireHeld: false, las
 // COLLISION QUERIES  (exact tests unchanged — only the candidate set narrows)
 // =============================================================================
 export function computeSupportFloor(x, z, footY, radius) {
-  if (footY < -1.0) return sewerFloor(x, z);
+  if (footY < -1.0 && !isInWater(x, z)) return sewerFloor(x, z);
 
   const inJungle = x >= 368 && x <= 533 && z >= -180 && z <= 240;
   const inNorth = x >= -250 && x <= 490 && z >= 380 && z <= 930;
@@ -517,7 +521,8 @@ export function collidesHorizontally(nx, nz, footY, bodyH, radius) {
     && !(nx >= -700 && nx <= -50 && nz >= 108 && nz <= 320)
     && !hasDetectedMapRegionAt(nx, nz)) return true;
 
-  if (footY < -1.0 && !sewerOK(nx, nz, radius)) return true;
+  // Only enforce sewer bounds outside of water bodies so deep ocean diving isn't blocked
+  if (footY < -1.0 && !isInWater(nx, nz) && !sewerOK(nx, nz, radius)) return true;
 
   if (footY > -0.5) {
     const th = terrainH(nx, nz);
@@ -558,7 +563,7 @@ export function biomeAt(x, z) {
 }
 
 export function isInWater(x, z) {
-  for (const w of waterZones) if (x > w.minX && x < w.maxX && z > w.minZ && z < w.maxZ) return true;
+  for (const w of waterZones) if (x >= w.minX && x <= w.maxX && z >= w.minZ && z <= w.maxZ) return true;
   return false;
 }
 
@@ -721,7 +726,7 @@ export function sewerOK(x, z, r) {
   return false;
 }
 
-export const under = () => player.y < -1.2;
+export const under = () => player.y < -1.2 && !isInWater(player.x, player.z);
 export const climb = { on: false, dir: 0, t: 0, i: 0 };
 
 // =============================================================================

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { camera, scene, worldRoot } from './engine.js';
 import {
-  collidesHorizontally, gameState, hooks, keys, player, pushFeed, waterZones
+  collidesHorizontally, computeSupportFloor, gameState, hooks, keys, player, pushFeed, waterZones
 } from './state.js';
 import { sfx } from './audio.js';
 import { spawnParticles } from './items.js';
@@ -19,7 +19,9 @@ export const swimState = {
   oxygen: 100,
   maxOxygen: 100,
   y: 0,
+  vx: 0,
   vy: 0,
+  vz: 0,
   yaw: 0,
   pitch: 0,
   strokePhase: 0,
@@ -31,9 +33,48 @@ let waterElapsed = 0;
 let savedSurfaceFog = null;
 let savedSurfaceBg = null;
 let underwaterActive = false;
+let forcedQuality = null;
 
 const UNDERWATER_FOG_COLOR = new THREE.Color(0x074b6e);
 const UNDERWATER_FOG_DENSITY = 0.046;
+
+const DEFAULT_SKY_COLOR = new THREE.Color(0x60a5fa);
+const DEFAULT_HORIZON_COLOR = new THREE.Color(0xbbe6fb);
+
+function resolveGraphicsTier() {
+  const raw =
+    forcedQuality ??
+    gameState?.graphicsQuality ??
+    gameState?.graphics ??
+    gameState?.quality ??
+    gameState?.gfx ??
+    gameState?.settings?.graphics ??
+    gameState?.settings?.quality;
+
+  if (typeof raw === 'number') {
+    if (raw <= 0) return 0;
+    if (raw === 1) return 1;
+    return 2;
+  }
+  if (typeof raw === 'string') {
+    const s = raw.toLowerCase();
+    if (s === 'low' || s === 'fast' || s === 'performance') return 0;
+    if (s === 'med' || s === 'medium' || s === 'balanced') return 1;
+    return 2;
+  }
+  return 2;
+}
+
+export function setWaterQuality(tier) {
+  forcedQuality = tier ?? null;
+  const q = resolveGraphicsTier();
+  for (let i = 0; i < waterShaderUniforms.length; i++) {
+    waterShaderUniforms[i].uQuality.value = q;
+  }
+  for (let i = 0; i < seabedShaderUniforms.length; i++) {
+    seabedShaderUniforms[i].uQuality.value = q;
+  }
+}
 
 export function sampleOceanWave(x, z, time = waterElapsed, scale = 1.0) {
   if (scale <= 0.001) return 0;
@@ -44,38 +85,63 @@ export function sampleOceanWave(x, z, time = waterElapsed, scale = 1.0) {
   return (w1 + w2 + w3 + w4) * scale;
 }
 
+function distToSegment(px, pz, ax, az, bx, bz) {
+  const vx = bx - ax;
+  const vz = bz - az;
+  const wx = px - ax;
+  const wz = pz - az;
+  const lenSq = vx * vx + vz * vz;
+  const t = lenSq > 1e-6 ? Math.max(0, Math.min(1, (wx * vx + wz * vz) / lenSq)) : 0;
+  const dx = px - (ax + t * vx);
+  const dz = pz - (az + t * vz);
+  return Math.hypot(dx, dz);
+}
+
+const OCEAN_SHORE_SEGMENTS = [
+  [28, 168, 138, 168, 0.155],
+  [28, 168, 28, 208, 0.155],
+  [138, 168, 138, 208, 0.155],
+  [-50, 208, 28, 208, 0.155],
+  [138, 208, 164, 208, 0.155],
+  [-50, 208, -50, 320, 0.155],
+  [164, 208, 164, 220, -0.01],
+  [164, 220, 368, 220, -0.01],
+  [368, 220, 368, 320, 0.155],
+  [368, 320, 500, 320, 0.155],
+  [-260, 320, -50, 320, 0.155],
+  [-260, 320, -260, 380, 0.155],
+  [500, 320, 500, 380, 0.155],
+  [-260, 380, 500, 380, 0.155]
+];
+
 export function getOceanBedY(x, z) {
-  let shoreDist = 999;
+  let minDist = 999;
+  let weightedTopY = 0;
+  let totalWeight = 0;
 
-  if (x >= 24 && x <= 142 && z >= 166 && z <= 212) {
-    shoreDist = Math.min(shoreDist, z - 168.0);
-    shoreDist = Math.min(shoreDist, x - 27.5);
-    shoreDist = Math.min(shoreDist, 138.5 - x);
-  }
-
-  if (z >= 208 && z <= 320) {
-    if (x < 164) {
-      shoreDist = Math.min(shoreDist, x - (-50.5));
-      if (x < 28 || x > 138) {
-        shoreDist = Math.min(shoreDist, z - 208.0);
-      }
-    } else {
-      shoreDist = Math.min(shoreDist, z - 220.0);
-      shoreDist = Math.min(shoreDist, 368.5 - x);
+  for (let i = 0; i < OCEAN_SHORE_SEGMENTS.length; i++) {
+    const seg = OCEAN_SHORE_SEGMENTS[i];
+    const d = distToSegment(x, z, seg[0], seg[1], seg[2], seg[3]);
+    if (d < minDist) {
+      minDist = d;
+    }
+    if (d < 36.0) {
+      const w = 1.0 / (d * d + 0.25);
+      weightedTopY += seg[4] * w;
+      totalWeight += w;
     }
   }
 
-  if (z >= 318 && z <= 382) {
-    shoreDist = Math.min(shoreDist, 380.0 - z);
-    shoreDist = Math.min(shoreDist, x - (-260.5));
-    shoreDist = Math.min(shoreDist, 500.5 - x);
-  }
-
-  const clampedDist = Math.max(0, shoreDist);
-  const t = Math.min(1, clampedDist / 16.0);
+  const shoreStartY = totalWeight > 0 ? weightedTopY / totalWeight : 0.155;
+  const clampedDist = Math.max(0, minDist);
+  const t = Math.min(1, clampedDist / 18.0);
   const smooth = t * t * (3 - 2 * t);
-  const microUndulation = Math.sin(x * 0.08) * Math.cos(z * 0.08) * 0.22 * smooth;
-  return 0.16 - smooth * 6.96 + microUndulation;
+  const microUndulation =
+    (Math.sin(x * 0.08) * Math.cos(z * 0.08) * 0.18 +
+      Math.sin(x * 0.19 + z * 0.15) * 0.05) *
+    smooth;
+
+  return THREE.MathUtils.lerp(shoreStartY, -6.80, smooth) + microUndulation;
 }
 
 export function getWaterBodyAt(x, z) {
@@ -113,8 +179,9 @@ export function isSwimming() {
 }
 
 const waterShaderUniforms = [];
+const seabedShaderUniforms = [];
 
-function createPS3WaterMaterial({
+function createOceanWaterMaterial({
   shallowColor = 0x22d3ee,
   deepColor = 0x054f7a,
   foamColor = 0xf0f9ff,
@@ -122,10 +189,10 @@ function createPS3WaterMaterial({
 } = {}) {
   const mat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
-    roughness: 0.14,
-    metalness: 0.32,
+    roughness: 0.12,
+    metalness: 0.18,
     transparent: true,
-    opacity: 0.88,
+    opacity: 0.90,
     side: THREE.DoubleSide,
     depthWrite: false
   });
@@ -133,13 +200,16 @@ function createPS3WaterMaterial({
   const uniforms = {
     uTime: { value: 0 },
     uWaveScale: { value: waveScale },
+    uQuality: { value: resolveGraphicsTier() },
     uShallowColor: { value: new THREE.Color(shallowColor) },
     uDeepColor: { value: new THREE.Color(deepColor) },
-    uFoamColor: { value: new THREE.Color(foamColor) }
+    uFoamColor: { value: new THREE.Color(foamColor) },
+    uSkyColor: { value: DEFAULT_SKY_COLOR.clone() },
+    uHorizonColor: { value: DEFAULT_HORIZON_COLOR.clone() }
   };
   waterShaderUniforms.push(uniforms);
 
-  mat.customProgramCacheKey = () => 'ps3-ocean-water-v1';
+  mat.customProgramCacheKey = () => 'aura-ocean-water-v2';
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
 
@@ -153,8 +223,9 @@ function createPS3WaterMaterial({
         varying float vDepth;
         varying float vWaveCrest;
         varying vec3 vWorldPosW;
+        varying vec3 vToCam;
 
-        float evalPS3Wave(vec2 p, float t, float s) {
+        float evalOceanMacroWave(vec2 p, float t, float s) {
           if (s <= 0.001) return 0.0;
           float w1 = sin(p.x * 0.14 + p.y * 0.09 + t * 1.85) * 0.14;
           float w2 = cos(p.x * 0.07 - p.y * 0.17 + t * 1.45) * 0.11;
@@ -167,23 +238,25 @@ function createPS3WaterMaterial({
         '#include <beginnormal_vertex>',
         `#include <beginnormal_vertex>
         vec4 wpN = modelMatrix * vec4(position, 1.0);
+        float shoreAttenN = smoothstep(0.0, 0.80, aDepth);
         float epsW = 0.35;
-        float hC = evalPS3Wave(wpN.xz, uTime, uWaveScale);
-        float hX = evalPS3Wave(wpN.xz + vec2(epsW, 0.0), uTime, uWaveScale);
-        float hZ = evalPS3Wave(wpN.xz + vec2(0.0, epsW), uTime, uWaveScale);
+        float hC = evalOceanMacroWave(wpN.xz, uTime, uWaveScale) * shoreAttenN;
+        float hX = evalOceanMacroWave(wpN.xz + vec2(epsW, 0.0), uTime, uWaveScale) * shoreAttenN;
+        float hZ = evalOceanMacroWave(wpN.xz + vec2(0.0, epsW), uTime, uWaveScale) * shoreAttenN;
         objectNormal = normalize(vec3(-(hX - hC) / epsW, 1.0, -(hZ - hC) / epsW));`
       )
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
         vec4 wpV = modelMatrix * vec4(transformed, 1.0);
-        float wDisp = evalPS3Wave(wpV.xz, uTime, uWaveScale);
-        // Taper wave amplitude smoothly right at the beach edge so shorelines stay tidy
-        float shoreAtten = clamp(aDepth / 0.65, 0.15, 1.0);
-        transformed.y += wDisp * shoreAtten;
+        float shoreAttenV = smoothstep(0.0, 0.80, aDepth);
+        float wDisp = evalOceanMacroWave(wpV.xz, uTime, uWaveScale) * shoreAttenV;
+        transformed.y += wDisp;
+        vec4 finalWorldW = modelMatrix * vec4(transformed, 1.0);
         vDepth = aDepth;
         vWaveCrest = wDisp;
-        vWorldPosW = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+        vWorldPosW = finalWorldW.xyz;
+        vToCam = cameraPosition - finalWorldW.xyz;`
       );
 
     shader.fragmentShader = shader.fragmentShader
@@ -191,39 +264,131 @@ function createPS3WaterMaterial({
         '#include <common>',
         `#include <common>
         uniform float uTime;
+        uniform float uWaveScale;
+        uniform float uQuality;
         uniform vec3 uShallowColor;
         uniform vec3 uDeepColor;
         uniform vec3 uFoamColor;
+        uniform vec3 uSkyColor;
+        uniform vec3 uHorizonColor;
         varying float vDepth;
         varying float vWaveCrest;
-        varying vec3 vWorldPosW;`
+        varying vec3 vWorldPosW;
+        varying vec3 vToCam;
+
+        vec2 evalCapillaryGrad(vec2 p, float t, float strength, float q) {
+          if (strength <= 0.001) return vec2(0.0);
+          vec2 g = vec2(0.0);
+
+          float ph1 = p.x * 1.15 + p.y * 0.82 + t * 2.25;
+          float c1 = cos(ph1) * 0.045;
+          g += vec2(1.15, 0.82) * c1;
+
+          if (q > 0.5) {
+            float ph2 = -p.x * 0.92 + p.y * 1.48 - t * 1.95;
+            float c2 = cos(ph2) * 0.038;
+            g += vec2(-0.92, 1.48) * c2;
+          }
+
+          if (q > 1.5) {
+            float ph3 = p.x * 2.75 - p.y * 2.15 + t * 3.40;
+            float c3 = cos(ph3) * 0.022;
+            g += vec2(2.75, -2.15) * c3;
+
+            float ph4 = p.x * 4.30 + p.y * 3.85 - t * 4.15;
+            float c4 = cos(ph4) * 0.013;
+            g += vec2(4.30, 3.85) * c4;
+          }
+
+          return g * strength;
+        }`
       )
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
-        // Dual scrolling PS3-style water caustic / ripple pattern
-        vec2 uvA = vWorldPosW.xz * 0.22 + vec2(uTime * 0.08, uTime * 0.05);
-        vec2 uvB = vWorldPosW.xz * 0.37 - vec2(uTime * 0.06, -uTime * 0.09);
-        float rippleA = sin(uvA.x * 6.283 + sin(uvA.y * 4.5)) * 0.5 + 0.5;
-        float rippleB = cos(uvB.y * 6.283 + cos(uvB.x * 4.5)) * 0.5 + 0.5;
-        float shimmer = pow(rippleA * rippleB, 1.6);
+        float viewDistC = length(vToCam);
+        float detailFadeC = smoothstep(220.0, 20.0, viewDistC);
 
-        float depthFactor = smoothstep(0.15, 3.8, vDepth);
-        vec3 baseWater = mix(uShallowColor, uDeepColor, depthFactor);
-        baseWater += vec3(0.08, 0.16, 0.22) * shimmer;
+        vec2 uvA = vWorldPosW.xz * 0.24 + vec2(uTime * 0.09, uTime * 0.06);
+        vec2 uvB = vWorldPosW.xz * 0.41 - vec2(uTime * 0.07, -uTime * 0.10);
+        float rippleA = sin(uvA.x * 6.2831 + sin(uvA.y * 4.6)) * 0.5 + 0.5;
+        float rippleB = cos(uvB.y * 6.2831 + cos(uvB.x * 4.6)) * 0.5 + 0.5;
+        float shimmer = pow(rippleA * rippleB, 1.55) * detailFadeC;
 
-        // Animated shoreline surf foam in shallow water (< 0.95m)
-        float surfWave = sin(vDepth * 13.0 - uTime * 3.1) * 0.5 + 0.5;
-        float shoreMask = (1.0 - smoothstep(0.05, 0.95, vDepth));
-        float shoreFoam = shoreMask * smoothstep(0.45, 0.92, surfWave + shoreMask * 0.35);
+        vec3 warmSandTint = mix(vec3(0.76, 0.85, 0.78), uShallowColor, 0.55);
+        float shoreBlend = smoothstep(0.02, 0.55, vDepth);
+        float deepBlend = smoothstep(0.45, 4.60, vDepth);
+        vec3 baseWater = mix(warmSandTint, uShallowColor, shoreBlend);
+        baseWater = mix(baseWater, uDeepColor, deepBlend);
 
-        // Subtle whitecap foam on wave crests
-        float crestFoam = smoothstep(0.15, 0.30, vWaveCrest) * smoothstep(0.5, 2.0, vDepth) * 0.45;
-        float totalFoam = clamp(shoreFoam * 0.85 + crestFoam, 0.0, 1.0);
+        float causticWeight = (1.0 - smoothstep(0.6, 4.8, vDepth)) * (0.45 + 0.55 * step(0.5, uQuality));
+        baseWater += vec3(0.11, 0.21, 0.25) * shimmer * causticWeight;
+
+        baseWater *= 1.0 + clamp(vWaveCrest * 0.45, -0.10, 0.14);
+
+        float foamNoise = sin(vWorldPosW.x * 0.55 + uTime * 1.4) * cos(vWorldPosW.z * 0.55 - uTime * 1.1) * 0.5 + 0.5;
+        float surfWave1 = sin(vDepth * 11.5 - uTime * 3.0 + foamNoise * 2.2) * 0.5 + 0.5;
+        float surfWave2 = sin(vDepth * 19.0 - uTime * 4.2 - foamNoise * 1.8) * 0.5 + 0.5;
+        float shoreMask = 1.0 - smoothstep(0.02, 1.15, vDepth);
+        float edgeLap = 1.0 - smoothstep(0.0, 0.22, vDepth);
+        float surfPattern = mix(surfWave1, surfWave1 * 0.65 + surfWave2 * 0.45, step(0.5, uQuality));
+        float shoreFoam = clamp(
+          shoreMask * smoothstep(0.46, 0.90, surfPattern + shoreMask * 0.34) + edgeLap * 0.55,
+          0.0,
+          1.0
+        );
+
+        float crestFoam = smoothstep(0.13, 0.28, vWaveCrest) * smoothstep(0.5, 2.0, vDepth) * (0.35 + 0.20 * foamNoise);
+        float totalFoam = clamp(shoreFoam * 0.88 + crestFoam, 0.0, 1.0);
 
         diffuseColor.rgb = mix(baseWater, uFoamColor, totalFoam);
-        diffuseColor.a = mix(0.64, 0.91, smoothstep(0.05, 2.6, vDepth));
-        diffuseColor.a = max(diffuseColor.a, totalFoam * 0.92);`
+
+        float edgeAlpha = smoothstep(0.005, 0.28, vDepth);
+        float depthAlpha = mix(0.52, 0.93, smoothstep(0.05, 2.8, vDepth));
+        diffuseColor.a = max(depthAlpha, totalFoam * 0.94) * edgeAlpha;`
+      )
+      .replace(
+        '#include <normal_fragment_maps>',
+        `#include <normal_fragment_maps>
+        float viewDistN = length(vToCam);
+        float detailFadeN = smoothstep(240.0, 16.0, viewDistN);
+        float shoreFadeN = smoothstep(0.02, 0.55, vDepth);
+        float capStrength = clamp(uWaveScale, 0.25, 1.25) * detailFadeN * shoreFadeN;
+        vec2 capGrad = evalCapillaryGrad(vWorldPosW.xz, uTime, capStrength, uQuality);
+        vec3 viewPerturb = (viewMatrix * vec4(-capGrad.x, 0.0, -capGrad.y, 0.0)).xyz;
+        normal = normalize(normal + viewPerturb);`
+      )
+      .replace(
+        '#include <opaque_fragment>',
+        `
+        vec3 V_w = normalize(vToCam);
+        float viewDistO = length(vToCam);
+        float detailFadeO = smoothstep(240.0, 16.0, viewDistO);
+        float shoreFadeO = smoothstep(0.02, 0.55, vDepth);
+        vec2 capGradO = evalCapillaryGrad(vWorldPosW.xz, uTime, clamp(uWaveScale, 0.25, 1.25) * detailFadeO * shoreFadeO, uQuality);
+        vec3 worldMacroN = normalize((vec4(normal, 0.0) * viewMatrix).xyz);
+        vec3 wNorm = normalize(vec3(worldMacroN.x - capGradO.x * 0.55, max(0.35, worldMacroN.y), worldMacroN.z - capGradO.y * 0.55));
+
+        float NdotV = max(dot(wNorm, V_w), 0.0);
+        float fresnel = 0.025 + 0.975 * pow(1.0 - NdotV, 4.5);
+        vec3 R_w = reflect(-V_w, wNorm);
+        float reflUp = clamp(R_w.y, 0.0, 1.0);
+        vec3 skyRefl = mix(uHorizonColor, uSkyColor, pow(reflUp, 0.58));
+
+        vec3 sunDir = normalize(vec3(0.44, 0.66, -0.61));
+        float RdotL = max(dot(R_w, sunDir), 0.0);
+        float specTight = pow(RdotL, mix(140.0, 320.0, step(1.5, uQuality))) * mix(1.1, 1.85, step(1.5, uQuality));
+        float specBroad = pow(RdotL, 34.0) * 0.22;
+        vec3 sunGlint = vec3(1.0, 0.97, 0.90) * (specTight + specBroad);
+
+        float sssTerm = pow(clamp(dot(V_w, -sunDir + wNorm * 0.55), 0.0, 1.0), 4.0);
+        float crestMask = smoothstep(-0.02, 0.22, vWaveCrest) * smoothstep(0.25, 2.2, vDepth);
+        vec3 sssGlow = vec3(0.08, 0.78, 0.74) * sssTerm * crestMask * 0.52 * step(0.5, uQuality);
+
+        float reflStrength = fresnel * mix(0.48, 0.72, step(1.5, uQuality)) * smoothstep(0.02, 0.45, vDepth);
+        outgoingLight = mix(outgoingLight, skyRefl, reflStrength);
+        outgoingLight += sssGlow + sunGlint;
+        #include <opaque_fragment>`
       );
   };
 
@@ -250,10 +415,12 @@ export function createWaterSurface({
   registerZone = true,
   segmentSize = 3.0
 }) {
+  const tier = resolveGraphicsTier();
+  const effectiveSegSize = tier >= 2 ? segmentSize * 0.8 : tier === 1 ? segmentSize : segmentSize * 1.35;
   const width = maxX - minX;
   const depth = maxZ - minZ;
-  const segX = Math.max(4, Math.min(260, Math.ceil(width / segmentSize)));
-  const segZ = Math.max(4, Math.min(120, Math.ceil(depth / segmentSize)));
+  const segX = Math.max(4, Math.min(300, Math.ceil(width / effectiveSegSize)));
+  const segZ = Math.max(4, Math.min(160, Math.ceil(depth / effectiveSegSize)));
 
   const geo = new THREE.PlaneGeometry(width, depth, segX, segZ);
   geo.rotateX(-Math.PI / 2);
@@ -267,11 +434,11 @@ export function createWaterSurface({
     const wx = cx + pos.getX(i);
     const wz = cz + pos.getZ(i);
     const localBed = bedFn ? bedFn(wx, wz) : bedY;
-    depths[i] = Math.max(0.05, surfaceY - localBed);
+    depths[i] = Math.max(0.0, surfaceY - localBed);
   }
   geo.setAttribute('aDepth', new THREE.BufferAttribute(depths, 1));
 
-  const mat = createPS3WaterMaterial({ shallowColor, deepColor, foamColor, waveScale });
+  const mat = createOceanWaterMaterial({ shallowColor, deepColor, foamColor, waveScale });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.set(cx, surfaceY, cz);
   mesh.receiveShadow = true;
@@ -303,18 +470,79 @@ export function createWaterSurface({
   return body;
 }
 
+function createSeabedMaterial() {
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.92,
+    metalness: 0.03,
+    flatShading: false
+  });
+
+  const uniforms = {
+    uTime: { value: 0 },
+    uQuality: { value: resolveGraphicsTier() }
+  };
+  seabedShaderUniforms.push(uniforms);
+
+  mat.customProgramCacheKey = () => 'aura-ocean-seabed-v1';
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        varying vec3 vBedWorldPos;`
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vBedWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform float uTime;
+        uniform float uQuality;
+        varying vec3 vBedWorldPos;`
+      )
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+        float sandRipple = sin(vBedWorldPos.x * 1.6 + sin(vBedWorldPos.z * 0.7) * 1.5) * 0.035;
+        diffuseColor.rgb *= 1.0 + sandRipple;
+
+        if (uQuality > 0.5 && vBedWorldPos.y < 0.14) {
+          float depthSub = max(0.0, 0.20 - vBedWorldPos.y);
+          float causticFade = smoothstep(0.02, 0.45, depthSub) * (1.0 - smoothstep(2.2, 6.2, depthSub));
+          vec2 cUv1 = vBedWorldPos.xz * 0.34 + vec2(uTime * 0.11, uTime * 0.07);
+          vec2 cUv2 = vBedWorldPos.xz * 0.52 - vec2(uTime * 0.08, -uTime * 0.12);
+          float cA = abs(sin(cUv1.x * 4.5 + cos(cUv1.y * 4.0)));
+          float cB = abs(cos(cUv2.y * 4.5 + sin(cUv2.x * 4.0)));
+          float causticNet = pow(1.0 - min(cA, cB), 4.0);
+          diffuseColor.rgb += vec3(0.20, 0.34, 0.36) * causticNet * causticFade;
+        }`
+      );
+  };
+
+  return mat;
+}
+
 export function buildOceanSeabed(parent = worldRoot) {
   const grp = new THREE.Group();
   grp.userData.studioName = 'Ocean Seabed';
   parent.add(grp);
 
-  const cBeachSand = new THREE.Color(0xe9cf92);
-  const cWetSand = new THREE.Color(0x9e8c68);
-  const cKelp = new THREE.Color(0x2a5748);
-  const cDeepSilt = new THREE.Color(0x183444);
+  const cDryBeachSand = new THREE.Color(0xead196);
+  const cWetSand = new THREE.Color(0xa6926c);
+  const cSeagrass = new THREE.Color(0x2b5b49);
+  const cDeepSilt = new THREE.Color(0x163242);
   const tmpColor = new THREE.Color();
+  const seabedMat = createSeabedMaterial();
 
-  const buildBedPatch = (x0, x1, z0, z1, step = 4.0) => {
+  const buildBedPatch = (x0, x1, z0, z1, step = 3.2) => {
     const w = x1 - x0;
     const d = z1 - z0;
     const sx = Math.max(4, Math.ceil(w / step));
@@ -335,12 +563,12 @@ export function buildOceanSeabed(parent = worldRoot) {
 
       const waterDepth = Math.max(0, 0.20 - by);
       const patchNoise = Math.sin(wx * 0.06) * Math.cos(wz * 0.06) * 0.5 + 0.5;
-      tmpColor.copy(cBeachSand);
-      tmpColor.lerp(cWetSand, THREE.MathUtils.smoothstep(waterDepth, 0.0, 1.4));
-      if (waterDepth > 1.6 && patchNoise > 0.58) {
-        tmpColor.lerp(cKelp, (patchNoise - 0.58) * 1.6);
+      tmpColor.copy(cDryBeachSand);
+      tmpColor.lerp(cWetSand, THREE.MathUtils.smoothstep(waterDepth, 0.0, 1.35));
+      if (waterDepth > 1.4 && patchNoise > 0.56) {
+        tmpColor.lerp(cSeagrass, (patchNoise - 0.56) * 1.65);
       }
-      tmpColor.lerp(cDeepSilt, THREE.MathUtils.smoothstep(waterDepth, 2.5, 6.2));
+      tmpColor.lerp(cDeepSilt, THREE.MathUtils.smoothstep(waterDepth, 2.4, 6.3));
 
       colors[i * 3] = tmpColor.r;
       colors[i * 3 + 1] = tmpColor.g;
@@ -351,23 +579,17 @@ export function buildOceanSeabed(parent = worldRoot) {
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
 
-    const mat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.94,
-      metalness: 0.04,
-      flatShading: true
-    });
-    const mesh = new THREE.Mesh(geo, mat);
+    const mesh = new THREE.Mesh(geo, seabedMat);
     mesh.position.set(cx, 0, cz);
     mesh.receiveShadow = true;
     grp.add(mesh);
     return mesh;
   };
 
-  buildBedPatch(28, 138, 168, 208, 3.0);
-  buildBedPatch(-50, 164, 208, 320, 4.5);
-  buildBedPatch(164, 368, 220, 320, 4.5);
-  buildBedPatch(-260, 500, 320, 380, 4.5);
+  buildBedPatch(26, 140, 166.0, 208, 2.5);
+  buildBedPatch(-50, 164, 206.0, 320, 3.5);
+  buildBedPatch(164, 368, 218.0, 320, 3.5);
+  buildBedPatch(-260, 500, 320, 382.0, 3.5);
 
   return grp;
 }
@@ -411,7 +633,7 @@ function updateUnderwaterAtmosphere(dt, elapsed) {
   if (swimState.submerged && Math.random() < dt * 7) {
     spawnParticles(
       player.x + (Math.random() - 0.5) * 0.5,
-      player.y + 1.35,
+      player.y + 1.15,
       player.z + (Math.random() - 0.5) * 0.5,
       0xbae6fd,
       2,
@@ -420,95 +642,82 @@ function updateUnderwaterAtmosphere(dt, elapsed) {
   }
 }
 
-const _camForward = new THREE.Vector3();
-const _camRight = new THREE.Vector3();
-const _upVec = new THREE.Vector3(0, 1, 0);
-
-function getCameraSwimVectors() {
-  camera.getWorldDirection(_camForward);
-  const pitch = _camForward.y;
-  _camForward.y = 0;
-  if (_camForward.lengthSq() < 1e-5) {
-    _camForward.set(Math.sin(player.yaw || 0), 0, Math.cos(player.yaw || 0));
-  } else {
-    _camForward.normalize();
-  }
-  _camRight.crossVectors(_camForward, _upVec).normalize();
-  return { forward: _camForward, right: _camRight, pitch };
-}
-
 function exitSwimmingState() {
   if (!swimState.active && !swimState.wading) return;
   swimState.active = false;
   swimState.submerged = false;
   swimState.wading = false;
+  swimState.vx = 0;
   swimState.vy = 0;
+  swimState.vz = 0;
   swimState.lastBodyId = null;
-  const mesh = player.mesh || player.group || player.root;
-  if (mesh) {
-    mesh.rotation.x = 0;
-    mesh.rotation.z = 0;
-  }
 }
 
 function updatePlayerSwimming(dt, elapsed) {
-  if (gameState.inCar) {
+  if (gameState.inCar || player.mantle?.active) {
     exitSwimmingState();
-    swimState.oxygen = Math.min(swimState.maxOxygen, swimState.oxygen + dt * 25);
+    swimState.oxygen = Math.min(swimState.maxOxygen, swimState.oxygen + dt * 28);
     return;
   }
 
   const wb = getWaterBodyAt(player.x, player.z);
   if (!wb) {
     exitSwimmingState();
-    swimState.oxygen = Math.min(swimState.maxOxygen, swimState.oxygen + dt * 25);
+    swimState.oxygen = Math.min(swimState.maxOxygen, swimState.oxygen + dt * 28);
     return;
   }
 
   const surfaceY = wb.surfaceY + sampleOceanWave(player.x, player.z, elapsed, wb.waveScale);
   const bedY = wb.bedFn ? wb.bedFn(player.x, player.z) : wb.bedY;
+
+  // Use true seabed depth (ignoring the dry-land terrainH plane that sits above the seabed)
   const totalWaterDepth = Math.max(0, surfaceY - bedY);
-
-  if (swimState.active && Math.abs(player.y - swimState.y) > 0.25 && swimState.vy <= 1.5) {
-    player.y = swimState.y;
-  }
-
   const submersion = surfaceY - player.y;
+
   swimState.depth = totalWaterDepth;
   swimState.submersion = submersion;
 
-  if (submersion < 1.12 || totalWaterDepth < 1.22) {
+  // Hysteresis prevents flickering between wading and swimming along shorelines
+  const enterDepth = 0.85;
+  const exitDepth = 0.55;
+  const enterSubmersion = 0.72;
+  const exitSubmersion = 0.42;
+
+  const shouldSwim = swimState.active
+    ? (totalWaterDepth >= exitDepth && submersion >= exitSubmersion)
+    : (totalWaterDepth >= enterDepth && submersion >= enterSubmersion);
+
+  if (!shouldSwim) {
     if (swimState.active) {
       exitSwimmingState();
     }
-    swimState.wading = submersion > 0.15;
-    swimState.oxygen = Math.min(swimState.maxOxygen, swimState.oxygen + dt * 24);
+    swimState.wading = submersion > 0.12 && totalWaterDepth > 0.12;
+    swimState.oxygen = Math.min(swimState.maxOxygen, swimState.oxygen + dt * 28);
 
-    if (wb.isOcean && player.y < bedY + 0.08 && (player.vy || 0) <= 0) {
-      player.y = bedY;
-      player.grounded = true;
-    }
-
-    const moving = keys['KeyW'] || keys['KeyA'] || keys['KeyS'] || keys['KeyD'];
-    if (swimState.wading && moving && Math.random() < dt * 11) {
-      spawnParticles(player.x, surfaceY + 0.04, player.z, 0x7dd3fc, 3, 2.4);
+    const moving = keys['KeyW'] || keys['KeyA'] || keys['KeyS'] || keys['KeyD'] ||
+      keys['ArrowUp'] || keys['ArrowDown'] || keys['ArrowLeft'] || keys['ArrowRight'];
+    if (swimState.wading && moving && Math.random() < dt * 10) {
+      spawnParticles(player.x, surfaceY + 0.04, player.z, 0x7dd3fc, 2, 2.2);
     }
     return;
   }
 
+  // Enter Minecraft-style 3D swimming
   if (!swimState.active) {
     swimState.active = true;
-    swimState.y = player.y;
-    swimState.vy = Math.max(-2.5, (player.vy || 0) * 0.35);
-    spawnParticles(player.x, surfaceY + 0.08, player.z, 0xe0f2fe, 12, 4.2);
+    swimState.y = Math.max(bedY, Math.min(surfaceY - 0.86, player.y));
+    swimState.vx = player.pvx || 0;
+    swimState.vz = player.pvz || 0;
+    swimState.vy = Math.max(-2.0, (player.vy || 0) * 0.25);
+    swimState.yaw = player.yaw || 0;
+    spawnParticles(player.x, surfaceY + 0.08, player.z, 0xe0f2fe, 10, 3.8);
     if (sfx && typeof sfx.hit === 'function') sfx.hit();
     if (wb.isOcean && swimState.lastBodyId !== wb.id) {
       swimState.lastBodyId = wb.id;
-      pushFeed('OCEAN — [WASD] SWIM • [SHIFT] SPRINT • [C] DIVE • [SPACE] SURFACE', 'border-l-cyan-400');
+      pushFeed('SWIMMING — LOOK TO STEER • [WASD] MOVE • [SPACE] UP • [C] DOWN', 'border-l-cyan-400');
     }
   }
 
-  const { forward, right, pitch } = getCameraSwimVectors();
   let moveForward = 0;
   let moveRight = 0;
   if (keys['KeyW'] || keys['ArrowUp']) moveForward += 1;
@@ -522,65 +731,103 @@ function updatePlayerSwimming(dt, elapsed) {
     moveRight /= inputLen;
   }
 
-  const sprinting = Boolean(keys['ShiftLeft'] || keys['ShiftRight']) && inputLen > 0.05;
-  const diving = Boolean(keys['KeyC'] || keys['ControlLeft'] || keys['ControlRight']);
-  const surfacing = Boolean(keys['Space']);
+  const sprinting = Boolean(keys['ShiftLeft'] || keys['ShiftRight']) && inputLen > 0.05 && (gameState.stamina ?? 100) > 0;
+  const swimUpHeld = Boolean(keys['Space']);
+  const swimDownHeld = Boolean(keys['KeyC'] || keys['ControlLeft'] || keys['ControlRight']);
+  const yaw = player.yaw || 0;
+  const pitch = player.pitch || 0;
 
-  const strokeRate = inputLen > 0.05 ? (sprinting ? 8.5 : 5.4) : 2.2;
-  swimState.strokePhase += dt * strokeRate;
-  const strokePulse = inputLen > 0.05 ? (0.86 + 0.24 * Math.sin(swimState.strokePhase)) : 1.0;
+  // 3D look direction matching camera forward (-sin(yaw), sin(pitch), -cos(yaw))
+  const cosPitch = Math.cos(pitch);
+  const flatFwdX = -Math.sin(yaw);
+  const flatFwdZ = -Math.cos(yaw);
+  const rightX = Math.cos(yaw);
+  const rightZ = -Math.sin(yaw);
 
-  const baseSpeed = sprinting ? 8.1 : 5.3;
-  const swimSpeed = baseSpeed * strokePulse;
+  const surfaceFloatY = surfaceY - 0.86;
+  const isUnderSurface = (swimState.y + 1.18) < surfaceY - 0.04;
+  const divingByLook = moveForward > 0.05 && pitch < -0.08;
+  const steering3D = isUnderSurface || divingByLook || (moveForward < -0.05 && pitch > 0.08);
 
-  let vx = (forward.x * moveForward + right.x * moveRight) * swimSpeed + wb.currentX;
-  let vz = (forward.z * moveForward + right.z * moveRight) * swimSpeed + wb.currentZ;
+  const baseSpeed = sprinting ? 10.2 : 6.4;
 
-  const neutralFloatY = surfaceY - 1.18;       
-  if (diving) {
-    swimState.vy += (-4.6 - swimState.vy) * Math.min(1, dt * 6.0);
-  } else if (surfacing) {
-    if (swimState.y < neutralFloatY - 0.18) {
-      swimState.vy += (4.8 - swimState.vy) * Math.min(1, dt * 6.0);
-    } else {
-      const probeX = player.x + forward.x * 0.85;
-      const probeZ = player.z + forward.z * 0.85;
-      const blockedAhead = collidesHorizontally(probeX, probeZ, surfaceY - 0.2, surfaceY + 1.2, 0.45);
-      if (blockedAhead) {
-        swimState.vy = 6.4;
-        vx += forward.x * 3.5;
-        vz += forward.z * 3.5;
+  // At the surface looking level/up, keep full horizontal skim speed; in 3D dive/underwater, follow 3D look pitch
+  const horizPitchScale = steering3D ? Math.max(0.28, cosPitch) : 1.0;
+  const targetVx = (flatFwdX * moveForward * horizPitchScale + rightX * moveRight) * baseSpeed + wb.currentX * 0.2;
+  const targetVz = (flatFwdZ * moveForward * horizPitchScale + rightZ * moveRight) * baseSpeed + wb.currentZ * 0.2;
+
+  const horizAccel = Math.min(1, dt * 12.0);
+  swimState.vx += (targetVx - swimState.vx) * horizAccel;
+  swimState.vz += (targetVz - swimState.vz) * horizAccel;
+
+  let targetVy = 0;
+
+  if (swimUpHeld && !swimDownHeld) {
+    // Allow effortless hop-out onto docks, piers, boats, and low ledges when pressing Space near the surface
+    if (swimState.y >= surfaceY - 1.15) {
+      const probeX = player.x + flatFwdX * 0.95;
+      const probeZ = player.z + flatFwdZ * 0.95;
+      const aheadFloor = computeSupportFloor(probeX, probeZ, surfaceY + 1.1, 0.35);
+      const blockedLow = collidesHorizontally(probeX, probeZ, surfaceY - 0.15, 0.75, 0.40);
+      const blockedHigh = collidesHorizontally(probeX, probeZ, surfaceY + 0.95, 1.4, 0.40);
+
+      if ((aheadFloor > surfaceY + 0.02 && aheadFloor <= surfaceY + 1.05) || (blockedLow && !blockedHigh)) {
         exitSwimmingState();
-        player.y = surfaceY + 0.35;
-        player.vy = 6.2;
+        player.x += flatFwdX * 0.38;
+        player.z += flatFwdZ * 0.38;
+        player.y = Math.max(player.y, surfaceY + 0.14);
+        player.vy = 6.8;
+        player.pvx = flatFwdX * 4.2;
+        player.pvz = flatFwdZ * 4.2;
         player.grounded = false;
+        player.peakAirY = player.y;
         spawnParticles(player.x, surfaceY + 0.1, player.z, 0xe0f2fe, 8, 3.2);
         return;
       }
-      swimState.vy = Math.max(swimState.vy, 2.2);
     }
-  } else if (swimState.y < neutralFloatY - 0.35 && inputLen > 0.1 && Math.abs(pitch) > 0.15) {
-    const targetVy = pitch * moveForward * swimSpeed * 0.85;
-    swimState.vy += (targetVy - swimState.vy) * Math.min(1, dt * 4.5);
+
+    if (swimState.y < surfaceFloatY + 0.06) {
+      targetVy = 5.6;
+    } else {
+      targetVy = (surfaceFloatY + 0.06 - swimState.y) * 9.0;
+    }
+  } else if (swimDownHeld && !swimUpHeld) {
+    targetVy = sprinting ? -7.2 : -5.4;
+  } else if (Math.abs(moveForward) > 0.05 && steering3D) {
+    // Swim directly along the vertical angle you're looking
+    targetVy = Math.sin(pitch) * moveForward * baseSpeed * 1.15;
+    if (!isUnderSurface && targetVy > 0 && swimState.y >= surfaceFloatY) {
+      targetVy = (surfaceFloatY - swimState.y) * 9.0;
+    }
+  } else if (!isUnderSurface || swimState.y > surfaceY - 1.20) {
+    // Buoyant surface float with eyes cleanly above water
+    targetVy = (surfaceFloatY - swimState.y) * 9.0;
   } else {
-    const buoyancyError = neutralFloatY - swimState.y;
-    const springForce = buoyancyError * 11.5 - swimState.vy * 5.2;
-    swimState.vy += springForce * dt;
+    // Neutral underwater buoyancy: hold exact depth when releasing controls
+    targetVy = 0;
   }
 
-  const nextX = player.x + vx * dt;
-  const nextZ = player.z + vz * dt;
-  const bodyLow = swimState.y + 0.25;
-  const bodyHigh = swimState.y + 1.55;
+  const vertAccel = Math.min(1, dt * 12.0);
+  swimState.vy += (targetVy - swimState.vy) * vertAccel;
 
-  if (!collidesHorizontally(nextX, player.z, bodyLow, bodyHigh, 0.42)) {
+  const nextX = player.x + swimState.vx * dt;
+  const nextZ = player.z + swimState.vz * dt;
+  const swimBodyH = 1.15;
+  const r = player.radius || 0.35;
+
+  if (!collidesHorizontally(nextX, player.z, swimState.y + 0.35, swimBodyH, r)) {
     player.x = nextX;
+  } else {
+    swimState.vx = 0;
   }
-  if (!collidesHorizontally(player.x, nextZ, bodyLow, bodyHigh, 0.42)) {
+  if (!collidesHorizontally(player.x, nextZ, swimState.y + 0.35, swimBodyH, r)) {
     player.z = nextZ;
+  } else {
+    swimState.vz = 0;
   }
 
   swimState.y += swimState.vy * dt;
+
   const newSurfaceY = wb.surfaceY + sampleOceanWave(player.x, player.z, elapsed, wb.waveScale);
   const newBedY = wb.bedFn ? wb.bedFn(player.x, player.z) : wb.bedY;
 
@@ -588,56 +835,50 @@ function updatePlayerSwimming(dt, elapsed) {
     swimState.y = newBedY;
     swimState.vy = Math.max(0, swimState.vy);
   }
-  if (swimState.y > newSurfaceY - 0.75 && swimState.vy > 0 && !surfacing) {
-    swimState.y = newSurfaceY - 0.75;
-    swimState.vy = 0;
+  const maxSurfaceY = newSurfaceY - 0.78;
+  if (swimState.y > maxSurfaceY) {
+    swimState.y = maxSurfaceY;
+    if (swimState.vy > 0) swimState.vy = 0;
   }
 
   player.y = swimState.y;
   player.vy = swimState.vy;
   player.grounded = false;
 
-  if (inputLen > 0.05) {
-    const targetYaw = Math.atan2(vx, vz);
-    swimState.yaw = targetYaw;
-    if (typeof player.yaw === 'number') {
-      player.yaw = targetYaw;
-    }
+  const strokeRate = inputLen > 0.05 ? (sprinting ? 9.5 : 6.2) : 2.2;
+  swimState.strokePhase += dt * strokeRate;
+  swimState.pitch = pitch;
+
+  // Align third-person character yaw smoothly with movement/look direction (-Z forward)
+  const horizSpeed = Math.hypot(swimState.vx, swimState.vz);
+  if (horizSpeed > 0.25) {
+    const targetRigYaw = Math.atan2(-swimState.vx, -swimState.vz);
+    let diff = targetRigYaw - swimState.yaw;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    swimState.yaw += diff * Math.min(1, dt * 14);
+  } else {
+    swimState.yaw = yaw;
   }
 
-  const pMesh = player.mesh || player.group || player.root;
-  if (pMesh) {
-    const targetPitch = inputLen > 0.05 ? (diving ? 1.15 : 0.85) : 0.15;
-    pMesh.rotation.x += (targetPitch - pMesh.rotation.x) * Math.min(1, dt * 8);
-    pMesh.rotation.z = Math.sin(swimState.strokePhase) * (inputLen > 0.05 ? 0.16 : 0.04);
-  }
-
-  swimState.submerged = (player.y + 1.52) < newSurfaceY;
+  swimState.submerged = (swimState.y + 1.18) < newSurfaceY - 0.04;
   if (swimState.submerged) {
     swimState.oxygen = Math.max(0, swimState.oxygen - dt * 6.5);
-    if (swimState.oxygen <= 0 && typeof player.health === 'number') {
-      swimState.drownTick += dt;
-      if (swimState.drownTick >= 0.5) {
-        swimState.drownTick = 0;
-        player.health = Math.max(0, player.health - 4);
-        if (hooks.updateHUD) hooks.updateHUD(true);
-      }
-    }
   } else {
-    swimState.oxygen = Math.min(swimState.maxOxygen, swimState.oxygen + dt * 22);
+    swimState.oxygen = Math.min(swimState.maxOxygen, swimState.oxygen + dt * 26);
     swimState.drownTick = 0;
   }
 
   if (!swimState.submerged && inputLen > 0.05) {
-    const rate = sprinting ? 18 : 10;
+    const rate = sprinting ? 16 : 9;
     if (Math.random() < dt * rate) {
       spawnParticles(
         player.x + (Math.random() - 0.5) * 0.65,
         newSurfaceY + 0.05,
         player.z + (Math.random() - 0.5) * 0.65,
         sprinting ? 0xf0f9ff : 0x7dd3fc,
-        sprinting ? 4 : 2,
-        sprinting ? 3.4 : 2.1
+        sprinting ? 3 : 2,
+        sprinting ? 3.2 : 2.0
       );
     }
   }
@@ -729,9 +970,26 @@ function updateFloatingProps(elapsed) {
 
 export function updateWater(dt, elapsed) {
   waterElapsed = elapsed;
+  const quality = resolveGraphicsTier();
+  const skyCol = !underwaterActive && scene.background && scene.background.isColor
+    ? scene.background
+    : DEFAULT_SKY_COLOR;
+  const horizonCol = !underwaterActive && scene.fog
+    ? scene.fog.color
+    : DEFAULT_HORIZON_COLOR;
 
   for (let i = 0; i < waterShaderUniforms.length; i++) {
-    waterShaderUniforms[i].uTime.value = elapsed;
+    const u = waterShaderUniforms[i];
+    u.uTime.value = elapsed;
+    u.uQuality.value = quality;
+    u.uSkyColor.value.copy(skyCol);
+    u.uHorizonColor.value.copy(horizonCol);
+  }
+
+  for (let i = 0; i < seabedShaderUniforms.length; i++) {
+    const u = seabedShaderUniforms[i];
+    u.uTime.value = elapsed;
+    u.uQuality.value = quality;
   }
 
   updateFloatingProps(elapsed);
@@ -744,6 +1002,7 @@ export function resetWaterSystem() {
   waterBodies.length = 0;
   floatingProps.length = 0;
   waterShaderUniforms.length = 0;
+  seabedShaderUniforms.length = 0;
   exitSwimmingState();
   swimState.oxygen = swimState.maxOxygen;
   swimState.drownTick = 0;
@@ -768,5 +1027,6 @@ Object.assign(hooks, {
   getWaterHeightAt,
   getWaterDepthAt,
   isSwimming,
-  swimState
+  swimState,
+  setWaterQuality
 });

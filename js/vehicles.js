@@ -24,20 +24,21 @@ const NPC_HIT_RADIUS = 0.5;
 const NPC_MIN_SPEED = 1.2;
 const NPC_HIT_COOLDOWN = 900;
 
-const WATER_CONTACT_EPS  = 0.10;          
-const WATER_AWASH_DEPTH  = 0.75;         
-const WATER_FLOOD_DEPTH  = 1.15;          
-const WATER_DEEP_DEPTH   = 2.60;     
-const WATER_SINK_GRAVITY = 5.4;        
-const WATER_MAX_SINK_SPD = 3.2;       
-const WATER_DRAG         = 2.4;      
+const WATER_CONTACT_EPS  = 0.06;
+const WATER_MIN_DEPTH    = 0.34;
+const WATER_AWASH_DEPTH  = 0.55;
+const WATER_FLOOD_DEPTH  = 0.85;
+const WATER_DEEP_DEPTH   = 2.10;
+const WATER_SINK_GRAVITY = 5.6;
+const WATER_MAX_SINK_SPD = 2.8;
+const WATER_DRAG         = 3.2;
 const WATER_DPS          = 6;
 
-const ROLL_TIP_START     = 0.78;     
-const ROLL_CONTACT_BLEND = 0.55;          
-const ROOF_DOWN_FACTOR   = 0.30;        
+const ROLL_TIP_START     = 0.78;
+const ROLL_CONTACT_BLEND = 0.55;
+const ROOF_DOWN_FACTOR   = 0.30;
 const ROOF_SCRAPE_DRAG   = 3.6;
-const ROOF_RIGHT_SPEED   = 1.5;           
+const ROOF_RIGHT_SPEED   = 1.5;
 
 let vehicleUid = 0;
 const carCollisionCooldowns = new Map();
@@ -158,50 +159,86 @@ function waterLevelFallback() {
     const n = Number(c);
     if (Number.isFinite(n)) return n;
   }
-  return 0;
+  return 0.20;
 }
 
 export function waterSurfaceY(x, z) {
-  if (hooks.waterSurfaceY) {
+  if (typeof hooks.getWaterHeightAt === 'function') {
+    const n = Number(hooks.getWaterHeightAt(x, z));
+    if (Number.isFinite(n)) return n;
+  }
+  if (typeof hooks.waterSurfaceY === 'function') {
     const n = Number(hooks.waterSurfaceY(x, z));
-    return Number.isFinite(n) ? n : null;
+    if (Number.isFinite(n)) return n;
   }
   if (!isInWater(x, z)) return null;
   return waterLevelFallback();
 }
 
+function waterBedY(x, z, surf) {
+  if (typeof hooks.getWaterDepthAt === 'function' && Number.isFinite(surf)) {
+    const d = Number(hooks.getWaterDepthAt(x, z));
+    if (Number.isFinite(d) && d > 0) return surf - d;
+  }
+  return surf - 6.80;
+}
+
+function getVehicleSupportY(x, z, footY, radius) {
+  const surf = waterSurfaceY(x, z);
+  const rawSupport = computeSupportFloor(x, z, footY, radius);
+  if (surf === null) return rawSupport;
+
+  // Over water, only treat structures elevated above the waterline (bridges, piers, docks) as solid decks
+  const bed = waterBedY(x, z, surf);
+  if (rawSupport > surf + 0.14) {
+    return rawSupport;
+  }
+  return bed;
+}
+
 function updateVehicleWater(v, dt) {
   const w = v.water || (v.water = {
-    active: false, wasActive: false, surfaceY: null,
+    active: false, wasActive: false, surfaceY: null, bedY: null,
     depth: 0, awash: false, flooded: false, floodLatch: false, deep: false, t: 0
   });
 
   const surf = waterSurfaceY(v.x, v.z);
   let active = false;
   let contactY = v.y;
+  let bed = null;
 
   if (surf !== null) {
     contactY = v.y - bodySupportOffset(v);
+    bed = waterBedY(v.x, v.z, surf);
+    const waterColumnDepth = Math.max(0, surf - bed);
     const support = computeSupportFloor(v.x, v.z, v.y + 0.55, v.isBus ? 1.3 : 0.8);
-    const standingOnDeck = support > surf + 0.05 && contactY >= support - 0.30;
-    active = !standingOnDeck && (contactY < surf - WATER_CONTACT_EPS);
+    const standingOnDeck = support > surf + 0.14 && contactY >= support - 0.35;
+    active = !standingOnDeck
+      && waterColumnDepth >= WATER_MIN_DEPTH
+      && (contactY <= surf - WATER_CONTACT_EPS);
   }
 
   w.surfaceY = surf;
+  w.bedY     = bed;
   w.active   = active;
   w.depth    = active ? Math.max(0, surf - contactY) : 0;
   w.awash    = active && w.depth < WATER_AWASH_DEPTH;
   w.flooded  = active && w.depth >= WATER_FLOOD_DEPTH;
   w.deep     = active && w.depth >= WATER_DEEP_DEPTH;
   w.t        = active ? w.t + dt : 0;
-  if (w.flooded) w.floodLatch = true;
+  if (w.flooded && !w.floodLatch) {
+    w.floodLatch = true;
+    if (gameState.inCar && vehicles[gameState.activeCarIndex] === v) {
+      pushFeed('ENGINE FLOODED — VEHICLE SINKING • [F] EXIT', 'border-l-rose-500');
+    }
+  }
   if (!active) w.floodLatch = false;
   v._inWater = active;
 
   if (active && !w.wasActive) {
-    spawnParticles(v.x, surf + 0.15, v.z, 0xbae6fd, 16, 6.5);
+    spawnParticles(v.x, surf + 0.15, v.z, 0xbae6fd, 22, 7.0);
     if (sfx.splash) sfx.splash();
-    else if (Math.abs(v.speed) > 6) sfx.hit();
+    else sfx.hit();
     if (gameState.inCar && vehicles[gameState.activeCarIndex] === v) {
       pushFeed('VEHICLE IN WATER — IT IS SINKING • [F] EXIT', 'border-l-sky-400');
     }
@@ -212,23 +249,45 @@ function updateVehicleWater(v, dt) {
 
 function stepVehicleSinking(v, dt, w) {
   const offset = bodySupportOffset(v);
-  const seabed = computeSupportFloor(v.x, v.z, v.y + 0.35, v.isBus ? 1.3 : 0.9) + offset;
-  const sinkAccel = WATER_SINK_GRAVITY * (w.awash && w.t < 1.2 ? 0.35 : 1);
+  const bed = Number.isFinite(w.bedY) ? w.bedY : waterBedY(v.x, v.z, w.surfaceY ?? 0.20);
+  const deckSupport = computeSupportFloor(v.x, v.z, v.y + 0.35, v.isBus ? 1.3 : 0.9);
+  const floorY = (w.surfaceY !== null && deckSupport > w.surfaceY + 0.14) ? deckSupport : bed;
+  const seabed = floorY + offset;
+
+  // Brief trapped-air buoyancy on initial splashdown, then steady sink to the seabed
+  const sinkAccel = WATER_SINK_GRAVITY * (w.awash && w.t < 0.85 ? 0.32 : 1.0);
   v.vy = Math.max(-WATER_MAX_SINK_SPD, (v.vy || 0) - sinkAccel * dt);
   v.y += v.vy * dt;
-  if (v.y <= seabed) { v.y = seabed; v.vy = 0; }
 
+  const onBottom = v.y <= seabed + 0.04;
+  if (v.y <= seabed) {
+    v.y = seabed;
+    v.vy = 0;
+  }
+
+  // Heavy front engine pitches the nose (+Z) downward while sinking, then levels out on the seabed
   const roll = wrapPi(v.roll || 0);
   const restRoll = Math.abs(roll) > ROLL_TIP_START ? (roll >= 0 ? Math.PI : -Math.PI) : 0;
-  v.pitch = (v.pitch || 0) + (-0.42 - (v.pitch || 0)) * Math.min(1, dt * 1.4);
-  v.roll = (v.roll || 0) + (restRoll - (v.roll || 0)) * Math.min(1, dt * 1.2);
+  const targetSinkPitch = onBottom ? 0.05 : (v.isBus || v.isTank ? 0.22 : 0.36);
+  v.pitch = (v.pitch || 0) + (targetSinkPitch - (v.pitch || 0)) * Math.min(1, dt * (onBottom ? 2.4 : 1.6));
+  v.roll = (v.roll || 0) + (restRoll - (v.roll || 0)) * Math.min(1, dt * 1.4);
 
-  const drag = Math.max(0, 1 - WATER_DRAG * dt);
+  const drag = Math.max(0, 1 - (onBottom ? WATER_DRAG * 2.5 : WATER_DRAG) * dt);
   v.speed *= drag;
   v.velX = (v.velX || 0) * drag;
   v.velZ = (v.velZ || 0) * drag;
 
-  if (Math.random() < dt * 14) spawnParticles(v.x, v.y + 0.9, v.z, 0xe0f2fe, 1, 1.2);
+  if (!onBottom && Math.random() < dt * 16) {
+    const bubbleY = Math.min((w.surfaceY ?? v.y + 1.2) - 0.04, v.y + 0.95);
+    spawnParticles(
+      v.x + (Math.random() - 0.5) * 1.1,
+      bubbleY,
+      v.z + (Math.random() - 0.5) * 1.4,
+      0xe0f2fe,
+      1,
+      1.6
+    );
+  }
 }
 
 const BUS_SEAT_ANCHORS = [
@@ -1079,8 +1138,8 @@ export function buildSportsCar(cfg) {
   const wantsBus = cfg && (cfg.isBus === true || cfg.type === 'bus' || /\b(bus|coach)\b/i.test(cfg.name || ''));
   if (wantsBus) return buildBus(cfg);
 
-  const { x, z, yaw } = cfg;
-  const spawnY = Number.isFinite(cfg.y) ? cfg.y : computeSupportFloor(x, z, 1.2, 0.9) + 0.02;
+  const { x, z } = cfg;
+  const spawnY = Number.isFinite(cfg.y) ? cfg.y : getVehicleSupportY(x, z, 1.2, 0.9) + 0.02;
   const parts = buildSportsCarMesh({ ...cfg, y: spawnY });
   worldRoot.add(parts.root);
   return createVehicleRecord(cfg, parts, spawnY);
@@ -1089,7 +1148,7 @@ export function buildSportsCar(cfg) {
 export function buildBus(cfg = {}) {
   const merged = { name: 'CITY BUS', scale: BUS_DEFAULT_SCALE, ...cfg, isBus: true };
   const { x = 0, z = 0 } = merged;
-  const spawnY = Number.isFinite(merged.y) ? merged.y : computeSupportFloor(x, z, 1.6, 1.4) + 0.02;
+  const spawnY = Number.isFinite(merged.y) ? merged.y : getVehicleSupportY(x, z, 1.6, 1.4) + 0.02;
   const parts = buildBusMesh({ ...merged, y: spawnY });
   worldRoot.add(parts.root);
   return createVehicleRecord(merged, parts, spawnY);
@@ -1159,11 +1218,15 @@ function computeVehicleExitSpot(v, seatIndex = 0) {
   const sideSign = seatSideSign(seatIndex, v);
 
   const surf = waterSurfaceY(v.x, v.z);
-  if (surf !== null && v.y - bodySupportOffset(v) < surf - 0.25) {
+  if (surf !== null && v.y - bodySupportOffset(v) < surf - 0.12) {
     const sx = Math.cos(v.yaw) * sideSign;
     const sz = -Math.sin(v.yaw) * sideSign;
     const d = (v.isBus ? 3.0 : 2.6) * footprintScale(v) / (v.carScale || DEFAULT_SCALE);
-    return { x: v.x + sx * d, y: surf - 0.25, z: v.z + sz * d };
+    const exitX = v.x + sx * d;
+    const exitZ = v.z + sz * d;
+    const bed = waterBedY(exitX, exitZ, surf);
+    const swimY = Math.max(bed + 0.12, Math.min(surf - 0.86, v.y + 0.25));
+    return { x: exitX, y: swimY, z: exitZ };
   }
 
   const exitDistance = (v.isBus ? 2.4 : 2.1) * footprintScale(v);
@@ -1260,6 +1323,7 @@ export function getNearestVehicle(maxDist = 5.2) {
   vehicles.forEach((v, idx) => {
     if (v.entryAnim) return;
     if (gameState.inCar && gameState.activeCarIndex === idx) return;
+    if (v.water && v.water.floodLatch) return;
     const freeSeat = firstFreeSeat(v);
     const locked = hooks.mpCarLocked ? hooks.mpCarLocked(idx) : false;
     if (locked && freeSeat <= 0) return;
@@ -1277,6 +1341,11 @@ export function getNearestVehicle(maxDist = 5.2) {
 export function enterVehicle(idx) {
   const v = vehicles[idx];
   if (!v || v.entryAnim || gameState.inCar) return;
+  if (v.water && v.water.floodLatch) {
+    pushFeed(`${v.name} IS FLOODED`, 'border-l-sky-400');
+    sfx.uiClick();
+    return;
+  }
   const seat = firstFreeSeat(v);
   if (seat < 0) {
     pushFeed(`${v.name} IS FULL`, 'border-l-rose-500');
@@ -1383,8 +1452,8 @@ export function exitCurrentCar(silent = false) {
   const seat = mine ? mine.seat : 0;
   const exitSpot = computeVehicleExitSpot(v, seat);
 
-  if (silent) {
-    finalizeExitCar(idx, v, exitSpot, true);
+  if (silent || (v.water && v.water.active)) {
+    finalizeExitCar(idx, v, exitSpot, silent);
     return;
   }
   if (v.entryAnim) return;
@@ -1872,10 +1941,11 @@ export function stepVehicleDriving(dt, elapsed) {
   const water = updateVehicleWater(v, dt);
   const engineDead = water.floodLatch;
   const roofDown = roofDownFactor(v) > 0.35;
-  const driveEnabled = (!water.active || water.awash) && !roofDown;
+  // Vehicles cannot drive on or through deep water
+  const driveEnabled = !water.active && !roofDown;
 
   const animLock = Boolean(v.entryAnim);
-  const throttleInput = (animLock || engineDead) ? 0 : (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0);
+  const throttleInput = (animLock || engineDead || water.active) ? 0 : (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0);
   const brakeInput = animLock ? 1 : (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0);
   const steerInput = animLock ? 0 : ((keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0) - (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0));
   const handbrake = animLock ? 0 : (keys['Space'] ? 1 : 0);
@@ -1935,7 +2005,7 @@ export function stepVehicleDriving(dt, elapsed) {
         v.rpm = 7750 + Math.sin(elapsed * 55) * 240;
         v.speed -= 4.0 * dt;
       }
-    } else if (engineDead) {
+    } else if (engineDead || water.active) {
       v.rpm = Math.max(0, v.rpm - 5200 * dt);
     } else {
       const engineBrake = (2.4 + (1.45 / Math.max(0.2, gearRatio)) * 0.55) * (v.isBus ? 1.25 : 1);
@@ -1943,13 +2013,13 @@ export function stepVehicleDriving(dt, elapsed) {
     }
   }
 
-  if (brakeInput) {
+  if (brakeInput && !water.active) {
     const brakeForce = 36.0 * brakeMul;
     if (v.speed > 0.2) v.speed = Math.max(0, v.speed - brakeForce * dt);
     else if (v.speed < -0.2) v.speed = Math.min(0, v.speed + brakeForce * dt);
     else v.speed = 0;
   }
-  if (handbrake) {
+  if (handbrake && !water.active) {
     v.speed *= Math.max(0, 1 - (v.isBus ? 1.6 : v.isSupercar ? 2.1 : 3.2) * dt);
   }
 
@@ -1958,7 +2028,7 @@ export function stepVehicleDriving(dt, elapsed) {
   const speedFactor = Math.min(1, Math.abs(v.speed) / (v.isBus ? 6.0 : 4.2));
   const dirSign = v.speed >= 0 ? 1 : -1;
   const driftYawMult = handbrake ? (v.isSupercar ? 1.55 : 1.32) : 1.0;
-  const yawRate = v.isBus ? 1.55 : 2.45;
+  const yawRate = (water.active ? 0.35 : 1.0) * (v.isBus ? 1.55 : 2.45);
   v.yaw += v.steerAngle * yawRate * speedFactor * dirSign * driftYawMult * dt;
 
   const headX = Math.sin(v.yaw);
@@ -1973,16 +2043,16 @@ export function stepVehicleDriving(dt, elapsed) {
     : isTipping ? 0.8
     : (handbrake ? (v.isSupercar ? 1.35 : 1.8) : (v.isBus ? 5.4 : v.isSupercar ? 8.2 : 6.8));
 
-  const rawGrip = water.active ? 3 : surfaceGrip(v.x, v.z, v.y);
+  const rawGrip = water.active ? 3 : surfaceGrip(v.x, v.z);
   const gripMul = Math.min(1, rawGrip / 14 + 0.12) * gripMulData;
 
   if (water.active) {
-    const drag = WATER_DRAG * (water.awash ? 0.55 : 1);
+    const drag = WATER_DRAG * (water.awash ? 0.65 : 1.1);
     const k = Math.max(0, 1 - drag * dt);
     v.speed *= k;
     v.velX *= k;
     v.velZ *= k;
-    if (engineDead) v.rpm = Math.max(0, v.rpm - 5200 * dt);
+    v.rpm = Math.max(0, v.rpm - 5200 * dt);
   }
 
   v.velX += (targetVx - v.velX) * Math.min(1, lateralGrip * gripMul * dt);
@@ -2009,7 +2079,7 @@ export function stepVehicleDriving(dt, elapsed) {
   const wheelX = wheelHalfX(v);
 
   const probeReachY = v.y + STEP_HEIGHT + 0.35;
-  const getWheelY = (forwardSign, sideSign) => computeSupportFloor(
+  const getWheelY = (forwardSign, sideSign) => getVehicleSupportY(
     nextX + cfx * (forwardSign * wheelZ) + crx * (sideSign * wheelX),
     nextZ + cfz * (forwardSign * wheelZ) + crz * (sideSign * wheelX),
     probeReachY,
@@ -2036,7 +2106,7 @@ export function stepVehicleDriving(dt, elapsed) {
     const frontRightY = getWheelY(1, 1);
     const rearLeftY = getWheelY(-1, -1);
     const rearRightY = getWheelY(-1, 1);
-    const centerY = computeSupportFloor(nextX, nextZ, probeReachY, v.isBus ? 1.2 : 0.8);
+    const centerY = getVehicleSupportY(nextX, nextZ, probeReachY, v.isBus ? 1.2 : 0.8);
     const wheelAvgY = (frontLeftY + frontRightY + rearLeftY + rearRightY) * 0.25;
     const groundSupportY = Math.max(centerY, Math.min(wheelAvgY, centerY + 1.25));
 
@@ -2056,6 +2126,12 @@ export function stepVehicleDriving(dt, elapsed) {
     } else {
       v.vy = 0;
       v.y = groundY;
+    }
+
+    // Shallow shoreline splash when wheels roll through water's edge before full submersion
+    const shallowSurf = waterSurfaceY(nextX, nextZ);
+    if (shallowSurf !== null && v.y < shallowSurf + 0.12 && Math.abs(v.speed) > 1.2 && Math.random() < dt * 14) {
+      spawnParticles(nextX, shallowSurf + 0.05, nextZ, 0x7dd3fc, 2, 2.8);
     }
 
     const frontAvgY = (frontLeftY + frontRightY) * 0.5;
@@ -2234,10 +2310,10 @@ export function stepVehicleDriving(dt, elapsed) {
   v.chassis.rotation.z = v.rollSway;
   v.wheelPivots[0].rotation.y = v.steerAngle;
   v.wheelPivots[1].rotation.y = v.steerAngle;
-  const wheelRot = (v.speed * dt) / wheelRadius(v);
+  const wheelRot = water.active ? 0 : (v.speed * dt) / wheelRadius(v);
   v.wheelSpinners.forEach((ws) => { ws.rotation.x += wheelRot; });
 
-  sfx.updateEngine(!engineDead, engineDead ? 0 : v.rpm, Boolean(throttleInput) && driveEnabled, onLimiter);
+  sfx.updateEngine(!engineDead && !water.active, (engineDead || water.active) ? 0 : v.rpm, Boolean(throttleInput) && driveEnabled, onLimiter);
 
   player.x = v.x;
   player.y = v.y + 0.06;
@@ -2281,7 +2357,7 @@ export function stepVehicleDriving(dt, elapsed) {
 }
 
 function settleParkedCar(v, dt) {
-  const rest = computeSupportFloor(v.x, v.z, v.y + 0.65, v.isBus ? 1.3 : 0.85) + 0.02 + bodySupportOffset(v);
+  const rest = getVehicleSupportY(v.x, v.z, v.y + 0.65, v.isBus ? 1.3 : 0.85) + 0.02 + bodySupportOffset(v);
   v.vy = v.vy || 0;
   if (rest > v.y + 0.08) {
     v.y = rest;
@@ -2366,7 +2442,7 @@ export function suspFrame(dt, t) {
       const crx = Math.cos(v.yaw), crz = -Math.sin(v.yaw);
       const wheelZ = wheelHalfZ(v);
       const wheelX = wheelHalfX(v);
-      const getWheelY = (f, s) => computeSupportFloor(
+      const getWheelY = (f, s) => getVehicleSupportY(
         v.x + cfx * (f * wheelZ) + crx * (s * wheelX),
         v.z + cfz * (f * wheelZ) + crz * (s * wheelX),
         v.y + STEP_HEIGHT + 0.35,
